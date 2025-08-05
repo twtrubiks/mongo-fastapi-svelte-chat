@@ -1,0 +1,47 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Custom styles */
+@layer base {
+  html, body {
+    @apply font-sans h-screen overflow-hidden;
+  }
+  
+  #svelte {
+    @apply h-full;
+  }
+}
+
+@layer components {
+  .chat-container {
+    @apply flex flex-col h-full;
+  }
+  
+  .message-item {
+    @apply mb-4 p-3 rounded-lg;
+  }
+  
+  .message-item.own {
+    @apply bg-primary text-primary-content ml-auto max-w-xs;
+  }
+  
+  .message-item.other {
+    @apply bg-base-200 mr-auto max-w-xs;
+  }
+  
+  .loading-spinner {
+    @apply animate-spin rounded-full h-8 w-8 border-b-2 border-primary;
+  }
+}
+
+@layer utilities {
+  .scrollbar-hide {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+  
+  .scrollbar-hide::-webkit-scrollbar {
+    display: none;
+  }
+}
