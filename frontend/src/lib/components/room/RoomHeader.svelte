@@ -73,23 +73,20 @@
     
     <!-- 右側：操作按鈕 -->
     <div class="room-actions">
-      <!-- 移動端菜單切換 -->
-      <Button
-        variant="ghost"
-        size="sm"
-        class="menu-toggle md:hidden"
+      <!-- 移動端菜單切換（優先顯示） -->
+      <button
+        class="btn btn-ghost btn-square md:hidden"
         onclick={toggleMenu}
         aria-label="切換菜單"
       >
-        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16" />
         </svg>
-      </Button>
+      </button>
       
       <!-- 搜尋按鈕 - 不依賴 room 存在，但在沒有 room 時禁用 -->
-      <Button
-        variant="ghost"
-        size="sm"
+      <button
+        class="btn btn-ghost btn-circle btn-sm"
         disabled={!room}
         onclick={() => onSearch?.()}
         aria-label="搜尋訊息"
@@ -97,23 +94,22 @@
         <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
         </svg>
-      </Button>
+      </button>
       
       {#if room}
         <!-- 更多選項 -->
         <div class="dropdown dropdown-end">
-          <Button
-            variant="ghost"
-            size="sm"
+          <button
+            class="btn btn-ghost btn-circle btn-sm"
             tabindex="0"
             aria-label="更多選項"
           >
             <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 5v.01M12 12v.01M12 19v.01M12 6a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2z" />
             </svg>
-          </Button>
+          </button>
           
-          <ul class="dropdown-content z-10 menu p-2 shadow bg-base-100 rounded-box w-52">
+          <ul class="dropdown-content z-10 menu p-2 shadow-lg bg-base-100 rounded-box w-52 min-w-[12rem]" style="max-height: calc(100vh - 120px); overflow-y: auto;">
             <li>
               <button onclick={handleSettings}>
                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -159,31 +155,38 @@
 
 <style>
   .room-header {
-    @apply bg-base-100 border-b border-base-200 px-4 py-3;
+    @apply bg-base-100 border-b border-base-200 px-3 py-2;
   }
   
   .room-header-content {
     @apply flex items-center justify-between;
+    width: 100%;
   }
   
   .room-info {
-    @apply flex-1 min-w-0;
+    @apply flex-1 min-w-0 mr-2;
+  }
+  
+  .room-actions {
+    @apply flex items-center gap-1 flex-shrink-0;
   }
   
   .room-details {
     @apply flex flex-col;
   }
   
+  
   .room-name {
-    @apply text-xl font-semibold text-base-content truncate;
+    @apply text-lg font-semibold text-base-content truncate;
+    max-width: calc(100vw - 140px);
   }
   
   .room-status {
-    @apply flex items-center space-x-2 text-sm text-base-content opacity-70 mt-1;
+    @apply flex items-center space-x-1 text-xs text-base-content opacity-70 mt-0.5;
   }
   
   .online-indicator {
-    @apply w-2 h-2 bg-green-500 rounded-full;
+    @apply w-2 h-2 bg-green-500 rounded-full animate-pulse;
   }
   
   .online-count {
@@ -195,25 +198,36 @@
   }
   
   .room-placeholder {
-    @apply flex items-center justify-center h-12;
+    @apply flex items-center justify-center h-10;
   }
   
   .placeholder-text {
-    @apply text-base-content opacity-60 font-medium;
+    @apply text-base-content opacity-60 font-medium text-sm;
   }
   
   .room-actions {
-    @apply flex items-center space-x-2;
+    @apply flex items-center gap-1;
   }
   
-  .menu-toggle {
-    @apply flex items-center justify-center w-10 h-10;
+  /* 移動端按鈕增大觸控區域 */
+  .room-actions .btn-square {
+    @apply w-10 h-10 min-h-[2.5rem];
+  }
+  
+  .room-actions .btn-circle {
+    @apply w-9 h-9 min-h-[2.25rem];
   }
   
   /* 響應式設計 */
   @media (max-width: 768px) {
+    .room-header {
+      @apply px-2 py-1.5;
+      min-height: 3.25rem;
+    }
+    
     .room-name {
-      @apply text-lg;
+      @apply text-base;
+      max-width: calc(100vw - 160px);
     }
     
     .room-status {

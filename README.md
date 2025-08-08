@@ -23,7 +23,7 @@
 
 *聊天界面*
 
-![img](https://cdn.imgpile.com/f/9PlwtZM_xl.png)
+![img](https://cdn.imgpile.com/f/oAqNbCj_xl.png)
 
 *聊天室種類以及是否設定密碼*
 
@@ -45,6 +45,10 @@
 
 ![img](https://cdn.imgpile.com/f/dDg8rja_xl.png)
 
+*瀏覽器通知*
+
+![img](https://cdn.imgpile.com/f/aLqiunO_xl.png)
+
 *可上傳圖片或影片支援線上播放*
 
 ![img](https://cdn.imgpile.com/f/bPoL7Eu_xl.png)
@@ -60,6 +64,12 @@
 *簡易儀表板*
 
 ![img](https://cdn.imgpile.com/f/fIRQc16_xl.png)
+
+*手機板UI*
+
+![img](https://cdn.imgpile.com/f/uiAp5oP_xl.png)
+
+![img](https://cdn.imgpile.com/f/FXym4TE_xl.png)
 
 ## 🏗️ 技術架構
 
@@ -162,14 +172,16 @@ mongo-express 是查看 MongoDB GUI 的工具,
 ### 2. 啟動後端
 
 ```bash
-# 安裝相關套件
-pip install -r requirements.txt
-
 # 切換到後端目錄
 cd backend
 
+# 建立你自己的環境 python3.13
+
+# 安裝相關套件
+pip install -r requirements.txt
+
 # 使用指定的 Python 環境
-fastapi dev main.py
+fastapi dev app/main.py
 ```
 
 API 文檔 [http://0.0.0.0:8000/docs](http://0.0.0.0:8000/docs)
@@ -239,16 +251,70 @@ cp .env.example .env
     └── technical-reference.md  # 技術參考
 ```
 
+## 移動設備開發指南
+
+如果要測試手機板本, 啟動的時候要多設定 `--host 0.0.0.0`
+
+### 1. 啟動後端（允許外部訪問）
+
+```bash
+cd backend
+# 使用 --host 0.0.0.0 讓後端接受所有網路介面的連接
+fastapi dev app/main.py --host 0.0.0.0
+```
+
+### 2. 啟動前端
+
+```bash
+cd frontend
+npm run dev
+# Vite 已配置 host: true，會自動監聽所有網路介面
+```
+
+### 3. 手機訪問
+
+1. 確保手機和電腦在同一 WiFi 網路
+
+## 功能特性
+
+### 動態 URL 檢測
+
+系統會自動根據訪問的地址決定 WebSocket 和 API 連接：
+
+- 從 `localhost:5173` 訪問 → 連接到 `ws://localhost:8000`
+- 從 `192.168.x.x:5173` 訪問 → 連接到 `ws://192.168.x.x:8000`
+- 生產環境會使用相同的域名
+
+## 配置說明
+
+### 後端配置 (`backend/app/config.py`)
+
+```python
+# 開發環境允許所有主機
+DEBUG: bool = True
+ALLOWED_HOSTS: str = "*"
+CORS_ORIGINS: str = "*"
+```
+
+### 前端配置 (`frontend/vite.config.ts`)
+
+```typescript
+server: {
+  host: true,  // 監聽所有網路介面
+  port: 5173
+}
+```
+
 ## 🧪 測試
 
 ### 後端測試
 
 ```bash
-# 安裝相關套件
-pip install -r requirements-test.txt
-
 # 切換到後端目錄
 cd backend
+
+# 安裝相關套件
+pip install -r requirements-test.txt
 
 pytest tests/ -v --cov=app --cov-report=html
 ```

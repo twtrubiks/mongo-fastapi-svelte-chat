@@ -1,5 +1,5 @@
 import { json, type RequestHandler } from '@sveltejs/kit';
-import { bffBackendClient } from '$lib/bff-client';
+import { bffBackendClient, BFFBackendClient } from '$lib/bff-client';
 import {
   createBFFResponse,
   createBFFError,
@@ -139,9 +139,13 @@ export const GET: RequestHandler = async ({ cookies, url }) => {
       return json(createBFFError('FORBIDDEN', '沒有權限訪問此檔案'), { status: 403 });
     }
     
+    // 動態構建後端 URL
+    const backendClient = new BFFBackendClient();
+    const backendUrl = backendClient['client'].defaults.baseURL;
+    
     // 返回檔案訪問資訊（直接代理到後端）
     return json(createBFFResponse({
-      url: `http://localhost:8000/api/files/${fileType}/${filename}`,
+      url: `${backendUrl}/api/files/${fileType}/${filename}`,
       proxyUrl: `/api/files/${fileType}/${filename}`,
       filename,
       type: fileType,

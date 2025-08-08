@@ -1,12 +1,8 @@
 import pytest
-from httpx import AsyncClient
-from app.main import app
-from tests.test_database import MongoDBTestManager
-from tests.test_config import TestConfig
-from app.auth.jwt_handler import create_access_token
 from bson import ObjectId
-from datetime import datetime, UTC
-from unittest.mock import patch
+
+from app.auth.jwt_handler import create_access_token
+
 
 @pytest.mark.integration
 @pytest.mark.slow
@@ -19,7 +15,7 @@ class TestAuthAPI:
             "username": "newuser",
             "email": "newuser@example.com",
             "password": "password123",
-            "full_name": "New User"
+            "full_name": "New User",
         }
 
         response = await async_client.post("/api/auth/register", json=user_data)
@@ -52,7 +48,7 @@ class TestAuthAPI:
         user_data = {
             "username": "duplicateuser",
             "email": "unique@example.com",
-            "password": "password123"
+            "password": "password123",
         }
 
         # 第一次註冊
@@ -72,7 +68,7 @@ class TestAuthAPI:
         user_data = {
             "username": "uniqueuser",
             "email": "duplicate@example.com",
-            "password": "password123"
+            "password": "password123",
         }
 
         # 第一次註冊
@@ -93,7 +89,7 @@ class TestAuthAPI:
             "username": "testuser",
             "email": "test@example.com",
             "password": "testpass123",
-            "full_name": "Test User"
+            "full_name": "Test User",
         }
 
         # 先註冊使用者
@@ -102,12 +98,12 @@ class TestAuthAPI:
         # 登入
         login_data = {
             "username": test_user["username"],
-            "password": test_user["password"]
+            "password": test_user["password"],
         }
         response = await async_client.post(
             "/api/auth/login",
             data=login_data,
-            headers={"Content-Type": "application/x-www-form-urlencoded"}
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
         )
 
         assert response.status_code == 200
@@ -130,21 +126,18 @@ class TestAuthAPI:
             "username": "testuser",
             "email": "test@example.com",
             "password": "testpass123",
-            "full_name": "Test User"
+            "full_name": "Test User",
         }
 
         # 先註冊使用者
         await async_client.post("/api/auth/register", json=test_user)
 
         # 使用錯誤密碼登入
-        login_data = {
-            "username": test_user["username"],
-            "password": "wrongpassword"
-        }
+        login_data = {"username": test_user["username"], "password": "wrongpassword"}
         response = await async_client.post(
             "/api/auth/login",
             data=login_data,
-            headers={"Content-Type": "application/x-www-form-urlencoded"}
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
         )
 
         # 如果失敗，印出詳細資訊
@@ -159,15 +152,12 @@ class TestAuthAPI:
     @pytest.mark.asyncio
     async def test_login_nonexistent_user(self, async_client, isolated_db_manager):
         """測試不存在的使用者登入"""
-        login_data = {
-            "username": "nonexistent",
-            "password": "password123"
-        }
+        login_data = {"username": "nonexistent", "password": "password123"}
 
         response = await async_client.post(
             "/api/auth/login",
             data=login_data,
-            headers={"Content-Type": "application/x-www-form-urlencoded"}
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
         )
 
         assert response.status_code == 401
@@ -180,15 +170,19 @@ class TestAuthAPI:
             "username": "testuser",
             "email": "test@example.com",
             "password": "testpass123",
-            "full_name": "Test User"
+            "full_name": "Test User",
         }
 
         # 先註冊使用者
-        register_response = await async_client.post("/api/auth/register", json=test_user)
+        register_response = await async_client.post(
+            "/api/auth/register", json=test_user
+        )
         user_id = register_response.json()["user"]["id"]
 
         # 建立 JWT token
-        token = create_access_token(data={"sub": test_user["username"], "user_id": user_id})
+        token = create_access_token(
+            data={"sub": test_user["username"], "user_id": user_id}
+        )
         headers = {"Authorization": f"Bearer {token}"}
 
         response = await async_client.get("/api/auth/me", headers=headers)
@@ -200,7 +194,9 @@ class TestAuthAPI:
         assert "hashed_password" not in data
 
     @pytest.mark.asyncio
-    async def test_get_current_user_unauthorized(self, async_client, isolated_db_manager):
+    async def test_get_current_user_unauthorized(
+        self, async_client, isolated_db_manager
+    ):
         """測試未授權獲取當前使用者"""
         response = await async_client.get("/api/auth/me")
 
@@ -213,15 +209,19 @@ class TestAuthAPI:
             "username": "testuser",
             "email": "test@example.com",
             "password": "testpass123",
-            "full_name": "Test User"
+            "full_name": "Test User",
         }
 
         # 先註冊使用者
-        register_response = await async_client.post("/api/auth/register", json=test_user)
+        register_response = await async_client.post(
+            "/api/auth/register", json=test_user
+        )
         user_id = register_response.json()["user"]["id"]
 
         # 建立 JWT token
-        token = create_access_token(data={"sub": test_user["username"], "user_id": user_id})
+        token = create_access_token(
+            data={"sub": test_user["username"], "user_id": user_id}
+        )
         headers = {"Authorization": f"Bearer {token}"}
 
         response = await async_client.post("/api/auth/logout", headers=headers)
@@ -237,14 +237,18 @@ class TestAuthAPI:
             "username": "profileuser",
             "email": "profile@example.com",
             "password": "testpass123",
-            "full_name": "Profile User"
+            "full_name": "Profile User",
         }
 
-        register_response = await async_client.post("/api/auth/register", json=test_user)
+        register_response = await async_client.post(
+            "/api/auth/register", json=test_user
+        )
         user_id = register_response.json()["user"]["id"]
 
         # 建立 JWT token
-        token = create_access_token(data={"sub": test_user["username"], "user_id": user_id})
+        token = create_access_token(
+            data={"sub": test_user["username"], "user_id": user_id}
+        )
         headers = {"Authorization": f"Bearer {token}"}
 
         # 獲取用戶詳細資料
@@ -260,7 +264,9 @@ class TestAuthAPI:
         assert "updated_at" in data
 
     @pytest.mark.asyncio
-    async def test_get_user_profile_unauthorized(self, async_client, isolated_db_manager):
+    async def test_get_user_profile_unauthorized(
+        self, async_client, isolated_db_manager
+    ):
         """測試未授權獲取用戶資料失敗"""
         response = await async_client.get("/api/auth/profile")
 
@@ -275,23 +281,26 @@ class TestAuthAPI:
             "username": "updateuser",
             "email": "update@example.com",
             "password": "testpass123",
-            "full_name": "Update User"
+            "full_name": "Update User",
         }
 
-        register_response = await async_client.post("/api/auth/register", json=test_user)
+        register_response = await async_client.post(
+            "/api/auth/register", json=test_user
+        )
         user_id = register_response.json()["user"]["id"]
 
         # 建立 JWT token
-        token = create_access_token(data={"sub": test_user["username"], "user_id": user_id})
+        token = create_access_token(
+            data={"sub": test_user["username"], "user_id": user_id}
+        )
         headers = {"Authorization": f"Bearer {token}"}
 
         # 更新用戶資料
-        update_data = {
-            "full_name": "Updated User Name",
-            "email": "updated@example.com"
-        }
+        update_data = {"full_name": "Updated User Name", "email": "updated@example.com"}
 
-        response = await async_client.put("/api/auth/profile", json=update_data, headers=headers)
+        response = await async_client.put(
+            "/api/auth/profile", json=update_data, headers=headers
+        )
 
         assert response.status_code == 200
         data = response.json()
@@ -300,87 +309,96 @@ class TestAuthAPI:
         assert data["username"] == "updateuser"  # 用戶名不應該改變
 
     @pytest.mark.asyncio
-    async def test_update_user_profile_with_password(self, async_client, isolated_db_manager):
+    async def test_update_user_profile_with_password(
+        self, async_client, isolated_db_manager
+    ):
         """測試更新用戶密碼"""
         # 先註冊使用者
         test_user = {
             "username": "passworduser",
             "email": "password@example.com",
             "password": "oldpass123",
-            "full_name": "Password User"
+            "full_name": "Password User",
         }
 
-        register_response = await async_client.post("/api/auth/register", json=test_user)
+        register_response = await async_client.post(
+            "/api/auth/register", json=test_user
+        )
         user_id = register_response.json()["user"]["id"]
 
         # 建立 JWT token
-        token = create_access_token(data={"sub": test_user["username"], "user_id": user_id})
+        token = create_access_token(
+            data={"sub": test_user["username"], "user_id": user_id}
+        )
         headers = {"Authorization": f"Bearer {token}"}
 
         # 更新密碼
-        update_data = {
-            "password": "newpass123"
-        }
+        update_data = {"password": "newpass123"}
 
-        response = await async_client.put("/api/auth/profile", json=update_data, headers=headers)
+        response = await async_client.put(
+            "/api/auth/profile", json=update_data, headers=headers
+        )
 
         assert response.status_code == 200
 
         # 驗證新密碼可以登入
-        login_data = {
-            "username": "passworduser",
-            "password": "newpass123"
-        }
+        login_data = {"username": "passworduser", "password": "newpass123"}
 
         login_response = await async_client.post(
             "/api/auth/login",
             data=login_data,
-            headers={"Content-Type": "application/x-www-form-urlencoded"}
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
         )
         assert login_response.status_code == 200
 
     @pytest.mark.asyncio
-    async def test_update_user_profile_email_conflict(self, async_client, isolated_db_manager):
+    async def test_update_user_profile_email_conflict(
+        self, async_client, isolated_db_manager
+    ):
         """測試更新用戶信箱時發生衝突"""
         # 先註冊兩個使用者
         user1_data = {
             "username": "user1",
             "email": "user1@example.com",
             "password": "testpass123",
-            "full_name": "User One"
+            "full_name": "User One",
         }
 
         user2_data = {
             "username": "user2",
             "email": "user2@example.com",
             "password": "testpass123",
-            "full_name": "User Two"
+            "full_name": "User Two",
         }
 
         await async_client.post("/api/auth/register", json=user1_data)
-        register2_response = await async_client.post("/api/auth/register", json=user2_data)
+        register2_response = await async_client.post(
+            "/api/auth/register", json=user2_data
+        )
         user2_id = register2_response.json()["user"]["id"]
 
         # 建立 user2 的 JWT token
-        token = create_access_token(data={"sub": user2_data["username"], "user_id": user2_id})
+        token = create_access_token(
+            data={"sub": user2_data["username"], "user_id": user2_id}
+        )
         headers = {"Authorization": f"Bearer {token}"}
 
         # 嘗試將 user2 的信箱改為 user1 的信箱
-        update_data = {
-            "email": "user1@example.com"
-        }
+        update_data = {"email": "user1@example.com"}
 
-        response = await async_client.put("/api/auth/profile", json=update_data, headers=headers)
+        response = await async_client.put(
+            "/api/auth/profile", json=update_data, headers=headers
+        )
 
         assert response.status_code == 400
         assert "信箱已被使用" in response.json()["detail"]
 
     @pytest.mark.asyncio
-    async def test_update_user_profile_unauthorized(self, async_client, isolated_db_manager):
+    async def test_update_user_profile_unauthorized(
+        self, async_client, isolated_db_manager
+    ):
         """測試未授權更新用戶資料失敗"""
-        update_data = {
-            "full_name": "Unauthorized Update"
-        }
+        update_data = {"full_name": "Unauthorized Update"}
 
         response = await async_client.put("/api/auth/profile", json=update_data)
 
@@ -388,29 +406,35 @@ class TestAuthAPI:
         assert response.status_code == 403
 
     @pytest.mark.asyncio
-    async def test_update_user_profile_invalid_data(self, async_client, isolated_db_manager):
+    async def test_update_user_profile_invalid_data(
+        self, async_client, isolated_db_manager
+    ):
         """測試更新用戶資料時提供無效數據"""
         # 先註冊使用者
         test_user = {
             "username": "invaliduser",
             "email": "invalid@example.com",
             "password": "testpass123",
-            "full_name": "Invalid User"
+            "full_name": "Invalid User",
         }
 
-        register_response = await async_client.post("/api/auth/register", json=test_user)
+        register_response = await async_client.post(
+            "/api/auth/register", json=test_user
+        )
         user_id = register_response.json()["user"]["id"]
 
         # 建立 JWT token
-        token = create_access_token(data={"sub": test_user["username"], "user_id": user_id})
+        token = create_access_token(
+            data={"sub": test_user["username"], "user_id": user_id}
+        )
         headers = {"Authorization": f"Bearer {token}"}
 
         # 嘗試使用無效的信箱格式
-        update_data = {
-            "email": "invalid-email-format"
-        }
+        update_data = {"email": "invalid-email-format"}
 
-        response = await async_client.put("/api/auth/profile", json=update_data, headers=headers)
+        response = await async_client.put(
+            "/api/auth/profile", json=update_data, headers=headers
+        )
 
         assert response.status_code == 422  # 驗證錯誤
 
@@ -422,14 +446,18 @@ class TestAuthAPI:
             "username": "deleteuser",
             "email": "delete@example.com",
             "password": "testpass123",
-            "full_name": "Delete User"
+            "full_name": "Delete User",
         }
 
-        register_response = await async_client.post("/api/auth/register", json=test_user)
+        register_response = await async_client.post(
+            "/api/auth/register", json=test_user
+        )
         user_id = register_response.json()["user"]["id"]
 
         # 建立 JWT token
-        token = create_access_token(data={"sub": test_user["username"], "user_id": user_id})
+        token = create_access_token(
+            data={"sub": test_user["username"], "user_id": user_id}
+        )
         headers = {"Authorization": f"Bearer {token}"}
 
         # 刪除用戶帳號
@@ -439,15 +467,12 @@ class TestAuthAPI:
         assert response.json()["message"] == "帳號刪除成功"
 
         # 驗證用戶無法再登入
-        login_data = {
-            "username": "deleteuser",
-            "password": "testpass123"
-        }
+        login_data = {"username": "deleteuser", "password": "testpass123"}
 
         login_response = await async_client.post(
             "/api/auth/login",
             data=login_data,
-            headers={"Content-Type": "application/x-www-form-urlencoded"}
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
         )
         assert login_response.status_code == 401
 
@@ -459,21 +484,24 @@ class TestAuthAPI:
             "username": "avataruser",
             "email": "avatar@example.com",
             "password": "testpass123",
-            "full_name": "Avatar User"
+            "full_name": "Avatar User",
         }
 
-        register_response = await async_client.post("/api/auth/register", json=test_user)
+        register_response = await async_client.post(
+            "/api/auth/register", json=test_user
+        )
         user_id = register_response.json()["user"]["id"]
 
         # 建立 JWT token
-        token = create_access_token(data={"sub": test_user["username"], "user_id": user_id})
+        token = create_access_token(
+            data={"sub": test_user["username"], "user_id": user_id}
+        )
         headers = {"Authorization": f"Bearer {token}"}
 
         # 更新頭像
         avatar_url = "https://example.com/avatar.jpg"
         response = await async_client.post(
-            f"/api/auth/avatar?avatar_url={avatar_url}",
-            headers=headers
+            f"/api/auth/avatar?avatar_url={avatar_url}", headers=headers
         )
 
         assert response.status_code == 200
@@ -482,73 +510,85 @@ class TestAuthAPI:
         assert "avatar" in user_data or "id" in user_data
 
     @pytest.mark.asyncio
-    async def test_update_user_avatar_invalid_url(self, async_client, isolated_db_manager):
+    async def test_update_user_avatar_invalid_url(
+        self, async_client, isolated_db_manager
+    ):
         """測試使用無效URL更新頭像"""
         # 先註冊使用者
         test_user = {
             "username": "avataruser2",
             "email": "avatar2@example.com",
             "password": "testpass123",
-            "full_name": "Avatar User 2"
+            "full_name": "Avatar User 2",
         }
 
-        register_response = await async_client.post("/api/auth/register", json=test_user)
+        register_response = await async_client.post(
+            "/api/auth/register", json=test_user
+        )
         user_id = register_response.json()["user"]["id"]
 
         # 建立 JWT token
-        token = create_access_token(data={"sub": test_user["username"], "user_id": user_id})
+        token = create_access_token(
+            data={"sub": test_user["username"], "user_id": user_id}
+        )
         headers = {"Authorization": f"Bearer {token}"}
 
         # 使用無效的URL格式
         invalid_avatar_url = "not-a-valid-url"
         response = await async_client.post(
-            f"/api/auth/avatar?avatar_url={invalid_avatar_url}",
-            headers=headers
+            f"/api/auth/avatar?avatar_url={invalid_avatar_url}", headers=headers
         )
 
         # API 可能不會對 URL 格式進行嚴格驗證，允許任何字串作為頭像 URL
         assert response.status_code == 200
 
     @pytest.mark.asyncio
-    async def test_update_user_avatar_unauthorized(self, async_client, isolated_db_manager):
+    async def test_update_user_avatar_unauthorized(
+        self, async_client, isolated_db_manager
+    ):
         """測試未授權更新頭像"""
         avatar_url = "https://example.com/avatar.jpg"
-        response = await async_client.post(
-            f"/api/auth/avatar?avatar_url={avatar_url}"
-        )
+        response = await async_client.post(f"/api/auth/avatar?avatar_url={avatar_url}")
 
         # FastAPI 的 HTTPBearer 在沒有 Authorization header 時返回 403
         assert response.status_code == 403
 
     @pytest.mark.asyncio
-    async def test_update_user_avatar_empty_url(self, async_client, isolated_db_manager):
+    async def test_update_user_avatar_empty_url(
+        self, async_client, isolated_db_manager
+    ):
         """測試使用空URL更新頭像"""
         # 先註冊使用者
         test_user = {
             "username": "avataruser3",
             "email": "avatar3@example.com",
             "password": "testpass123",
-            "full_name": "Avatar User 3"
+            "full_name": "Avatar User 3",
         }
 
-        register_response = await async_client.post("/api/auth/register", json=test_user)
+        register_response = await async_client.post(
+            "/api/auth/register", json=test_user
+        )
         user_id = register_response.json()["user"]["id"]
 
         # 建立 JWT token
-        token = create_access_token(data={"sub": test_user["username"], "user_id": user_id})
+        token = create_access_token(
+            data={"sub": test_user["username"], "user_id": user_id}
+        )
         headers = {"Authorization": f"Bearer {token}"}
 
         # 使用空的URL
         response = await async_client.post(
-            f"/api/auth/avatar?avatar_url=",
-            headers=headers
+            "/api/auth/avatar?avatar_url=", headers=headers
         )
 
         # API 可能允許空字串作為頭像 URL（可能代表清除頭像）
         assert response.status_code == 200
 
     @pytest.mark.asyncio
-    async def test_delete_user_profile_unauthorized(self, async_client, isolated_db_manager):
+    async def test_delete_user_profile_unauthorized(
+        self, async_client, isolated_db_manager
+    ):
         """測試未授權刪除用戶帳號失敗"""
         response = await async_client.delete("/api/auth/profile")
 
@@ -573,17 +613,20 @@ class TestAuthAPI:
             "username": "expireduser",
             "email": "expired@example.com",
             "password": "testpass123",
-            "full_name": "Expired User"
+            "full_name": "Expired User",
         }
 
-        register_response = await async_client.post("/api/auth/register", json=test_user)
+        register_response = await async_client.post(
+            "/api/auth/register", json=test_user
+        )
         user_id = register_response.json()["user"]["id"]
 
         # 創建一個過期的 token (expires_delta = -1 小時)
         from datetime import timedelta
+
         expired_token = create_access_token(
             data={"sub": test_user["username"], "user_id": user_id},
-            expires_delta=timedelta(minutes=-60)
+            expires_delta=timedelta(minutes=-60),
         )
 
         headers = {"Authorization": f"Bearer {expired_token}"}
@@ -593,13 +636,15 @@ class TestAuthAPI:
         assert response.status_code == 401
 
     @pytest.mark.asyncio
-    async def test_register_with_invalid_email_format(self, async_client, isolated_db_manager):
+    async def test_register_with_invalid_email_format(
+        self, async_client, isolated_db_manager
+    ):
         """測試使用無效信箱格式註冊失敗"""
         user_data = {
             "username": "invalidemailuser",
             "email": "invalid-email-format",
             "password": "password123",
-            "full_name": "Invalid Email User"
+            "full_name": "Invalid Email User",
         }
 
         response = await async_client.post("/api/auth/register", json=user_data)
@@ -615,7 +660,7 @@ class TestAuthAPI:
             "username": "weakpassuser",
             "email": "weak@example.com",
             "password": "123",  # 太短的密碼
-            "full_name": "Weak Pass User"
+            "full_name": "Weak Pass User",
         }
 
         response = await async_client.post("/api/auth/register", json=user_data)
@@ -631,34 +676,32 @@ class TestAuthAPI:
             "username": "deactivateduser",
             "email": "deactivated@example.com",
             "password": "testpass123",
-            "full_name": "Deactivated User"
+            "full_name": "Deactivated User",
         }
 
-        register_response = await async_client.post("/api/auth/register", json=test_user)
+        register_response = await async_client.post(
+            "/api/auth/register", json=test_user
+        )
         assert register_response.status_code == 201
         user_id = register_response.json()["user"]["id"]
 
         # 直接更新資料庫中的用戶狀態為停用
         from app.database.mongodb import get_database
+
         db = await get_database()
-        from bson import ObjectId
 
         # 更新用戶為停用狀態
         await db.users.update_one(
-            {"_id": ObjectId(user_id)},
-            {"$set": {"is_active": False}}
+            {"_id": ObjectId(user_id)}, {"$set": {"is_active": False}}
         )
 
         # 嘗試登入
-        login_data = {
-            "username": "deactivateduser",
-            "password": "testpass123"
-        }
+        login_data = {"username": "deactivateduser", "password": "testpass123"}
 
         response = await async_client.post(
             "/api/auth/login",
             data=login_data,
-            headers={"Content-Type": "application/x-www-form-urlencoded"}
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
         )
 
         # 停用的用戶應該無法登入

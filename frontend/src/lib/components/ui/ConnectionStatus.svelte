@@ -92,19 +92,22 @@
 </script>
 
 {#if shouldShow}
+  <!-- 使用 DaisyUI 的 toast 和 alert 組件 -->
   <div 
-    class="connection-status"
-    class:compact
-    class:top={position === 'top'}
-    class:bottom={position === 'bottom'}
-    class:success={statusType === 'success'}
-    class:warning={statusType === 'warning'}
-    class:error={statusType === 'error'}
+    class="fixed z-30 {position === 'top' ? 'top-4' : 'bottom-4'} right-4"
     transition:fade={{ duration: 200 }}
   >
-    <div class="status-content">
-      <!-- 狀態圖標 -->
-      <div class="status-icon">
+    <div 
+      class="alert shadow-lg"
+      class:alert-success={statusType === 'success'}
+      class:alert-warning={statusType === 'warning'}
+      class:alert-error={statusType === 'error'}
+      class:alert-sm={compact}
+      role="alert"
+      aria-live="polite"
+    >
+      <div class="flex items-center gap-2">
+        <!-- 狀態圖標 -->
         {#if statusType === 'success'}
           <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
             <circle cx="10" cy="10" r="4"/>
@@ -118,116 +121,51 @@
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M6 18L18 6M6 6l12 12" />
           </svg>
         {/if}
+        
+        <!-- 狀態文字 -->
+        <span class="text-sm font-medium">{statusText}</span>
+        
+        <!-- 重連按鈕 -->
+        {#if connectionState === 'disconnected' && !isReconnecting}
+          <button
+            type="button"
+            class="btn btn-ghost btn-xs btn-circle"
+            onclick={handleManualReconnect}
+            title="手動重新連接"
+            aria-label="手動重新連接"
+          >
+            <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+            </svg>
+          </button>
+        {/if}
       </div>
-      
-      <!-- 狀態文字 -->
-      <span class="status-text">{statusText}</span>
-      
-      <!-- 重連按鈕 -->
-      {#if connectionState === 'disconnected' && !isReconnecting}
-        <button
-          type="button"
-          class="reconnect-button"
-          onclick={handleManualReconnect}
-          title="手動重新連接"
-          aria-label="手動重新連接"
-        >
-          <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-          </svg>
-        </button>
-      {/if}
     </div>
   </div>
 {/if}
 
 <style>
-  .connection-status {
-    @apply fixed left-4 right-4 z-40;
-    @apply bg-white dark:bg-gray-800 border rounded-lg shadow-lg;
-    @apply px-3 py-2;
+  /* 使用 DaisyUI 的 toast 和 alert 組件，只需要少量自定義樣式 */
+  .alert-sm {
+    @apply py-2 px-3 min-h-0;
   }
   
-  .connection-status.compact {
-    @apply px-2 py-1;
-  }
-  
-  .connection-status.top {
-    @apply top-4;
-  }
-  
-  .connection-status.bottom {
-    @apply bottom-4;
-  }
-  
-  .connection-status.success {
-    @apply border-green-200 dark:border-green-800 bg-green-50 dark:bg-green-900/20;
-  }
-  
-  .connection-status.warning {
-    @apply border-yellow-200 dark:border-yellow-800 bg-yellow-50 dark:bg-yellow-900/20;
-  }
-  
-  .connection-status.error {
-    @apply border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-900/20;
-  }
-  
-  .status-content {
-    @apply flex items-center space-x-2;
-  }
-  
-  .status-icon {
-    @apply flex-shrink-0;
-  }
-  
-  .success .status-icon {
-    @apply text-green-600 dark:text-green-400;
-  }
-  
-  .warning .status-icon {
-    @apply text-yellow-600 dark:text-yellow-400;
-  }
-  
-  .error .status-icon {
-    @apply text-red-600 dark:text-red-400;
-  }
-  
-  .status-text {
-    @apply text-sm font-medium flex-1;
-  }
-  
-  .success .status-text {
-    @apply text-green-800 dark:text-green-200;
-  }
-  
-  .warning .status-text {
-    @apply text-yellow-800 dark:text-yellow-200;
-  }
-  
-  .error .status-text {
-    @apply text-red-800 dark:text-red-200;
-  }
-  
-  .compact .status-text {
+  .alert-sm .text-sm {
     @apply text-xs;
   }
   
-  .reconnect-button {
-    @apply flex items-center justify-center w-6 h-6 rounded-full;
-    @apply bg-red-100 hover:bg-red-200 dark:bg-red-800 dark:hover:bg-red-700;
-    @apply text-red-600 dark:text-red-300;
-    @apply transition-colors duration-200;
-    @apply focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-2;
-  }
-  
-  .compact .reconnect-button {
-    @apply w-5 h-5;
-  }
-  
-  /* 響應式設計 */
-  @media (min-width: 768px) {
-    .connection-status {
-      @apply left-auto right-4 w-auto min-w-max;
+  /* 響應式設計 - 移動端更緊湊 */
+  @media (max-width: 767px) {
+    .fixed {
+      @apply left-2 right-2;
+    }
+    
+    .alert {
+      @apply text-xs;
+    }
+    
+    .alert svg {
+      @apply w-3 h-3;
     }
   }
 </style>

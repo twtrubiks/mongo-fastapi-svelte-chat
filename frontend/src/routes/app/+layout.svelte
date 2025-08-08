@@ -61,7 +61,7 @@
 </script>
 
 <!-- 移除 AuthGuard，因為已經有服務端的認證檢查 -->
-<div class="h-screen bg-base-200 flex flex-col overflow-hidden">
+<div class="h-screen bg-base-200 flex flex-col">
   <AppHeader />
   <main class="flex-1 overflow-hidden">
     {@render children?.()}

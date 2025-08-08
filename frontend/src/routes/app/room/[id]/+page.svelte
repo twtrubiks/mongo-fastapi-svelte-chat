@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { fade, fly } from 'svelte/transition';
+  import { quartOut } from 'svelte/easing';
   import { page } from '$app/stores';
   import { goto } from '$app/navigation';
   import { browser } from '$app/environment';
@@ -24,6 +25,7 @@
   
   let currentRoom: Room | null = $state(null);
   let showMobileMenu = $state(false);
+  let drawerCheckbox: HTMLInputElement | null = $state(null);
   // WebSocket 連接狀態
   let isWebSocketConnected = $state(false);
   // Toast 狀態
@@ -97,8 +99,8 @@
       const messageListComponent = isDesktop ? desktopMessageListComponent : mobileMessageListComponent;
       
       if (messageListComponent && messageListComponent.scrollToMessage) {
-        // 延遲執行以確保 DOM 已更新
-        setTimeout(() => {
+        // 立即執行定位，不等待自動滾動
+        requestAnimationFrame(() => {
           const success = messageListComponent.scrollToMessage(messageIdToScrollTo, true);
           
           if (success) {
@@ -109,7 +111,7 @@
             showToast('訊息可能不在當前載入範圍', 'info');
             messageIdToScrollTo = null; // 避免無限嘗試
           }
-        }, 500);
+        });
       }
     }
   });
@@ -154,21 +156,29 @@
         showToast(`已為您切換到「${firstRoom.name}」`, 'info');
         goto(`/app/room/${firstRoom.id}`);
       } else {
-        // 沒有可用房間，重定向到房間列表頁面
+        // 沒有可用房間，顯示空狀態而不是跳轉
         showToast('您還沒有加入任何房間，請先創建或加入一個房間', 'info');
-        goto('/app/rooms');
+        // 不跳轉，讓用戶留在當前頁面
       }
     } catch (error) {
       console.error('獲取用戶房間列表失敗:', error);
-      // 如果獲取失敗，直接重定向到房間列表
+      // 如果獲取失敗，顯示錯誤但保持在當前頁面
       showToast('無法載入您的房間列表，請重新登入', 'error');
-      goto('/app/rooms');
+      // 不跳轉，讓用戶可以看到側邊欄選擇房間
     }
   }
   
   // 載入聊天室
   async function loadRoom(id: string) {
     // console.log('[Room] loadRoom 函數開始:', { id, currentLoadingRoomId });
+    
+    // 如果是特殊的 'none' ID，只清空當前房間狀態
+    if (id === 'none') {
+      currentRoom = null;
+      messageStore.clearMessages();
+      wsManager.getInstance().disconnect();
+      return;
+    }
     
     // 防止重複載入同一個房間
     if (currentLoadingRoomId === id) {
@@ -230,6 +240,7 @@
         await wsManager.getInstance().connect(id, token);
         // console.log('[Room] WebSocket 連接完成');
         isWebSocketConnected = true;
+        
         // 已讀功能已移至響應式 $effect 中處理
       }
       
@@ -239,8 +250,8 @@
     } catch (error) {
       console.error('[Room] 載入聊天室失敗:', error);
       showToast('載入聊天室失敗', 'error');
-      // 重定向到聊天室列表
-      goto('/app/rooms');
+      // 不跳轉，讓用戶可以從側邊欄選擇其他房間
+      currentRoom = null;
     } finally {
       // console.log('[Room] loadRoom finally 塊執行');
       currentLoadingRoomId = null;
@@ -250,6 +261,7 @@
   // 選擇聊天室
   async function handleRoomSelected(data: { room: Room }) {
     const { room } = data;
+    closeMobileMenu(); // 選擇房間後關閉側邊欄
     goto(`/app/room/${room.id}`);
   }
   
@@ -315,7 +327,11 @@
       
       // 如果是相對路徑，轉換為完整URL
       if (fileUrl.startsWith('/')) {
-        fileUrl = `http://localhost:8000${fileUrl}`;
+        // 動態構建後端 URL
+        const protocol = window.location.protocol;
+        const host = window.location.hostname;
+        const backendPort = (host === 'localhost' || host === '127.0.0.1' || host.startsWith('192.168.') || host.startsWith('10.') || host.startsWith('172.')) ? ':8000' : '';
+        fileUrl = `${protocol}//${host}${backendPort}${fileUrl}`;
       }
       
       
@@ -389,6 +405,17 @@
   // 切換移動端菜單
   function toggleMobileMenu() {
     showMobileMenu = !showMobileMenu;
+    if (drawerCheckbox) {
+      drawerCheckbox.checked = showMobileMenu;
+    }
+  }
+  
+  // 關閉移動端菜單
+  function closeMobileMenu() {
+    showMobileMenu = false;
+    if (drawerCheckbox) {
+      drawerCheckbox.checked = false;
+    }
   }
   
   // 離開聊天室
@@ -401,7 +428,8 @@
         wsManager.getInstance().disconnect();
         currentRoom = null;
         messageStore.clearMessages();
-        goto('/app/rooms');
+        // 嘗試載入其他可用房間
+        await redirectToAvailableRoom();
         showToast('已離開聊天室', 'info');
       } catch (error) {
         console.error('離開聊天室失敗:', error);
@@ -440,12 +468,13 @@
       
       if (response.ok) {
         const result = await response.json();
-        // 成功刪除，斷開 WebSocket 並導航回房間列表
+        // 成功刪除，斷開 WebSocket 並導航到其他房間
         wsManager.getInstance().disconnect();
         currentRoom = null;
         messageStore.clearMessages();
         showToast(result.data?.message || '聊天室已刪除', 'success');
-        await goto('/app/rooms');
+        // 嘗試重定向到其他可用房間
+        await redirectToAvailableRoom();
       } else {
         const error = await response.json();
         showToast(`刪除失敗：${error.error?.message || '未知錯誤'}`, 'error');
@@ -738,6 +767,9 @@
     };
   });
 
+  // 檢查是否有待定位的訊息
+  let hasMessageToScrollTo = $derived(!!messageIdToScrollTo);
+  
   // 響應式處理 URL 參數中的訊息定位
   $effect(() => {
     if (!browser) return;
@@ -770,6 +802,18 @@
     if (!isAuth) {
       // console.log('[Room] 未認證，返回');
       return; // 如果未認證，已重定向，直接返回
+    }
+    
+    // 檢查 URL 中是否有訊息定位參數
+    if (browser) {
+      const searchParams = $page.url.searchParams;
+      const targetMessageId = searchParams.get('message');
+      if (targetMessageId) {
+        messageIdToScrollTo = targetMessageId;
+        // 清理 URL 參數
+        const newUrl = $page.url.pathname;
+        goto(newUrl, { replaceState: true });
+      }
     }
     
     // 監聽螢幕尺寸變化
@@ -820,7 +864,7 @@
   });
 </script>
 
-<div class="chat-app">
+<div class="chat-app h-full">
   {#if !canRender}
     <!-- 載入中指示器 -->
     <div class="flex items-center justify-center h-screen" transition:fade>
@@ -839,96 +883,18 @@
       
       <!-- 中間：聊天區域 -->
       <div class="chat-area" transition:fade={{ duration: 200, delay: 100 }}>
-        <!-- 聊天室資訊欄 -->
-        <div class="room-header bg-base-50 border-b border-base-300 px-6 py-2">
-          <div class="flex items-center justify-between">
-            <div class="flex-1 min-w-0">
-              <h1 class="text-lg font-bold text-primary flex items-center">
-                <svg class="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 8h10M7 12h4m1 8l-4-4H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-1.586l-4.414 4.414z" />
-                </svg>
-                {currentRoom ? currentRoom.name : '載入中...'}
-              </h1>
-              <div class="text-xs text-base-content opacity-60 mt-1 flex items-center space-x-3">
-                <span class="flex items-center">
-                  <svg class="w-3 h-3 mr-1 text-green-500" fill="currentColor" viewBox="0 0 20 20">
-                    <circle cx="10" cy="10" r="10"/>
-                  </svg>
-                  {onlineUserCount} 人在線
-                </span>
-                <span>•</span>
-                <span>#{roomId.substring(0, 8)}...</span>
-              </div>
-            </div>
-            <div class="flex items-center space-x-2">
-              <!-- 搜尋按鈕 -->
-              <button 
-                class="btn btn-ghost btn-xs text-base-content opacity-70 hover:opacity-100"
-                disabled={!hasCurrentRoom || currentLoadingRoomId !== null}
-                onclick={() => showSearchModal = true}
-                aria-label="搜尋訊息"
-              >
-                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-                </svg>
-              </button>
-              
-              <!-- 更多選項下拉菜單 -->
-              <div class="dropdown dropdown-end">
-                <button class="btn btn-ghost btn-xs text-base-content opacity-70 hover:opacity-100" tabindex="0">
-                  <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 5v.01M12 12v.01M12 19v.01M12 6a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2z" />
-                  </svg>
-                </button>
-                
-                <ul class="dropdown-content z-10 menu p-2 shadow bg-base-100 rounded-box w-52">
-                  <li>
-                    <button onclick={() => showRoomSettings = true}>
-                      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.50 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                      </svg>
-                      聊天室設定
-                    </button>
-                  </li>
-                  <li>
-                    <button onclick={() => showToast('成員功能開發中', 'info')}>
-                      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197m13.5-9a2.5 2.5 0 11-5 0 2.5 2.5 0 015 0z" />
-                      </svg>
-                      成員列表
-                    </button>
-                  </li>
-                  <li><hr class="my-1" /></li>
-                  <li>
-                    <button 
-                      onclick={() => currentRoom && handleLeaveRoom({ room: currentRoom })}
-                      class="text-error"
-                      disabled={!currentRoom}
-                    >
-                      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
-                      </svg>
-                      離開聊天室
-                    </button>
-                  </li>
-                  {#if canDeleteCurrentRoom}
-                    <li>
-                      <button 
-                        onclick={() => currentRoom && handleDeleteRoom({ room: currentRoom })}
-                        class="text-error"
-                      >
-                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                        </svg>
-                        刪除聊天室
-                      </button>
-                    </li>
-                  {/if}
-                </ul>
-              </div>
-            </div>
-          </div>
+        <!-- 桌面版房間標題 -->
+        <div class="room-header desktop-room-header">
+          <RoomHeader
+            room={currentRoom}
+            onlineCount={onlineUserCount}
+            currentUserId={user?.id}
+            onSettings={() => showRoomSettings = true}
+            onLeave={handleLeaveRoom}
+            onDelete={handleDeleteRoom}
+            onMembers={() => showToast('成員功能開發中', 'info')}
+            onSearch={() => showSearchModal = true}
+          />
         </div>
         
         <div class="chat-content">
@@ -940,6 +906,7 @@
                 messages={messages}
                 loading={isMessageLoading}
                 roomId={currentRoom.id}
+                skipAutoScroll={hasMessageToScrollTo}
               />
             {:else}
               <div class="h-full flex flex-col items-center justify-center p-8 text-center">
@@ -948,15 +915,8 @@
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
                   </svg>
                 </div>
-                <h2 class="text-2xl font-bold text-base-content mb-4">載入中...</h2>
-                <!-- Debug 資訊 -->
-                <div class="text-sm text-base-content/60 space-y-1">
-                  <p>Debug: 當前房間 = {currentRoom ? currentRoom.name : 'null'}</p>
-                  <p>認證狀態 = {isAuthenticated}</p>
-                  <p>房間 ID = {roomId}</p>
-                  <p>初始化狀態 = {isInitialized}</p>
-                  <p>載入狀態 = {isLoading}</p>
-                </div>
+                <h2 class="text-2xl font-bold text-base-content mb-4">歡迎使用聊天室</h2>
+                <p class="text-base-content opacity-60 max-w-md">選擇左側的聊天室開始聊天，或創建一個新的聊天室</p>
               </div>
             {/if}
           </div>
@@ -973,65 +933,95 @@
         </div>
       </div>
       
-      <!-- 右側：用戶列表 - 暫時隱藏 -->
-      <!-- <div class="user-sidebar" transition:fly={{ x: 300, duration: 300 }}>
-      </div> -->
+      <!-- 右側：用戶列表 -->
+      <div class="user-sidebar" transition:fly={{ x: 300, duration: 300 }}>
+        <UserList
+          users={currentRoomUsers}
+          loading={roomStore.loading}
+          currentUserId={user?.id}
+          onUserClick={handleUserClick}
+        />
+      </div>
     </div>
   {:else}
-    <!-- 移動端布局 - 使用 Svelte 條件渲染 -->
-    <div class="mobile-layout" transition:fade={{ duration: 200 }}>
-      <RoomHeader
-        room={currentRoom}
-        {onlineUserCount}
-        {showMobileMenu}
-        currentUserId={user?.id}
-        onToggleMenu={toggleMobileMenu}
-        onLeave={handleLeaveRoom}
-        onDelete={handleDeleteRoom}
-        onSettings={() => showRoomSettings = true}
-        onMembers={() => showToast('成員功能開發中', 'info')}
-        onSearch={() => showSearchModal = true}
+    <!-- 移動端布局 - 使用 DaisyUI drawer -->
+    <div class="drawer">
+      <input 
+        id="mobile-drawer" 
+        type="checkbox" 
+        class="drawer-toggle" 
+        bind:this={drawerCheckbox}
+        bind:checked={showMobileMenu}
       />
       
-      <!-- 移動端菜單 -->
-      {#if showMobileMenu}
-        <div class="mobile-menu" transition:fade={{ duration: 200 }}>
-          <div class="mobile-menu-backdrop" onclick={toggleMobileMenu} onkeydown={(e) => { if (e.key === 'Escape') toggleMobileMenu(); }} role="button" tabindex="0" aria-label="關閉菜單"></div>
-          <div class="mobile-menu-content" transition:fly={{ x: -300, duration: 300 }}>
-            <RoomList
-              currentRoomId={currentRoom?.id}
-              onRoomSelected={handleRoomSelected}
+      <!-- 主要內容 - 使用 DaisyUI 的標準佈局，支援 safe area -->
+      <div class="drawer-content flex flex-col" style="height: 100vh; height: 100dvh; position: relative; overflow: hidden;">
+        <!-- Header - 移除 navbar，直接使用 RoomHeader -->
+        <div class="flex-none">
+          <RoomHeader
+            room={currentRoom}
+            onlineCount={onlineUserCount}
+            showMenu={showMobileMenu}
+            currentUserId={user?.id}
+            onToggleMenu={toggleMobileMenu}
+            onLeave={handleLeaveRoom}
+            onDelete={handleDeleteRoom}
+            onSettings={() => showRoomSettings = true}
+            onMembers={() => showToast('成員功能開發中', 'info')}
+            onSearch={() => showSearchModal = true}
+          />
+        </div>
+        
+        {#if hasCurrentRoom}
+          <!-- 訊息列表 - 給底部輸入框留出空間 -->
+          <div class="flex-1 min-h-0 overflow-hidden mobile-messages-container">
+            <MessageList
+              bind:this={mobileMessageListComponent}
+              messages={messages}
+              loading={isMessageLoading}
+              roomId={currentRoom.id}
+              skipAutoScroll={hasMessageToScrollTo}
             />
           </div>
-        </div>
-      {/if}
-      
-      <!-- 聊天內容 -->
-      <div class="mobile-chat-content" transition:fade={{ duration: 200, delay: 100 }}>
-        {#if hasCurrentRoom}
-          <MessageList
-            bind:this={mobileMessageListComponent}
-            messages={messages}
-            loading={isMessageLoading}
-            roomId={currentRoom.id}
-          />
           
-          <MessageInput
-            onSend={handleSendMessage}
-            onFileUploaded={handleFileUploaded}
-            onError={handleError}
-            bind:this={mobileMessageInputComponent}
-          />
-        {:else}
-          <div class="empty-chat">
-            <div class="empty-chat-icon">
-              <svg class="w-16 h-16 text-base-content opacity-30" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
-            </svg>
+          <!-- 輸入框 - 使用 fixed 定位確保始終可見 -->
+          <div class="mobile-input-fixed">
+            <MessageInput
+              onSend={handleSendMessage}
+              onFileUploaded={handleFileUploaded}
+              onError={handleError}
+              bind:this={mobileMessageInputComponent}
+            />
           </div>
-          <h2 class="empty-chat-title">載入中...</h2>
-        </div>
+        {:else}
+          <!-- 空狀態 -->
+          <div class="hero flex-1">
+            <div class="hero-content text-center">
+              <div class="max-w-md">
+                <div class="mb-6">
+                  <svg class="w-16 h-16 mx-auto text-base-content opacity-30" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+                  </svg>
+                </div>
+                <h1 class="text-2xl font-bold">歡迎使用聊天室</h1>
+                <p class="py-6">點擊左上角選單選擇聊天室</p>
+              </div>
+            </div>
+          </div>
         {/if}
+      </div>
+      
+      <!-- 側邊欄 - 優化寬度以適應手機螢幕 -->
+      <div class="drawer-side z-40">
+        <label for="mobile-drawer" class="drawer-overlay" aria-label="關閉菜單"></label>
+        <!-- 減少側邊欄寬度，留出更多主要內容空間 -->
+        <div class="h-full w-72 max-w-[85vw] bg-base-100 flex flex-col shadow-xl">
+          <RoomList
+            currentRoomId={currentRoom?.id}
+            onRoomSelected={handleRoomSelected}
+            mobileMode={true}
+          />
+        </div>
       </div>
     </div>
   {/if}
@@ -1092,15 +1082,19 @@
 <style>
   .chat-app {
     @apply h-full bg-base-100;
+    width: 100%;
   }
   
   /* 桌面端布局 */
   .desktop-layout {
     @apply h-full flex overflow-hidden;
+    width: 100%;
   }
   
   .room-sidebar {
-    @apply w-80 border-r border-base-200 flex-shrink-0 h-full;
+    @apply border-r border-base-200 flex-shrink-0 h-full;
+    width: 320px;
+    min-width: 320px;
   }
   
   /* 滾動條美化 - 默認隱藏，懸停或聚焦時顯示 */
@@ -1129,12 +1123,14 @@
   }
   
   .chat-area {
-    @apply flex-1 flex flex-col min-w-0 h-full overflow-hidden;
+    @apply flex flex-col h-full overflow-hidden;
+    flex: 1 1 auto;
+    min-width: 0;
   }
   
-  .room-header {
-    @apply flex-shrink-0;
-    height: 80px; /* 固定高度 */
+  /* 桌面版房間標題 */
+  .desktop-room-header {
+    @apply flex-shrink-0 border-b border-base-200 bg-base-100;
   }
   
   .chat-content {
@@ -1142,38 +1138,80 @@
   }
   
   .message-container {
-    @apply flex-1 overflow-hidden;
+    @apply flex-1 overflow-hidden min-h-0;
   }
   
   .input-area {
     @apply flex-shrink-0;
     min-height: 100px; /* 最小高度給輸入框 */
-    max-height: 150px; /* 最大高度限制 */
+    /* 移除 max-height 限制讓檔案上傳面板可以正常顯示 */
   }
   
   .user-sidebar {
-    @apply w-0 border-l border-base-200 flex-shrink-0 hidden;
+    @apply border-l border-base-200 flex-shrink-0 h-full;
+    width: 256px;
+    min-width: 256px;
   }
   
-  /* 移動端布局 */
-  .mobile-layout {
+  /* 移動端布局 - 使用 DaisyUI drawer */
+  .drawer {
+    @apply h-full;
+  }
+  
+  .drawer-content {
     @apply h-full flex flex-col;
+    /* 確保容器不會超出視窗 */
+    max-height: 100vh;
+    max-height: 100dvh;
   }
   
   .mobile-chat-content {
     @apply flex-1 flex flex-col min-h-0;
+    /* 確保內容不會超出螢幕 */
+    width: 100%;
+    overflow-x: hidden;
   }
   
-  .mobile-menu {
-    @apply fixed inset-0 z-50 flex;
+  /* 確保drawer-side 的內容不會被截斷 */
+  .drawer-side {
+    /* 移除任何可能造成截斷的樣式 */
+    overflow: visible;
   }
   
-  .mobile-menu-backdrop {
-    @apply absolute inset-0 bg-black opacity-50;
+  .drawer-side > div {
+    /* 確保側邊欄內容完整顯示 */
+    box-sizing: border-box;
   }
   
-  .mobile-menu-content {
-    @apply relative w-80 max-w-sm bg-base-100 shadow-xl;
+  /* 確保輸入框始終在底部 */
+  .drawer-content .mobile-chat-content {
+    @apply flex flex-col h-full;
+  }
+  
+  /* 修復 drawer 打開時的 z-index 問題 */
+  .drawer-toggle:checked ~ .drawer-content {
+    /* 確保內容不會被遮擋 */
+    position: relative;
+  }
+  
+  /* 優化 drawer 動畫 */
+  .drawer-side {
+    transition: transform 0.3s ease-out;
+  }
+  
+  /* 針對小螢幕手機的優化 (< 375px) */
+  @media (max-width: 374px) {
+    .drawer-side > div {
+      width: 260px;
+    }
+  }
+  
+  /* 確保觸控事件正確處理 */
+  @media (max-width: 768px) {
+    .drawer-overlay {
+      /* 增加 overlay 的觸控區域 */
+      -webkit-tap-highlight-color: transparent;
+    }
   }
   
   /* 空狀態 */
@@ -1191,5 +1229,50 @@
   
   .empty-chat-description {
     @apply text-base-content opacity-60 max-w-md;
+  }
+  
+  /* 手機端微調 */
+  @media (max-width: 768px) {
+    .empty-chat {
+      @apply p-4;
+    }
+    
+    .empty-chat-title {
+      @apply text-xl;
+    }
+    
+    .empty-chat-description {
+      @apply text-sm;
+    }
+    
+    /* 確保輸入框始終可見 */
+    .drawer-content {
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      height: 100dvh;
+      max-height: -webkit-fill-available; /* iOS Safari 支援 */
+    }
+    
+    /* 移動端輸入框固定定位 */
+    .mobile-input-fixed {
+      position: fixed;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      background: oklch(var(--b1));
+      border-top: 1px solid oklch(var(--b2));
+      z-index: 100;
+      /* 增加基礎 padding + iOS 安全區域 */
+      padding-bottom: calc(0.5rem + env(safe-area-inset-bottom, 0px));
+      /* 確保有最小高度 */
+      min-height: 70px;
+    }
+    
+    /* 訊息容器底部留空間給輸入框 */
+    .mobile-messages-container {
+      /* MessageInput 組件的高度 + 額外 padding + 安全區域 */
+      padding-bottom: calc(70px + 0.5rem + env(safe-area-inset-bottom, 0px));
+    }
   }
 </style>

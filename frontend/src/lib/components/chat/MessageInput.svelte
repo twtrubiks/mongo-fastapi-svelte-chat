@@ -493,7 +493,16 @@
 
 <style>
   .message-input-container {
-    @apply border-t border-base-200 bg-base-100 p-4;
+    @apply border-t border-base-200 bg-base-100 p-2 md:p-4;
+    /* 確保輸入框容器有足夠的最小高度 */
+    min-height: 60px;
+  }
+  
+  @media (max-width: 768px) {
+    .message-input-container {
+      @apply p-2;
+      min-height: 56px;
+    }
   }
   
   .message-input-area {
@@ -509,7 +518,7 @@
   }
   
   .input-content {
-    @apply flex items-end space-x-3 p-3;
+    @apply flex items-end gap-2 p-2 md:p-3;
   }
   
   .textarea-container {
@@ -520,6 +529,9 @@
     @apply w-full bg-transparent resize-none outline-none text-base-content placeholder-base-content opacity-60 leading-relaxed;
     min-height: 20px;
     max-height: 120px;
+    /* 優化手機端輸入 */
+    font-size: 16px; /* 避免 iOS Safari 自動放大 */
+    -webkit-appearance: none;
   }
   
   .drag-overlay {
@@ -535,11 +547,25 @@
   }
   
   .input-actions {
-    @apply flex items-center space-x-2;
+    @apply flex items-center gap-1 md:gap-2;
   }
   
   .action-button {
-    @apply btn btn-ghost btn-sm btn-circle text-gray-700 hover:text-gray-900 hover:bg-base-300 transition-all duration-200;
+    @apply btn btn-ghost btn-sm btn-circle text-base-content hover:text-primary hover:bg-base-300 transition-all duration-200;
+    /* 手機端增大觸控區域 */
+    min-width: 2.5rem;
+    min-height: 2.5rem;
+  }
+  
+  @media (max-width: 768px) {
+    .action-button {
+      @apply w-11 h-11; /* 增大觸控區域到 44x44px */
+    }
+    
+    .message-textarea {
+      /* 確保字體大小不會觸發 iOS 縮放 */
+      font-size: 16px !important;
+    }
   }
   
   .action-button:disabled {
@@ -604,5 +630,7 @@
   
   .file-upload-panel {
     @apply border-t border-base-200 p-4 bg-base-100;
+    /* 確保檔案上傳面板有足夠的空間顯示 */
+    min-height: 200px;
   }
 </style>

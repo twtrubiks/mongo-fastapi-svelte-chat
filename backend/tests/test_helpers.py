@@ -1,22 +1,24 @@
 """測試輔助函數"""
-import asyncio
-from typing import Dict, Any, Tuple
-from datetime import datetime, UTC
+
+from datetime import UTC, datetime
+from typing import Any
+
 from bson import ObjectId
-from pymongo.asynchronous.database import AsyncDatabase
+
 from app.auth.jwt_handler import create_access_token
-from tests.test_database import MongoDBTestManager
 from tests.test_config import TestConfig
-import pytest
+from tests.test_database import MongoDBTestManager
 
 
 class DataTestHelper:
     """測試輔助類別"""
-    
+
     def __init__(self, db_manager: MongoDBTestManager):
         self.db_manager = db_manager
-    
-    async def create_test_user(self, username: str = None, email: str = None) -> Tuple[str, Dict[str, Any]]:
+
+    async def create_test_user(
+        self, username: str = None, email: str = None
+    ) -> tuple[str, dict[str, Any]]:
         """創建測試使用者"""
         user_id = ObjectId()
         user_data = {
@@ -27,15 +29,17 @@ class DataTestHelper:
             "hashed_password": "hashed_password",
             "is_active": True,
             "created_at": datetime.now(UTC),
-            "updated_at": datetime.now(UTC)
+            "updated_at": datetime.now(UTC),
         }
-        
+
         database = await self.db_manager.get_database()
         await database.users.insert_one(user_data)
-        
+
         return str(user_id), user_data
-    
-    async def create_test_room(self, user_id: str, name: str = "測試房間") -> Tuple[str, Dict[str, Any]]:
+
+    async def create_test_room(
+        self, user_id: str, name: str = "測試房間"
+    ) -> tuple[str, dict[str, Any]]:
         """創建測試房間"""
         room_id = ObjectId()
         room_data = {
@@ -46,15 +50,17 @@ class DataTestHelper:
             "members": [user_id],
             "is_private": False,
             "created_at": datetime.now(UTC),
-            "updated_at": datetime.now(UTC)
+            "updated_at": datetime.now(UTC),
         }
-        
+
         database = await self.db_manager.get_database()
         await database.rooms.insert_one(room_data)
-        
+
         return str(room_id), room_data
-    
-    async def create_test_message(self, user_id: str, room_id: str, content: str = "測試訊息") -> Tuple[str, Dict[str, Any]]:
+
+    async def create_test_message(
+        self, user_id: str, room_id: str, content: str = "測試訊息"
+    ) -> tuple[str, dict[str, Any]]:
         """創建測試訊息"""
         message_id = ObjectId()
         message_data = {
@@ -66,37 +72,39 @@ class DataTestHelper:
             "message_type": "text",
             "status": "sent",
             "created_at": datetime.now(UTC),
-            "updated_at": datetime.now(UTC)
+            "updated_at": datetime.now(UTC),
         }
-        
+
         database = await self.db_manager.get_database()
         await database.messages.insert_one(message_data)
-        
+
         return str(message_id), message_data
-    
-    def create_auth_headers(self, user_id: str, username: str = None) -> Dict[str, str]:
+
+    def create_auth_headers(self, user_id: str, username: str = None) -> dict[str, str]:
         """創建認證標頭"""
-        token = create_access_token(data={
-            "sub": username or TestConfig.TEST_USER_DATA["username"],
-            "user_id": user_id
-        })
+        token = create_access_token(
+            data={
+                "sub": username or TestConfig.TEST_USER_DATA["username"],
+                "user_id": user_id,
+            }
+        )
         return {"Authorization": f"Bearer {token}"}
-    
-    async def setup_test_data(self) -> Dict[str, Any]:
+
+    async def setup_test_data(self) -> dict[str, Any]:
         """設置完整的測試資料"""
         # 創建測試使用者
         user_id, user_data = await self.create_test_user()
-        
+
         # 創建測試房間
         room_id, room_data = await self.create_test_room(user_id)
-        
+
         # 創建認證標頭
         auth_headers = self.create_auth_headers(user_id)
-        
+
         return {
             "user_id": user_id,
             "user_data": user_data,
             "room_id": room_id,
             "room_data": room_data,
-            "auth_headers": auth_headers
+            "auth_headers": auth_headers,
         }

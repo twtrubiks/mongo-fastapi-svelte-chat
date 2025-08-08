@@ -1,5 +1,6 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
+import { BFFBackendClient } from '$lib/bff-client';
 
 export const POST: RequestHandler = async ({ params, fetch, request, cookies }) => {
   try {
@@ -10,8 +11,12 @@ export const POST: RequestHandler = async ({ params, fetch, request, cookies }) 
       return json({ error: { message: 'Unauthorized' } }, { status: 401 });
     }
 
+    // 動態構建後端 URL
+    const backendClient = new BFFBackendClient();
+    const backendUrl = backendClient['client'].defaults.baseURL;
+    
     // 調用後端 API 離開房間
-    const response = await fetch(`http://localhost:8000/api/rooms/${id}/leave`, {
+    const response = await fetch(`${backendUrl}/api/rooms/${id}/leave`, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${token}`,

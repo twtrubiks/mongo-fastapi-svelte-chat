@@ -1,31 +1,30 @@
-from typing import Union
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from typing import Any
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
-from fastapi.encoders import jsonable_encoder
-from fastapi.responses import JSONResponse
 
 from app.config import settings
-from app.database.mongodb import init_database, close_database
-from app.database.redis_conn import init_redis, close_redis, get_redis
-from app.routers import auth, rooms, messages, notifications
-from app.routers import files, invitations
-from app.websocket import routes as websocket_routes
 from app.core.fastapi_integration import (
-    setup_dependency_injection,
     cleanup_dependency_injection,
+    get_health_check_info,
     request_scope_middleware,
-    get_health_check_info
+    setup_dependency_injection,
 )
+from app.database.mongodb import close_database, init_database
+from app.database.redis_conn import close_redis, init_redis
 from app.middleware.error_handler import GlobalErrorHandler
-from app.middleware.security_headers import SecurityHeadersMiddleware
 from app.middleware.rate_limiting import RateLimitingMiddleware
+from app.middleware.security_headers import SecurityHeadersMiddleware
+from app.routers import auth, files, invitations, messages, notifications, rooms
 from app.security_config import load_security_config
+from app.websocket import routes as websocket_routes
+
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     # 啟動時初始化
     await init_database(settings.MONGODB_URL, settings.MONGODB_DATABASE)
     await init_redis()
@@ -36,18 +35,31 @@ async def lifespan(app: FastAPI):
     await close_database()
     await close_redis()
 
+
 app = FastAPI(
     title="即時聊天室 API",
     description="使用 FastAPI + MongoDB + WebSocket 的即時聊天室",
     version="1.0.0",
     lifespan=lifespan,
-    debug=settings.DEBUG
+    debug=settings.DEBUG,
 )
 
 # 首先設定 CORS - 必須在其他中間件之前
+# 動態設置 CORS origins
+cors_origins = []
+if settings.DEBUG:
+    # 開發環境：允許所有來源
+    cors_origins = ["*"]
+else:
+    # 生產環境：使用配置的來源
+    if settings.CORS_ORIGINS == "*":
+        cors_origins = ["*"]
+    else:
+        cors_origins = settings.CORS_ORIGINS.split(",")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173", "*"],
+    allow_origins=cors_origins,
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
@@ -55,10 +67,12 @@ app.add_middleware(
 
 # 設定信任的主機
 if not settings.DEBUG:
-    app.add_middleware(
-        TrustedHostMiddleware,
-        allowed_hosts=["localhost", "127.0.0.1"]
+    # 生產環境才限制主機
+    allowed_hosts = (
+        settings.ALLOWED_HOSTS.split(",") if settings.ALLOWED_HOSTS != "*" else None
     )
+    if allowed_hosts:
+        app.add_middleware(TrustedHostMiddleware, allowed_hosts=allowed_hosts)
 
 # 載入安全配置
 security_config = load_security_config()
@@ -70,12 +84,14 @@ security_middleware = SecurityHeadersMiddleware(
     enable_hsts=security_config.enable_hsts and not settings.DEBUG,
     hsts_max_age=security_config.hsts_max_age,
     enable_csp=security_config.enable_csp,
-    custom_headers=security_config.get_security_headers()
+    custom_headers=security_config.get_security_headers(),
 )
 
+
 @app.middleware("http")
-async def add_security_headers(request: Request, call_next):
+async def add_security_headers(request: Request, call_next) -> Any:
     return await security_middleware(request, call_next)
+
 
 # 添加 Rate Limiting 中間件 (在錯誤處理之前)
 app.add_middleware(RateLimitingMiddleware, settings=settings)
@@ -97,19 +113,17 @@ app.include_router(invitations.router, prefix="/api")
 # 註冊 WebSocket 路由
 app.include_router(websocket_routes.router)
 
+
 @app.get("/")
-async def read_root():
-    return {
-        "message": "即時聊天室 API",
-        "status": "running",
-        "version": "1.0.0"
-    }
+async def read_root() -> dict[str, str]:
+    return {"message": "即時聊天室 API", "status": "running", "version": "1.0.0"}
+
 
 @app.get("/health")
-async def health_check(request: Request):
+async def health_check(request: Request) -> dict[str, Any]:
     health_info = await get_health_check_info(request)
     return {
         "service": "chatroom-api",
         "version": "1.0.0",
-        "dependency_injection": health_info
+        "dependency_injection": health_info,
     }

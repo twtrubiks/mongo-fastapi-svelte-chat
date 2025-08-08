@@ -200,9 +200,14 @@ export const roomStore = {
     updateRoomState({ loading: true });
     
     try {
-      const rooms = await apiClient.rooms.myRooms();
-      updateRoomState({ rooms, loading: false });
-      return rooms;
+      const myRooms = await apiClient.rooms.myRooms();
+      
+      // 不要覆蓋所有房間，而是標記用戶已加入的房間
+      // 或者返回用戶的房間列表，讓調用者決定如何處理
+      updateRoomState({ loading: false });
+      
+      // 只返回用戶已加入的房間，不修改 store 中的房間列表
+      return myRooms;
     } catch (error) {
       updateRoomState({ loading: false });
       throw error;

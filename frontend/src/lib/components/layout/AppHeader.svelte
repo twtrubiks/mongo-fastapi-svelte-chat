@@ -32,32 +32,33 @@
 </script>
 
 <header class="navbar bg-base-100 shadow-md border-b border-base-200">
-  <div class="w-full px-6">
+  <div class="w-full px-3 md:px-6">
     <!-- 左側：聊天室標題 -->
     <div class="flex-1">
-      <a href="/app/rooms" class="btn btn-ghost text-xl font-bold text-primary hover:bg-primary hover:bg-opacity-10 transition-all">
-        <svg class="w-6 h-6 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <a href="/app/rooms" class="btn btn-ghost text-lg md:text-xl font-bold text-primary hover:bg-primary hover:bg-opacity-10 hover:text-primary-content transition-all px-2 md:px-4">
+        <svg class="w-5 h-5 md:w-6 md:h-6 mr-1 md:mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
         </svg>
-        聊天室
+        <span class="hidden sm:inline">聊天室</span>
+        <span class="sm:hidden">Chat</span>
       </a>
     </div>
     
     {#if currentUser}
       <!-- 右側：通知按鈕和用戶選單 -->
-      <div class="flex-none flex items-center space-x-2">
+      <div class="flex-none flex items-center gap-1 md:gap-2">
         <NotificationButton />
         
-        <div class="dropdown dropdown-bottom dropdown-center">
-          <div tabindex="0" role="button" class="btn btn-ghost btn-circle avatar hover:bg-base-200 transition-colors" aria-label="用戶選單">
+        <div class="dropdown dropdown-start">
+          <div tabindex="0" role="button" class="btn btn-ghost btn-circle avatar">
             <Avatar 
               user={user}
-              size="sm"
+              size="xs"
               alt={user?.username}
             />
           </div>
           
-          <ul tabindex="0" class="mt-3 z-[999] p-3 shadow-xl menu menu-sm dropdown-content bg-base-100 rounded-lg w-56 border border-base-300">
+          <ul tabindex="0" class="dropdown-content menu bg-base-100 rounded-box z-[1] w-52 p-2 shadow">
             <li class="menu-title px-0 py-2">
               <div class="flex flex-col items-start">
                 <span class="font-bold text-base text-base-content">{user?.username}</span>
@@ -120,15 +121,10 @@
 />
 
 <style>
-  .navbar {
+  /* 使用更具體的選擇器，避免全域汙染 */
+  header.navbar {
     position: sticky;
     top: 0;
-    z-index: 999;
-  }
-  
-  /* 修復 dropdown 定位問題 */
-  .dropdown-center .dropdown-content {
-    left: 50% !important;
-    transform: translateX(-50%) !important;
+    z-index: 40;
   }
 </style>

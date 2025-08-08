@@ -144,21 +144,22 @@
 
 {#if show && room}
   <div class="modal modal-open">
-    <div class="modal-box max-w-4xl max-h-[90vh] overflow-hidden flex flex-col">
-      <!-- 標題 -->
-      <div class="flex items-center justify-between mb-6">
-        <h3 class="font-bold text-xl">房間設定</h3>
-        <button
-          class="btn btn-sm btn-circle btn-ghost"
-          onclick={handleClose}
-          disabled={isLoading}
-        >
-          ✕
-        </button>
-      </div>
+    <div class="modal-box w-11/12 max-w-5xl">
+      <!-- 標題 - 使用 DaisyUI 原生的 modal header 樣式 -->
+      <h3 class="font-bold text-lg">房間設定</h3>
+      <button
+        class="btn btn-sm btn-circle btn-ghost absolute right-2 top-2"
+        onclick={handleClose}
+        disabled={isLoading}
+      >
+        ✕
+      </button>
+
+      <!-- 分隔線 -->
+      <div class="divider mt-0"></div>
 
       <!-- 分頁標籤 -->
-      <div class="tabs tabs-bordered mb-6">
+      <div class="tabs tabs-boxed mb-4">
         <button
           class="tab"
           class:tab-active={activeTab === 'general'}
@@ -212,7 +213,7 @@
       {/if}
 
       <!-- 內容區域 -->
-      <div class="flex-1 overflow-y-auto">
+      <div class="modal-body">
         {#if activeTab === 'general'}
           <!-- 一般設定 -->
           <div class="space-y-6">
@@ -325,22 +326,24 @@
 
             <!-- 儲存按鈕 -->
             {#if canManageRoom}
-              <div class="flex justify-end space-x-2 pt-4 border-t">
-                <Button
-                  variant="ghost"
+              <div class="modal-action">
+                <button
+                  class="btn btn-ghost"
                   onclick={handleClose}
                   disabled={isLoading}
                 >
                   取消
-                </Button>
-                <Button
-                  variant="primary"
+                </button>
+                <button
+                  class="btn btn-primary"
                   onclick={updateRoomSettings}
-                  loading={isLoading}
-                  disabled={!roomName.trim()}
+                  disabled={isLoading || !roomName.trim()}
                 >
+                  {#if isLoading}
+                    <span class="loading loading-spinner loading-sm"></span>
+                  {/if}
                   儲存設定
-                </Button>
+                </button>
               </div>
             {/if}
           </div>
@@ -353,23 +356,10 @@
 {/if}
 
 <style>
-  .modal-box {
-    @apply w-full;
-  }
-
-  .tab {
+  /* 使用 DaisyUI 原生類別，移除大部分自定義樣式 */
+  
+  /* 保留 tab 的樣式以確保平均分配寬度 */
+  .tabs-boxed .tab {
     @apply flex-1;
-  }
-
-  .card {
-    @apply shadow-sm;
-  }
-
-  .badge-success {
-    @apply bg-green-500 text-white;
-  }
-
-  .badge-error {
-    @apply bg-red-500 text-white;
   }
 </style>

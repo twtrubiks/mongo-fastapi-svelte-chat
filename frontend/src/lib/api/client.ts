@@ -489,7 +489,8 @@ const getBaseURL = () => {
     return window.location.origin;
   }
   // SSR 環境中的默認值，這個應該從環境變數或配置中獲取
-  return 'http://localhost:5173';
+  // 使用環境變數 PUBLIC_APP_URL 或默認值
+  return process.env.PUBLIC_APP_URL || 'http://localhost:5173';
 };
 
 export const apiClient = new ApiClient(getBaseURL());

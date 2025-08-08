@@ -37,9 +37,10 @@ export const POST: RequestHandler = async ({ request }) => {
       return json(createBFFError('BACKEND_ERROR', '無法創建後端客戶端'), { status: 500 });
     }
     
-    // 檢查後端連接
+    // 檢查後端連接 - 使用動態 URL
+    const backendUrl = backendClient['client'].defaults.baseURL;
     try {
-      const testResponse = await fetch('http://localhost:8000/docs');
+      const testResponse = await fetch(`${backendUrl}/docs`);
       
       if (!testResponse.ok) {
         return json(createBFFError('BACKEND_UNAVAILABLE', '後端服務不可用'), { status: 503 });

@@ -238,17 +238,28 @@ export function paginate<T>(
 
 // 通知資料轉換函數
 export function transformNotification(notification: any): any {
-  if (!notification) return notification;
+  if (!notification) return null;
   
-  return {
+  // 確保必要欄位存在
+  const transformed = {
     ...notification,
     // 將 type 和 status 轉換為大寫
-    type: notification.type?.toUpperCase(),
-    status: notification.status?.toUpperCase(),
+    type: notification.type?.toUpperCase() || 'SYSTEM',
+    status: notification.status?.toUpperCase() || 'UNREAD',
     // 處理巢狀的 metadata/data 欄位
-    metadata: notification.metadata || notification.data,
-    data: notification.data || notification.metadata
+    metadata: notification.metadata || notification.data || {},
+    data: notification.data || notification.metadata || {},
+    // 確保 title 和 message 欄位存在
+    title: notification.title || '通知',
+    message: notification.message || notification.content || ''
   };
+  
+  // 如果沒有有效的內容，返回 null
+  if (!transformed.title && !transformed.message) {
+    return null;
+  }
+  
+  return transformed;
 }
 
 // 批量轉換通知

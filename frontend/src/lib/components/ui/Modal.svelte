@@ -77,12 +77,12 @@
     <div class={sizeClasses[size]} class:relative={true}>
       {#if closeable}
         <button
-          class="btn btn-sm btn-circle btn-ghost absolute right-2 top-2"
+          class="btn btn-sm btn-circle absolute right-2 top-2 z-10 bg-base-100 hover:bg-base-200 active:bg-base-300 border border-base-300 min-h-[44px] min-w-[44px] sm:min-h-[32px] sm:min-w-[32px] shadow-sm"
           onclick={handleClose}
           aria-label="關閉"
         >
-          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12" />
           </svg>
         </button>
       {/if}

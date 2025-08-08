@@ -19,9 +19,9 @@
     onUserClick 
   }: Props = $props();
   
-  // 按狀態分組用戶 - 使用 $derived
-  let onlineUsers = $derived(users.filter(user => user.is_active));
-  let offlineUsers = $derived(users.filter(user => !user.is_active));
+  // 按狀態分組用戶 - 使用 $derived，確保 users 是陣列
+  let onlineUsers = $derived(Array.isArray(users) ? users.filter(user => user.is_active) : []);
+  let offlineUsers = $derived(Array.isArray(users) ? users.filter(user => !user.is_active) : []);
   
   function handleUserClick(user: User) {
     onUserClick?.({ user });

@@ -206,6 +206,9 @@
 <style>
   .message-item {
     @apply mb-4 transition-all duration-200 hover:scale-[1.01] hover:shadow-sm;
+    /* 確保訊息項目不會超出容器 */
+    width: 100%;
+    overflow: hidden;
   }
   
   .message-item.compact {
@@ -231,7 +234,7 @@
   
   /* 一般訊息樣式 */
   .message-content {
-    @apply flex items-start space-x-4;
+    @apply flex items-start space-x-3;
   }
   
   .message-own .message-content {
@@ -263,8 +266,16 @@
   }
   
   .message-bubble {
-    @apply rounded-2xl px-4 py-3 max-w-xs lg:max-w-md break-words shadow-md transition-all duration-200 hover:shadow-lg;
+    @apply rounded-2xl px-4 py-3 max-w-xs lg:max-w-md break-words shadow-sm transition-all duration-200 hover:shadow-md;
     position: relative;
+    /* 優化文字換行 */
+    word-wrap: break-word;
+    overflow-wrap: break-word;
+    /* 支援長按選擇文字 */
+    -webkit-user-select: text;
+    user-select: text;
+    /* 優化觸控反饋 */
+    -webkit-tap-highlight-color: rgba(0, 0, 0, 0.1);
   }
   
   .message-bubble-other {
@@ -315,17 +326,32 @@
   
   .message-image img {
     @apply transition-all duration-300 hover:scale-105 focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 rounded-lg shadow-md;
+    max-width: 100%;
+    height: auto;
+  }
+  
+  /* 手機端圖片優化 */
+  @media (max-width: 768px) {
+    .message-image {
+      @apply p-1;
+    }
+    
+    .message-image img {
+      max-width: min(280px, calc(100vw - 5rem));
+      /* 禁用手機端的 hover 放大效果 */
+      @apply hover:scale-100;
+    }
   }
   
   /* 動畫效果 */
   .message-item {
-    animation: message-appear 0.3s ease-out;
+    animation: message-appear 0.2s ease-out;
   }
   
   @keyframes message-appear {
     from {
       opacity: 0;
-      transform: translateY(10px);
+      transform: translateY(5px);
     }
     to {
       opacity: 1;
@@ -333,14 +359,70 @@
     }
   }
   
+  /* 手機端減少動畫，提升性能 */
+  @media (max-width: 768px) and (prefers-reduced-motion: no-preference) {
+    .message-item {
+      animation-duration: 0.15s;
+    }
+  }
+  
+  @media (prefers-reduced-motion: reduce) {
+    .message-item {
+      animation: none;
+    }
+  }
+  
   /* 響應式設計 */
   @media (max-width: 768px) {
+    .message-item {
+      @apply mb-2;
+    }
+    
     .message-bubble {
-      @apply max-w-xs px-3 py-2;
+      /* 調整手機版訊息泡泡的最大寬度，充分利用螢幕空間 */
+      max-width: calc(100vw - 3.5rem);
+      @apply px-3 py-2 text-sm shadow-sm;
+    }
+    
+    /* 自己的訊息可以更寬 */
+    .message-own .message-bubble {
+      max-width: calc(100vw - 3rem);
     }
     
     .message-content {
-      @apply space-x-2;
+      @apply space-x-1;
+    }
+    
+    .message-own .message-content {
+      @apply space-x-reverse;
+    }
+    
+    .message-avatar {
+      /* 手機版使用更小的頭像 */
+      transform: scale(0.85);
+    }
+    
+    .message-username {
+      @apply text-xs px-1.5 py-0.5;
+    }
+    
+    .message-time {
+      @apply text-xs px-1.5 py-0.5;
+    }
+    
+    .message-text {
+      @apply text-sm leading-snug;
+    }
+    
+    /* 移除手機版訊息泡泡的偽元素箭頭，節省空間 */
+    .message-bubble-other::before,
+    .message-bubble-own::before {
+      display: none;
+    }
+    
+    /* 系統訊息手機端調整 */
+    .system-message-content {
+      @apply px-3 py-2 text-xs;
     }
     
     .message-header {

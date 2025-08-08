@@ -133,7 +133,7 @@
   }
 </script>
 
-<Modal bind:open {onClose} title="通知設置">
+<Modal bind:open {onClose} title="通知設置" closeable={true}>
   <div class="space-y-6">
     
     <!-- 瀏覽器通知設置 -->

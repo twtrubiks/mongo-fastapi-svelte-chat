@@ -21,14 +21,14 @@
   
   let timeoutId: number;
   
-  let typeClasses = {
+  let typeClasses: Record<string, string> = {
     success: 'alert-success',
     error: 'alert-error',
     warning: 'alert-warning',
     info: 'alert-info',
   };
   
-  let iconSvg = {
+  let iconSvg: Record<string, string> = {
     success: `<svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
       <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
     </svg>`,
@@ -84,7 +84,7 @@
 
 {#if show}
   <div
-    class="fixed top-4 right-4 z-[99999] max-w-sm"
+    class="fixed top-4 right-4 left-4 md:left-auto z-[99999] max-w-sm md:max-w-sm mx-auto md:mx-0"
     role="alert"
     aria-live="polite"
     onmouseenter={stopTimer}

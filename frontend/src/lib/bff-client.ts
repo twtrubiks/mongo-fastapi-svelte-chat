@@ -20,14 +20,41 @@ export interface BFFApiResponse<T> {
 export class BFFBackendClient {
   private client: AxiosInstance;
 
-  constructor(baseURL: string = 'http://localhost:8000') {
+  constructor(baseURL?: string) {
+    // 動態決定後端 API URL
+    const defaultBaseURL = this.getDefaultBaseURL();
+    
     this.client = axios.create({
-      baseURL,
+      baseURL: baseURL || defaultBaseURL,
       timeout: 15000,
       headers: {
         'Content-Type': 'application/json',
       },
     });
+  }
+  
+  private getDefaultBaseURL(): string {
+    // 在 SSR 環境中使用環境變數或默認值
+    if (typeof window === 'undefined') {
+      // SSR 環境：使用環境變數或本地後端
+      return process.env.BACKEND_URL || 'http://localhost:8000';
+    }
+    
+    // 瀏覽器環境：根據當前頁面 URL 動態決定
+    const host = window.location.hostname;
+    const protocol = window.location.protocol;
+    
+    // 如果是本地開發或局域網 IP，連接到 8000 端口
+    if (host === 'localhost' || 
+        host === '127.0.0.1' || 
+        host.startsWith('192.168.') || 
+        host.startsWith('10.') || 
+        host.startsWith('172.')) {
+      return `${protocol}//${host}:8000`;
+    }
+    
+    // 生產環境：假設後端和前端在同一域名
+    return `${protocol}//${host}`;
   }
 
   // 設置認證 token

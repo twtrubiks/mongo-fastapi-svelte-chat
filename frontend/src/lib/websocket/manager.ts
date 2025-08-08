@@ -7,7 +7,7 @@ import { transformNotification } from '$lib/bff-utils';
 export class WebSocketManager {
   private ws: WebSocket | null = null;
   private reconnectAttempts = 0;
-  private maxReconnectAttempts = 5;
+  private maxReconnectAttempts = 10; // 增加重連次數，對手機更友好
   private baseReconnectDelay = 1000;
   private currentReconnectDelay = 1000;
   private maxReconnectDelay = 30000;
@@ -18,6 +18,8 @@ export class WebSocketManager {
   private lastConnectTime = 0;
   private connectionId = 0;
   private lastRoomUsersTime = 0; // 追蹤最後收到 room_users 事件的時間
+  private pingTimeout: number | null = null; // 添加 ping 超時檢測
+  private lastPingTime = 0; // 記錄最後 ping 時間
 
   private roomId: string | null = null;
   private token: string | null = null;
@@ -66,7 +68,35 @@ export class WebSocketManager {
 
       // console.log('[WebSocket] 設置連接狀態為 connecting, connectionId:', currentConnectionId);
       this.setConnectionState('connecting');
-      const wsUrl = `ws://localhost:8000/ws/${roomId}?token=${token}`;
+
+      // 動態獲取 WebSocket URL
+      let wsUrl: string;
+
+      // 檢查是否有環境變數配置的 WebSocket URL
+      if (import.meta.env.PUBLIC_WS_URL && window.location.hostname === 'localhost') {
+        // 開發環境且有配置時使用配置的 URL
+        wsUrl = `${import.meta.env.PUBLIC_WS_URL}/ws/${roomId}?token=${token}`;
+      } else {
+        // 動態計算 WebSocket URL
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const host = window.location.hostname;
+
+        // 根據不同情況決定端口
+        let port = '';
+        if (host === 'localhost' || host === '127.0.0.1') {
+          // 本地開發環境，連接到後端的 8000 端口
+          port = ':8000';
+        } else if (host.startsWith('192.168.') || host.startsWith('10.') || host.startsWith('172.')) {
+          // 局域網 IP，連接到後端的 8000 端口
+          port = ':8000';
+        } else if (window.location.port) {
+          // 其他情況，如果有端口就使用當前端口
+          port = `:${window.location.port}`;
+        }
+
+        wsUrl = `${protocol}//${host}${port}/ws/${roomId}?token=${token}`;
+      }
+
       // console.log('[WebSocket] 連接 URL:', wsUrl.replace(/token=[^&]+/, 'token=***'));
 
       try {
@@ -175,8 +205,9 @@ export class WebSocketManager {
     // 重置 room_users 事件時間，避免影響新房間的事件處理
     this.lastRoomUsersTime = 0;
 
-    // 清理用戶列表，避免切換房間時重複顯示
-    roomStore.setUsers([]);
+    // 注意：不要在這裡清空用戶列表，因為可能導致 UI 閃爍
+    // 新的房間會在載入時自動更新用戶列表
+    // roomStore.setUsers([]);
 
     // 清除房間已讀請求緩存
     this.roomReadRequestCache.clear();
@@ -344,14 +375,27 @@ export class WebSocketManager {
 
       case 'notification':
         // 檢查是否為特殊事件（如 room_created）
-        const notificationData = data.data || data.payload || data;
-        if (notificationData && notificationData.type === 'room_created') {
+        const notificationData = data.data || data.payload;
+        
+        // 確保通知資料存在且有效
+        if (!notificationData) {
+          console.warn('[WebSocket] 收到空的通知資料:', data);
+          break;
+        }
+        
+        if (notificationData.type === 'room_created') {
           // 這是房間創建事件，觸發 room_created 事件
           this.emit('room_created', notificationData);
         } else {
           // 轉換通知資料格式
           const transformedNotification = transformNotification(notificationData);
-          this.handleNotification(transformedNotification);
+          
+          // 只處理有效的通知
+          if (transformedNotification && transformedNotification.title && transformedNotification.message) {
+            this.handleNotification(transformedNotification);
+          } else {
+            console.warn('[WebSocket] 通知資料格式不正確:', notificationData);
+          }
         }
         break;
 
@@ -390,23 +434,13 @@ export class WebSocketManager {
   private handleNewMessage(message: Message) {
     messageStore.addMessage(message);
 
-    // 如果新訊息不是當前用戶發送的，可能會產生通知
-    // 延遲一下觸發通知刷新，確保後端已經處理完成
+    // 移除自動刷新通知列表的邏輯
+    // 通知應該只透過 WebSocket 的 notification 事件接收
+    // 這樣可以避免重複處理和 API 呼叫
     const currentUserData = currentUser();
     if (currentUserData && message.user_id !== currentUserData.id) {
-      setTimeout(async () => {
-        try {
-          const response = await fetch('/api/notifications/', {
-            credentials: 'include'
-          });
-          if (response.ok) {
-            const data = await response.json();
-            notificationStore.setNotifications(data.notifications || []);
-          }
-        } catch (error) {
-          console.error('[WebSocket] 刷新通知列表失敗:', error);
-        }
-      }, 1000); // 1 秒後刷新通知
+      // console.log('[WebSocket] 收到其他用戶的訊息，等待通知事件');
+      // 通知會透過獨立的 notification 事件發送
     }
   }
 
@@ -551,14 +585,56 @@ export class WebSocketManager {
       // 記錄收到 room_users 事件的時間
       this.lastRoomUsersTime = Date.now();
 
-      // 確保每個用戶都有 is_active 字段，預設為 true（因為是在線用戶）
-      const users = data.users.map((user: any) => ({
-        ...user,
-        is_active: user.is_active !== undefined ? user.is_active : true
-      }));
+      // 獲取當前的用戶列表
+      const currentRoomState = roomStore.state;
+      const existingUsers = currentRoomState.users || [];
 
-      // console.log('[WebSocket] 設置房間用戶列表:', users);
-      roomStore.setUsers(users);
+      // 創建一個 Map 來合併用戶列表
+      const userMap = new Map<string, any>();
+
+      // 先添加現有的用戶（保留完整資訊）
+      existingUsers.forEach(user => {
+        if (user.id) {
+          userMap.set(user.id, user);
+        }
+      });
+
+      // 更新在線用戶的狀態（room_users 事件只包含在線用戶）
+      const onlineUserIds = new Set(data.users.map((u: any) => u.id));
+
+      // 更新或添加在線用戶
+      data.users.forEach((user: any) => {
+        const existingUser = userMap.get(user.id);
+        if (existingUser) {
+          // 如果用戶已存在，只更新 is_active 狀態
+          userMap.set(user.id, {
+            ...existingUser,
+            is_active: true
+          });
+        } else {
+          // 如果是新用戶，添加到列表
+          userMap.set(user.id, {
+            ...user,
+            is_active: true
+          });
+        }
+      });
+
+      // 將不在線上列表中的用戶標記為離線
+      userMap.forEach((user, userId) => {
+        if (!onlineUserIds.has(userId)) {
+          userMap.set(userId, {
+            ...user,
+            is_active: false
+          });
+        }
+      });
+
+      // 轉換回陣列
+      const mergedUsers = Array.from(userMap.values());
+
+      // console.log('[WebSocket] 更新房間用戶列表:', mergedUsers);
+      roomStore.setUsers(mergedUsers);
     } catch (error) {
       console.error('[WebSocket] 處理房間用戶列表失敗:', error);
     }
@@ -587,8 +663,22 @@ export class WebSocketManager {
 
   // 處理 pong 回應
   private handlePong(data: any) {
-    // pong 訊息通常用於心跳檢測，這裡只需要記錄即可
-    // 可以用來計算延遲或確認連線狀態
+    // 清除 ping 超時計時器
+    if (this.pingTimeout) {
+      clearTimeout(this.pingTimeout);
+      this.pingTimeout = null;
+    }
+
+    // 計算延遲
+    if (this.lastPingTime > 0) {
+      const latency = Date.now() - this.lastPingTime;
+      // console.log(`[WebSocket] 延遲: ${latency}ms`);
+
+      // 如果延遲太高，可能需要警告
+      if (latency > 5000) {
+        console.warn(`[WebSocket] 高延遲警告: ${latency}ms`);
+      }
+    }
   }
 
   // 處理房間創建事件
@@ -656,8 +746,8 @@ export class WebSocketManager {
     // console.log('[WebSocket] 收到通知:', notification);
 
     // 檢查通知是否有效
-    if (!notification) {
-      console.warn('[WebSocket] 收到無效通知');
+    if (!notification || !notification.title || !notification.message) {
+      console.warn('[WebSocket] 收到無效通知:', notification);
       return;
     }
 
@@ -863,19 +953,37 @@ export class WebSocketManager {
     return true;
   }
 
-  // 心跳檢測
+  // 心跳檢測（針對移動設備優化）
   private startHeartbeat() {
+    // 更頻繁的心跳，防止移動設備斷線
+    const heartbeatDelay = 20000; // 20秒，比原來的30秒更頻繁
+
     this.heartbeatInterval = window.setInterval(() => {
       if (this.isConnected()) {
+        // 發送 ping
+        this.lastPingTime = Date.now();
         this.ws!.send(JSON.stringify({ type: 'ping' }));
+
+        // 設置超時檢測，如果10秒內沒收到 pong，認為連接斷開
+        this.pingTimeout = window.setTimeout(() => {
+          console.warn('[WebSocket] Ping 超時，強制重連');
+          // 強制關閉連接並重連
+          if (this.ws) {
+            this.ws.close(4000, 'Ping timeout');
+          }
+        }, 10000);
       }
-    }, 30000);
+    }, heartbeatDelay);
   }
 
   private stopHeartbeat() {
     if (this.heartbeatInterval) {
       clearInterval(this.heartbeatInterval);
       this.heartbeatInterval = null;
+    }
+    if (this.pingTimeout) {
+      clearTimeout(this.pingTimeout);
+      this.pingTimeout = null;
     }
   }
 

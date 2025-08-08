@@ -1,5 +1,6 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
+import { BFFBackendClient } from '$lib/bff-client';
 
 export const POST: RequestHandler = async ({ cookies, fetch }) => {
   try {
@@ -8,7 +9,9 @@ export const POST: RequestHandler = async ({ cookies, fetch }) => {
     // 調用後端登出 API（如果有的話）
     if (token) {
       try {
-        const backendResponse = await fetch('http://localhost:8000/api/auth/logout', {
+        const backendClient = new BFFBackendClient();
+        const backendUrl = backendClient['client'].defaults.baseURL;
+        const backendResponse = await fetch(`${backendUrl}/api/auth/logout`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',

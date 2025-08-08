@@ -9,6 +9,7 @@
   interface Props {
     currentRoomId?: string | null;
     compact?: boolean;
+    mobileMode?: boolean;
     rooms?: Room[] | null;
     onRoomSelected?: (data: { room: Room }) => void;
   }
@@ -16,6 +17,7 @@
   let {
     currentRoomId = null,
     compact = false,
+    mobileMode = false,
     rooms = null,
     onRoomSelected = undefined
   }: Props = $props();
@@ -325,36 +327,68 @@
   });
 </script>
 
-<div class="room-list" class:compact>
-  <!-- 標題和創建按鈕 -->
-  <div class="room-list-header">
-    <h2 class="room-list-title">聊天室</h2>
-    <div class="flex gap-1">
-      <Button
-        variant="ghost"
-        size="sm"
-        onclick={() => showCreateModal = true}
-        aria-label="創建聊天室"
-        title="創建聊天室"
-      >
-        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
-        </svg>
-      </Button>
-      
-      <Button
-        variant="ghost"
-        size="sm"
-        onclick={() => showJoinByInviteModal = true}
-        aria-label="通過邀請碼加入"
-        title="通過邀請碼加入"
-      >
-        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z" />
-        </svg>
-      </Button>
+<div class="room-list" class:compact class:mobile-mode={mobileMode}>
+  <!-- 標題和操作按鈕 -->
+  {#if mobileMode}
+    <!-- 移動端：使用 navbar 組件，增大按鈕尺寸提升觸控體驗 -->
+    <div class="navbar bg-base-100 border-b border-base-200 sticky top-0 z-50 min-h-[3.5rem]">
+      <div class="navbar-start flex-1">
+        <span class="text-lg font-bold px-2">聊天室</span>
+      </div>
+      <div class="navbar-end flex-none">
+        <div class="flex gap-1">
+          <button
+            class="btn btn-ghost btn-square"
+            onclick={() => showCreateModal = true}
+            aria-label="創建聊天室"
+            title="創建聊天室"
+          >
+            <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
+            </svg>
+          </button>
+          <button
+            class="btn btn-ghost btn-square"
+            onclick={() => showJoinByInviteModal = true}
+            aria-label="加入房間"
+            title="加入房間"
+          >
+            <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M18 9v3m0 0v3m0-3h3m-3 0h-3m-2-5a4 4 0 11-8 0 4 4 0 018 0zM3 20a6 6 0 0112 0v1H3v-1z" />
+            </svg>
+          </button>
+        </div>
+      </div>
     </div>
-  </div>
+  {:else if !compact}
+    <!-- 桌面端：原有的標題欄 -->
+    <div class="room-list-header">
+      <h2 class="room-list-title">聊天室</h2>
+      <div class="btn-group">
+        <button
+          class="btn btn-sm btn-ghost btn-square"
+          onclick={() => showCreateModal = true}
+          aria-label="創建聊天室"
+          title="創建聊天室"
+        >
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
+          </svg>
+        </button>
+        
+        <button
+          class="btn btn-sm btn-ghost btn-square"
+          onclick={() => showJoinByInviteModal = true}
+          aria-label="通過邀請碼加入"
+          title="通過邀請碼加入"
+        >
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z" />
+          </svg>
+        </button>
+      </div>
+    </div>
+  {/if}
   
   <!-- 聊天室列表 -->
   <div class="room-list-content" onscroll={handleScroll}>
@@ -368,57 +402,48 @@
           </svg>
         </div>
         <p class="empty-state-text">暫無聊天室</p>
-        <Button
-          variant="primary"
-          size="sm"
+        <button
+          class="btn btn-primary btn-sm"
           onclick={() => showCreateModal = true}
         >
           創建第一個聊天室
-        </Button>
+        </button>
       </div>
     {:else}
-      <div class="room-items">
+      <!-- 使用 DaisyUI menu 組件，手機端更緊湊 -->
+      <ul class="menu {mobileMode ? 'p-1' : 'p-2'} w-full">
         {#each displayRooms as room (room.id)}
-          <button
-            class="room-item"
-            class:active={currentRoomId === room.id}
-            onclick={() => selectRoom(room)}
-          >
-            <div class="room-avatar">
+          <li>
+            <button
+              class="flex items-center gap-2 {mobileMode ? 'px-2 py-2.5 min-h-[3rem]' : 'px-3 py-2'}"
+              class:active={currentRoomId === room.id}
+              onclick={() => selectRoom(room)}
+            >
               <Avatar
                 user={{ username: room.name, avatar: undefined }}
-                size="md"
+                size={mobileMode ? "xs" : "sm"}
               />
-            </div>
-            
-            <div class="room-info">
-              <div class="room-name">{room.name}</div>
-              {#if room.description}
-                <div class="room-description">{room.description}</div>
-              {/if}
-              <div class="room-meta">
-                <span class="room-members">{room.members.length} 成員</span>
-                <span class="room-created">
-                  {formatDateTime(room.created_at)}
-                </span>
-              </div>
-            </div>
-            
-            <!-- 房間類型和加入策略徽章 -->
-            <div class="room-badges">
-              <!-- 房間類型徽章 -->
-              <div class="room-type-badge" class:public={room.room_type === 'public'} class:private={room.room_type === 'private'}>
-                {getRoomTypeIcon(room.room_type)}
+              
+              <div class="flex-1 min-w-0 text-left">
+                <div class="font-semibold truncate {mobileMode ? 'text-sm' : ''}">{room.name}</div>
+                <div class="text-xs opacity-60">
+                  👥 {room.members.length} 成員
+                </div>
               </div>
               
-              <!-- 加入策略徽章 -->
-              {#if room.join_policy && room.join_policy !== 'direct'}
-                <div class="join-policy-badge" class:password={room.join_policy === 'password'} class:invite={room.join_policy === 'invite'}>
-                  {getJoinPolicyIcon(room.join_policy)}
-                </div>
-              {/if}
-            </div>
-          </button>
+              <!-- 徽章 -->
+              <div class="flex gap-1">
+                {#if room.room_type === 'private'}
+                  <span class="badge badge-xs">🔒</span>
+                {/if}
+                {#if room.join_policy === 'password'}
+                  <span class="badge badge-xs">🔑</span>
+                {:else if room.join_policy === 'invite'}
+                  <span class="badge badge-xs">📧</span>
+                {/if}
+              </div>
+            </button>
+          </li>
         {/each}
         
         <!-- 載入更多指示器 -->
@@ -439,7 +464,7 @@
             </p>
           </div>
         {/if}
-      </div>
+      </ul>
     {/if}
   </div>
   
@@ -456,8 +481,9 @@
       
       <!-- Modal 內容 -->
       <div 
-        class="relative bg-base-100 rounded-lg shadow-xl max-w-2xl w-full mx-4 max-h-[90vh] overflow-y-auto"
+        class="relative bg-base-100 rounded-lg shadow-xl max-w-2xl w-[calc(100%-2rem)] md:w-full mx-4 max-h-[85vh] overflow-y-auto"
         onclick={(e) => e.stopPropagation()}
+        style="max-width: min(40rem, calc(100vw - 2rem));"
       >
         <button
           class="btn btn-sm btn-circle btn-ghost absolute right-2 top-2 z-10"
@@ -732,7 +758,16 @@
 
 <style>
   .room-list {
-    @apply flex flex-col h-full bg-base-100 border-r border-base-200;
+    @apply flex flex-col h-full bg-base-100;
+    width: 100%;
+    position: relative;
+    box-sizing: border-box;
+    overflow: hidden;
+  }
+  
+  /* 確保所有子元素也使用 border-box */
+  .room-list * {
+    box-sizing: border-box;
   }
   
   .room-list.compact {
@@ -740,11 +775,32 @@
   }
   
   .room-list-header {
-    @apply flex items-center justify-between px-4 py-3 bg-base-100 border-b border-base-200 shadow-sm;
+    @apply flex items-center justify-between bg-base-100 border-b border-base-200 shadow-sm flex-shrink-0;
+    /* 調整內邊距確保按鈕可見 */
+    padding: 0.5rem 0.75rem;
+    width: 100%;
+    box-sizing: border-box;
+    min-height: 56px;
   }
   
   .room-list-title {
-    @apply text-lg font-bold text-base-content tracking-tight;
+    @apply text-base font-bold text-base-content tracking-tight;
+    /* 防止標題過長 */
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  
+  /* 按鈕組樣式 */
+  .room-list-header .btn-group {
+    @apply flex gap-1 flex-shrink-0;
+  }
+  
+  /* 確保按鈕在移動端正確顯示 */
+  .room-list-header .btn-square {
+    @apply w-8 h-8 min-h-8;
   }
   
   .room-list.compact .room-list-title {
@@ -754,7 +810,52 @@
   .room-list-content {
     @apply flex-1 overflow-y-auto;
     min-height: 0;
-    max-height: 100%;
+    width: 100%;
+    box-sizing: border-box;
+  }
+  
+  /* DaisyUI menu 項目自定義樣式 */
+  .menu li button.active {
+    @apply bg-primary text-primary-content;
+  }
+  
+  .menu li button:not(.active):hover {
+    @apply bg-base-200;
+  }
+  
+  /* 移動端模式樣式 */
+  .room-list.mobile-mode {
+    @apply h-full flex flex-col;
+    max-height: 100vh;
+  }
+  
+  .room-list.mobile-mode .navbar {
+    @apply flex-none;
+    min-height: 3.5rem;
+  }
+  
+  /* 確保 navbar 按鈕有足夠的空間和可見性 */
+  .room-list.mobile-mode .navbar-end {
+    padding-right: 0.25rem;
+  }
+  
+  .room-list.mobile-mode .room-list-content {
+    @apply flex-1 overflow-y-auto;
+    padding: 0;
+    /* 確保內容可以滾動 */
+    -webkit-overflow-scrolling: touch;
+    min-height: 0;
+    /* 設置最大高度以確保可滾動 */
+    max-height: calc(100vh - 3.5rem);
+  }
+  
+  /* 移動端按鈕樣式 - 增大觸控區域 */
+  .room-list.mobile-mode .btn-square {
+    @apply w-11 h-11 min-h-[2.75rem];
+  }
+  
+  .room-list.mobile-mode .btn-square svg {
+    @apply w-6 h-6;
   }
   
   .empty-state {
@@ -770,11 +871,18 @@
   }
   
   .room-items {
-    @apply p-2 space-y-1;
+    /* 確保項目列表使用全寬 */
+    @apply space-y-1;
+    width: 100%;
   }
   
   .room-item {
-    @apply flex items-center w-full p-3 text-left transition-all duration-200 rounded-lg hover:bg-base-200 focus:bg-base-200 focus:outline-none focus:ring-2 focus:ring-primary focus:ring-opacity-20;
+    @apply flex items-center w-full text-left transition-all duration-200 rounded-lg hover:bg-base-200 focus:bg-base-200 focus:outline-none;
+    padding: 0.625rem;
+    margin-bottom: 0.25rem;
+    box-sizing: border-box;
+    /* 防止內容溢出 */
+    overflow: hidden;
   }
   
   .room-item.active {
@@ -786,7 +894,11 @@
   }
   
   .room-avatar {
-    @apply flex-shrink-0 mr-3;
+    @apply flex-shrink-0;
+    /* 設定適當的右邊距 */
+    margin-right: 0.75rem;
+    /* 確保頭像不被裁剪 */
+    min-width: 40px;
   }
   
   .room-list.compact .room-avatar {
@@ -795,6 +907,8 @@
   
   .room-info {
     @apply flex-1 min-w-0;
+    /* 確保文字不會超出 */
+    overflow: hidden;
   }
   
   .room-list.compact .room-info {
@@ -803,14 +917,37 @@
   
   .room-name {
     @apply font-semibold text-base text-current truncate;
+    /* 確保名稱不會超出 */
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
   
   .room-description {
     @apply text-sm text-current opacity-75 truncate mt-1 leading-tight;
+    /* 確保描述不會太長 */
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  
+  /* 手機版隱藏描述以節省空間 */
+  @media (max-width: 640px) {
+    .room-description {
+      display: none;
+    }
   }
   
   .room-meta {
-    @apply flex items-center space-x-3 text-xs text-current opacity-60 mt-2;
+    @apply flex items-center space-x-2 text-xs text-current opacity-60 mt-1;
+    /* 隱藏時間戳以節省空間 */
+  }
+  
+  /* 手機版隱藏創建時間 */
+  @media (max-width: 768px) {
+    .room-created {
+      display: none;
+    }
   }
   
   .room-members {
@@ -832,7 +969,10 @@
   }
   
   .room-badges {
-    @apply flex items-center space-x-1 ml-2;
+    @apply flex items-center space-x-1;
+    /* 減少左邊距 */
+    margin-left: 0.25rem;
+    flex-shrink: 0;
   }
   
   .room-list.compact .room-badges {
@@ -840,7 +980,12 @@
   }
   
   .room-type-badge, .join-policy-badge {
-    @apply text-xs p-1 rounded-full text-white font-medium min-w-[24px] h-6 flex items-center justify-center;
+    @apply text-xs rounded-full text-white font-medium flex items-center justify-center;
+    /* 減小徽章尺寸 */
+    padding: 0.125rem;
+    min-width: 20px;
+    height: 20px;
+    font-size: 0.625rem;
   }
   
   /* 房間類型徽章顏色 */
