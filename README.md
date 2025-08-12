@@ -325,12 +325,14 @@ pytest tests/ -v --cov=app --cov-report=html
 ## 📚 核心文檔
 
 - 🛠️ **[技術參考](docs/technical-reference.md)** - 三層架構、BFF 架構、MongoDB 優化、SvelteKit、時區處理
+- 📐 **[C4 架構文檔](docs/c4-architecture.md)** - 系統架構的完整 C4 模型視圖（Context、Container、Component、Code）
 
 ### 文檔重點內容
 
 - **[後端三層架構設計](docs/technical-reference.md#後端三層架構設計)** - 路由層、服務層、資料層的職責和實現
 - **[前端 BFF 架構設計](docs/technical-reference.md#前端-bff-架構設計)** - API 聚合、數據轉換、認證管理
 - **[MongoDB 優化策略](docs/technical-reference.md#mongodb-優化策略)** - 反規範化設計實現 51x 查詢效能
+- **[C4 系統架構](docs/c4-architecture.md)** - 完整的系統架構視圖（Context、Container、Component、Code）、WebSocket 即時通訊設計、依賴注入容器實現
 
 ## 🔧 核心 API 端點
 
