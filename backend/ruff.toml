@@ -1,0 +1,22 @@
+# Ruff configuration
+target-version = "py313"
+line-length = 88
+
+[format]
+quote-style = "double"
+indent-style = "space"
+
+[lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "UP",  # pyupgrade
+]
+ignore = [
+    "E501", # line too long (handled by formatter)
+]
+
+[lint.isort]
+known-first-party = ["app"]
