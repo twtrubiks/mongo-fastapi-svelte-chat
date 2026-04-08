@@ -1,0 +1,1028 @@
+<script lang="ts">
+  import { onMount } from 'svelte';
+  import { fade, fly } from 'svelte/transition';
+  import { quartOut } from 'svelte/easing';
+  import { page } from '$app/stores';
+  import { goto } from '$app/navigation';
+  import { browser } from '$app/environment';
+  import { roomStore, roomUsers } from '$lib/stores/room.svelte';
+  import { messageStore, messageLoading } from '$lib/stores/message.svelte';
+  import { currentUser, isAuthenticated, authStore } from '$lib/stores/auth.svelte';
+  import { wsManager } from '$lib/websocket/manager';
+  import { typingIndicatorStore } from '$lib/stores/typingIndicator.svelte';
+  import { RoomList, RoomHeader, UserList, RoomSettings, MobileMembersModal } from '$lib/components/room';
+  import MessageList from '$lib/components/chat/MessageList.svelte';
+  import MessageInput from '$lib/components/chat/MessageInput.svelte';
+  import MessageSearch from '$lib/components/chat/MessageSearch.svelte';
+  import { ChatEmptyState } from '$lib/components/chat';
+  import { Toast, ErrorToast, ConnectionStatus } from '$lib/components/ui';
+  import { errorStore } from '$lib/stores/errorHandler.svelte';
+  import { networkStore } from '$lib/stores/networkStatus.svelte';
+  import { messageRetryManager } from '$lib/utils/messageRetry';
+  import { apiClient } from '$lib/api/client';
+  import { bffApiClient } from '$lib/bff-api-client';
+  import { createMarkAsReadTracker } from '$lib/utils/markAsRead';
+  import { processFileUpload } from '$lib/utils/fileUploadHandler';
+  import type { Room, RoomSummary, Message, User } from '$lib/types';
+  
+  let currentRoom: Room | null = $state(null);
+  let showMobileMenu = $state(false);
+  let drawerCheckbox: HTMLInputElement | null = $state(null);
+  // WebSocket 連接狀態
+  let isWebSocketConnected = $state(false);
+  // Toast 狀態
+  let toastState = $state({
+    show: false,
+    message: '',
+    type: 'info' as 'success' | 'error' | 'warning' | 'info'
+  });
+  
+  // 房間設定狀態
+  let showRoomSettings = $state(false);
+  let showSearchModal = $state(false);
+  let showMembersModal = $state(false);
+  let showUserSidebar = $state(true);
+  let screenWidth = $state(typeof window !== 'undefined' ? window.innerWidth : 1024); // 預設為桌面寬度
+  let avatarErrors = $state<Record<string, boolean>>({});  // 追蹤頭像載入錯誤
+  let isLoading = $state(true); // 新增載入狀態
+  let isInitialized = $state(false); // 追蹤初始化狀態
+  let currentLoadingRoomId: string | null = $state(null); // 正在載入的房間 ID
+  let messageInputComponent: any = $state(null);
+  let mobileMessageInputComponent: any = $state(null);
+  let desktopMessageListComponent: any = $state(null);
+  let mobileMessageListComponent: any = $state(null);
+  let messageIdToScrollTo: string | null = $state(null); // 待定位的訊息 ID
+  
+  // 已讀狀態追蹤器
+  const markAsReadTracker = createMarkAsReadTracker();
+
+  // 創建房間 context - 暫時禁用
+  // const roomContext = createRoomContext();
+  // setRoomContext(roomContext);
+  
+  let roomId = $derived($page.params.id);
+  let isDesktop = $derived(screenWidth >= 768);
+  let typingUsers = $derived(roomId ? typingIndicatorStore.getTypingUsers(roomId) : []);
+  
+  // 創建本地的響應式用戶變數，避免重複調用函數
+  let user = $derived(currentUser());
+  let isAuth = $derived(isAuthenticated());
+  let messages = $derived.by(() => {
+    // 使用 messageStore.messages 來確保響應式追蹤
+    const allMessages = messageStore.messages;
+    const filtered = allMessages.filter(msg => msg.room_id === roomId);
+    return filtered;
+  });
+  let isMessageLoading = $derived(messageLoading());
+  let users = $derived(roomUsers());
+  
+  // 確保只有在初始化完成後才開始渲染
+  let canRender = $derived(isInitialized && !isLoading);
+  
+  
+  // 響應式計算當前聊天室的用戶列表和在線用戶數
+  let currentRoomUsers = $derived.by(() => {
+    const roomUsersList = users || [];
+    return roomUsersList;
+  });
+  let onlineUserCount = $derived(currentRoomUsers.filter(u => u.is_active).length);
+  
+  // 響應式檢查是否有當前用戶
+  let hasCurrentUser = $derived(!!user?.id);
+  
+  // 響應式檢查當前聊天室是否已載入
+  let hasCurrentRoom = $derived(!!currentRoom);
+  
+  // 響應式檢查是否可以刪除當前房間
+  let canDeleteCurrentRoom = $derived.by(() => {
+    if (currentRoom === null || user === null || user === undefined) return false;
+    return currentRoom.owner_id === user.id;
+  });
+  
+  // 響應式處理訊息定位
+  $effect(() => {
+    if (messageIdToScrollTo && messages.length > 0 && !isMessageLoading) {
+      const messageListComponent = isDesktop ? desktopMessageListComponent : mobileMessageListComponent;
+      
+      if (messageListComponent && messageListComponent.scrollToMessage) {
+        // 立即執行定位，不等待自動滾動
+        requestAnimationFrame(() => {
+          const success = messageListComponent.scrollToMessage(messageIdToScrollTo, true);
+          
+          if (success) {
+            showToast('已定位到指定訊息', 'success');
+            messageIdToScrollTo = null; // 清除待定位 ID
+          } else {
+            // 如果失敗，可能需要載入更多訊息
+            showToast('訊息可能不在當前載入範圍', 'info');
+            messageIdToScrollTo = null; // 避免無限嘗試
+          }
+        });
+      }
+    }
+  });
+  
+  // 響應式檢查 WebSocket 連接狀態 - 已在第28行定義
+  
+  // 處理房間訪問權限
+  async function handleRoomAccess(roomId: string, requirements: any) {
+    const room = requirements.room;
+    
+    // 如果房間可以直接加入
+    if (requirements.requirements.canDirectJoin) {
+      try {
+        await roomStore.joinRoom(roomId);
+        // 成功加入後重新載入房間
+        const { room } = await roomStore.loadRoom(roomId);
+        await messageStore.loadMessages(roomId);
+        currentRoom = room;
+
+        // 建立 WebSocket 連接（透過 BFF ticket 認證）
+        await wsManager.getInstance().connect(roomId);
+        isWebSocketConnected = true;
+
+        showToast('成功加入房間', 'success');
+        return;
+      } catch (error) {
+        console.error('自動加入房間失敗:', error);
+      }
+    }
+    
+    // 顯示房間信息和提示用戶需要權限
+    showToast(`無法直接訪問房間「${room.name}」，請通過適當方式加入`, 'warning');
+    
+    // 重定向到房間列表，並可選擇顯示加入該房間的選項
+    await redirectToAvailableRoom();
+  }
+  
+  // 重定向到可用的房間
+  async function redirectToAvailableRoom() {
+    try {
+      // 獲取用戶已加入的房間列表
+      const userRooms = await roomStore.loadMyRooms(true);
+      
+      if (userRooms && userRooms.length > 0) {
+        // 重定向到第一個可用房間
+        const firstRoom = userRooms[0]!;
+        showToast(`已為您切換到「${firstRoom.name}」`, 'info');
+        goto(`/app/room/${firstRoom.id}`);
+      } else {
+        // 沒有可用房間，導回房間列表顯示空狀態
+        showToast('您還沒有加入任何房間，請先創建或加入一個房間', 'info');
+        goto('/app/rooms', { replaceState: true });
+      }
+    } catch (error) {
+      console.error('獲取用戶房間列表失敗:', error);
+      // 如果獲取失敗，顯示錯誤但保持在當前頁面
+      showToast('無法載入您的房間列表，請重新登入', 'error');
+      // 不跳轉，讓用戶可以看到側邊欄選擇房間
+    }
+  }
+  
+  // 載入聊天室
+  async function loadRoom(id: string) {
+    // 防止重複載入同一個房間
+    if (currentLoadingRoomId === id) {
+      return;
+    }
+    
+    currentLoadingRoomId = id;
+    
+    try {
+      // 斷開當前連接
+      if (currentRoom && currentRoom.id !== id) {
+        typingIndicatorStore.clearRoom(currentRoom.id);
+        wsManager.getInstance().disconnect();
+      }
+      
+      // 先檢查房間權限和加入要求
+      try {
+        const joinRequirements = await roomStore.checkJoinRequirements(id);
+        // 如果用戶不是成員且房間需要特殊權限，處理加入流程
+        if (!joinRequirements.isMember) {
+          await handleRoomAccess(id, joinRequirements);
+          return; // 處理完成後返回，避免繼續載入
+        }
+      } catch (error: any) {
+        console.error('[Room] 檢查房間權限失敗:', error);
+        // 如果房間不存在或無法訪問，重定向到房間列表
+        await redirectToAvailableRoom();
+        return;
+      }
+      
+      // 載入聊天室資料
+      const { room } = await roomStore.loadRoom(id);
+      
+      // 立即設置 currentRoom，讓 UI 可以開始渲染內容
+      currentRoom = room;
+      
+      await messageStore.loadMessages(id);
+      
+      // 重要！在訊息載入後立即初始化已讀追蹤器的訊息計數
+      markAsReadTracker.initMessageCount(messages.length);
+      
+      // 建立 WebSocket 連接（透過 BFF ticket 認證）
+      // WebSocket 失敗不應影響房間內容顯示，分開處理
+      try {
+        await wsManager.getInstance().connect(id);
+        isWebSocketConnected = true;
+      } catch (wsError) {
+        console.warn('[Room] WebSocket 連接失敗，稍後會自動重連:', wsError);
+        isWebSocketConnected = false;
+      }
+
+    } catch (error) {
+      console.error('[Room] 載入聊天室失敗:', error);
+      showToast('載入聊天室失敗', 'error');
+      // 不跳轉，讓用戶可以從側邊欄選擇其他房間
+      currentRoom = null;
+    } finally {
+      currentLoadingRoomId = null;
+    }
+  }
+  
+  // 選擇聊天室
+  async function handleRoomSelected(data: { room: RoomSummary }) {
+    const { room } = data;
+    closeMobileMenu(); // 選擇房間後關閉側邊欄
+    goto(`/app/room/${room.id}`);
+  }
+  
+  // 發送訊息
+  async function handleSendMessage(detail: { content: string, type: string, messageId: string }) {
+    const { content, type, messageId } = detail;
+
+    if (!hasCurrentRoom) {
+      return;
+    }
+    
+    // 確保 type 是有效的類型
+    const messageType = type as 'text' | 'image' | 'file';
+    
+    try {
+      // 通過 WebSocket 發送
+      if (isWebSocketConnected) {
+        wsManager.getInstance().sendMessage(content, messageType, messageId);
+      } else {
+        await messageStore.sendMessage(currentRoom!.id, { content, message_type: messageType });
+      }
+    } catch (error) {
+      console.error('發送訊息失敗:', error);
+      showToast('發送訊息失敗', 'error');
+    }
+  }
+
+
+  // 處理打字指示器
+  function handleTyping(detail: { isTyping: boolean }) {
+    if (isWebSocketConnected) {
+      wsManager.getInstance().sendTypingIndicator(detail.isTyping);
+    }
+  }
+
+  // 處理檔案上傳完成（FileUpload 組件自己完成上傳，這裡負責發送訊息）
+  async function handleFileUploaded(detail: { file: File, url: string, filename: string }) {
+    if (!currentRoom) {
+      console.error('沒有當前房間，無法發送訊息');
+      return;
+    }
+
+    const result = await processFileUpload({
+      ...detail,
+      roomId: currentRoom.id,
+      isWsConnected: isWebSocketConnected,
+      sendWsMessage: (content, type, id, metadata) =>
+        wsManager.getInstance().sendMessage(content, type, id, metadata),
+      sendHttpMessage: async (roomId, data) => { await messageStore.sendMessage(roomId, data); },
+    });
+
+    showToast(result.message, result.messageType);
+  }
+  
+  // 處理錯誤
+  function handleError(detail: { message: string }) {
+    const { message } = detail;
+    showToast(message, 'error');
+  }
+  
+  // 處理頭像載入錯誤
+  function handleAvatarError(userId: string) {
+    avatarErrors = { ...avatarErrors, [userId]: true };
+  }
+  
+  // 顯示通知
+  function showToast(message: string, type: 'success' | 'error' | 'warning' | 'info') {
+    toastState = {
+      show: true,
+      message,
+      type
+    };
+  }
+  
+  // 切換移動端菜單
+  function toggleMobileMenu() {
+    showMobileMenu = !showMobileMenu;
+    if (drawerCheckbox) {
+      drawerCheckbox.checked = showMobileMenu;
+    }
+  }
+  
+  // 關閉移動端菜單
+  function closeMobileMenu() {
+    showMobileMenu = false;
+    if (drawerCheckbox) {
+      drawerCheckbox.checked = false;
+    }
+  }
+  
+  // 離開聊天室
+  async function handleLeaveRoom(event: { room: Room | null }) {
+    const room = event.room;
+    if (!room) return;
+
+    if (confirm(`確定要離開聊天室「${room.name}」嗎？`)) {
+      try {
+        await roomStore.leaveRoom(room.id);
+        wsManager.getInstance().disconnect();
+        currentRoom = null;
+        messageStore.clearMessages();
+        // 嘗試載入其他可用房間
+        await redirectToAvailableRoom();
+        showToast('已離開聊天室', 'info');
+      } catch (error) {
+        console.error('離開聊天室失敗:', error);
+        showToast('離開聊天室失敗', 'error');
+      }
+    }
+  }
+  
+  // 刪除聊天室
+  async function handleDeleteRoom(event: { room: Room | null }) {
+    const room = event.room;
+    
+    if (!room || !user) return;
+    
+    
+    // 檢查是否為房間擁有者
+    if (room.owner_id !== user.id) {
+      showToast('只有房間擁有者可以刪除聊天室', 'error');
+      return;
+    }
+    
+    // 確認對話框
+    const confirmed = confirm(
+      `確定要刪除聊天室「${room.name}」嗎？\n\n` +
+      `此操作無法復原，將刪除所有聊天記錄。`
+    );
+    
+    if (!confirmed) return;
+    
+    try {
+      const result = await apiClient.rooms.delete(room.id);
+      // 成功刪除，斷開 WebSocket 並導航到其他房間
+      wsManager.getInstance().disconnect();
+      currentRoom = null;
+      messageStore.clearMessages();
+      showToast(result.message || '聊天室已刪除', 'success');
+      // 嘗試重定向到其他可用房間
+      await redirectToAvailableRoom();
+    } catch (error: any) {
+      const message = error.name === 'BFFError' ? `刪除失敗：${error.message || '未知錯誤'}` : '刪除失敗，請稍後重試';
+      showToast(message, 'error');
+    }
+  }
+  
+  // 用戶點擊
+  function handleUserClick(event: { user: User }) {
+    const { user } = event;
+    // TODO: 實作用戶資料查看功能
+  }
+  
+  // 處理搜尋訊息選擇
+  function handleSelectMessage(message: Message) {
+    showSearchModal = false;
+    
+    // 選擇正確的 MessageList 組件引用
+    const messageListComponent = isDesktop ? desktopMessageListComponent : mobileMessageListComponent;
+    
+    // 滾動到選定的訊息
+    if (messageListComponent && messageListComponent.scrollToMessage) {
+      const success = messageListComponent.scrollToMessage(message.id, true);
+      if (success) {
+        showToast('已定位到選定訊息', 'success');
+      } else {
+        showToast('訊息可能不在當前載入的範圍內', 'warning');
+      }
+    } else {
+      showToast('無法定位到訊息', 'error');
+    }
+  }
+  
+  // WebSocket 錯誤處理
+  function setupWebSocketErrorHandling() {
+    const ws = wsManager.getInstance();
+    
+    // 監聽連接狀態
+    ws.on('disconnected', (data) => {
+      const { code, reason } = data;
+      if (code !== 1000) { // 非正常關閉
+        errorStore.showConnectionError({
+          label: '重新連接',
+          handler: () => {
+            ws.manualReconnect().catch((error) => {
+              console.error('Manual reconnect failed:', error);
+            });
+          }
+        });
+      }
+    });
+    
+    // 監聽重連失敗
+    ws.on('reconnect_failed', (data) => {
+      const { attempts } = data;
+      errorStore.showReconnectFailed(attempts, {
+        label: '重試',
+        handler: () => {
+          ws.manualReconnect().catch((error) => {
+            console.error('Manual reconnect failed:', error);
+          });
+        }
+      });
+    });
+    
+    // 監聽訊息錯誤
+    ws.on('message_error', (data) => {
+      if (data.temp_id) {
+        // 不顯示錯誤 toast，讓 MessageInput 組件處理重試 UI
+      } else {
+        // 沒有 temp_id 的通用錯誤
+        errorStore.showMessageSendError('', {
+          label: '重試',
+          handler: () => {
+          }
+        });
+      }
+    });
+    
+    // 監聽網路狀態
+    ws.on('offline', () => {
+      errorStore.showNetworkError();
+    });
+    
+    // 網路狀態變化監聽已移至組件層級的 $effect
+  }
+  
+  // 記錄上次載入的房間 ID，避免重複載入
+  let lastLoadedRoomId: string | null = null;
+  
+  // 監聽路由變化和認證狀態
+  $effect(() => {
+    if (roomId && isAuth) {
+      // 避免重複載入同一個房間
+      if (lastLoadedRoomId !== roomId) {
+        lastLoadedRoomId = roomId;
+        loadRoom(roomId);
+        setupWebSocketErrorHandling();
+      }
+    }
+  });
+  
+  // 監聽認證狀態變化 - 如果未認證則重定向
+  $effect(() => {
+    if (!isAuth && browser) {
+      goto('/login');
+    }
+  });
+  
+  // 監聽網路狀態變化
+  $effect(() => {
+    if (!networkStore.isOnline) {
+      errorStore.showNetworkError({
+        label: '重新檢查',
+        handler: () => {
+          // 嘗試重新連接
+          if (currentRoom) {
+            loadRoom(currentRoom.id);
+          }
+        }
+      });
+    }
+  });
+  
+  // 檢查認證狀態
+  async function checkAuthentication() {
+    if (!isAuth) {
+      // 嘗試從 server 驗證認證狀態（httpOnly cookie 自動帶上）
+      try {
+        await authStore.verify();
+        return true;
+      } catch (error) {
+        console.error('[Room] 認證驗證失敗:', error);
+      }
+
+      const currentPath = $page.url.pathname;
+      goto(`/login?redirect=${encodeURIComponent(currentPath)}`);
+      return false;
+    }
+    return true;
+  }
+
+  // 響應式處理自動已讀功能 - 進入房間或切換房間時
+  $effect(() => {
+    if (!browser || !currentRoom || !isWebSocketConnected) return;
+    return markAsReadTracker.onRoomEnter(currentRoom.id, messages.length);
+  });
+
+  // 響應式處理自動已讀功能 - 收到新訊息時
+  $effect(() => {
+    if (!browser || !currentRoom || !isWebSocketConnected) return;
+    markAsReadTracker.onNewMessage(currentRoom.id, messages.length);
+  });
+
+  // 組件銷毀時清理已讀追蹤器
+  $effect(() => {
+    return () => markAsReadTracker.destroy();
+  });
+
+  // 檢查是否有待定位的訊息
+  let hasMessageToScrollTo = $derived(!!messageIdToScrollTo);
+  
+  // 響應式處理 URL 參數中的訊息定位
+  $effect(() => {
+    if (!browser) return;
+    
+    // 監聽 page 變化，處理 URL 查詢參數
+    const searchParams = $page.url.searchParams;
+    const targetMessageId = searchParams.get('message');
+    
+    
+    if (targetMessageId && targetMessageId !== messageIdToScrollTo) {
+      // 設置待定位的訊息 ID，讓響應式邏輯處理
+      messageIdToScrollTo = targetMessageId;
+      
+      // 清理 URL 參數，避免重複觸發
+      const newUrl = $page.url.pathname;
+      goto(newUrl, { replaceState: true });
+    }
+  });
+
+  // 清理和螢幕尺寸監聯
+  onMount(() => {
+    // 監聽螢幕尺寸變化
+    const updateScreenWidth = () => {
+      screenWidth = window.innerWidth;
+    };
+
+    updateScreenWidth();
+    window.addEventListener('resize', updateScreenWidth);
+
+    // 監聽 WebSocket 連接狀態變化
+    const ws = wsManager.getInstance();
+
+    const handleConnected = () => {
+      isWebSocketConnected = true;
+    };
+
+    const handleDisconnected = () => {
+      isWebSocketConnected = false;
+    };
+
+    const handleRoomDeleted = (data: any) => {
+      const deletedRoomId = data?.room_id || data?.roomId;
+      if (deletedRoomId && deletedRoomId === roomId) {
+        goto('/app/dashboard?room_deleted=1', { replaceState: true });
+      }
+    };
+
+    const handleRoomUpdated = (data: any) => {
+      if (data?.room?.id === roomId && currentRoom) {
+        currentRoom = { ...currentRoom, ...data.room };
+      }
+    };
+
+    ws.on('connected', handleConnected);
+    ws.on('disconnected', handleDisconnected);
+    ws.on('room_deleted', handleRoomDeleted);
+    ws.on('room_updated', handleRoomUpdated);
+
+    // 檢查當前連接狀態
+    if (ws.isConnected()) {
+      isWebSocketConnected = true;
+    }
+
+    // 異步初始化邏輯
+    (async () => {
+      const isAuthResult = await checkAuthentication();
+      if (!isAuthResult) {
+        return;
+      }
+
+      // 檢查 URL 中是否有訊息定位參數
+      if (browser) {
+        const searchParams = $page.url.searchParams;
+        const targetMessageId = searchParams.get('message');
+        if (targetMessageId) {
+          messageIdToScrollTo = targetMessageId;
+          const newUrl = $page.url.pathname;
+          goto(newUrl, { replaceState: true });
+        }
+      }
+
+      // 設置初始化和載入完成
+      isInitialized = true;
+      isLoading = false;
+    })();
+
+    return () => {
+      ws.off('connected', handleConnected);
+      ws.off('disconnected', handleDisconnected);
+      ws.off('room_deleted', handleRoomDeleted);
+      ws.off('room_updated', handleRoomUpdated);
+      wsManager.getInstance().disconnect();
+      typingIndicatorStore.clearAll();
+      isWebSocketConnected = false;
+      window.removeEventListener('resize', updateScreenWidth);
+
+      // 清理重試管理器
+      messageRetryManager.clearAll();
+    };
+  });
+</script>
+
+<div class="chat-app h-full">
+  {#if !canRender}
+    <!-- 載入中指示器 -->
+    <div class="flex items-center justify-center h-screen" transition:fade>
+      <div class="loading loading-spinner loading-lg"></div>
+    </div>
+  {:else if isDesktop}
+    <!-- 桌面端布局 - 使用 Svelte 條件渲染 -->
+    <div class="desktop-layout" transition:fade={{ duration: 200 }}>
+      <!-- 左側：聊天室列表 -->
+      <div class="room-sidebar" transition:fly={{ x: -300, duration: 300 }}>
+        <RoomList
+          currentRoomId={currentRoom?.id ?? null}
+          onRoomSelected={handleRoomSelected}
+        />
+      </div>
+
+      <!-- 中間：聊天區域 -->
+      <div class="chat-area" transition:fade={{ duration: 200, delay: 100 }}>
+        <!-- 桌面版房間標題 -->
+        <div class="room-header desktop-room-header">
+          <RoomHeader
+            room={currentRoom}
+            onlineCount={onlineUserCount}
+            currentUserId={user?.id ?? null}
+            onSettings={() => showRoomSettings = true}
+            onLeave={handleLeaveRoom}
+            onDelete={handleDeleteRoom}
+            onMembers={() => showUserSidebar = !showUserSidebar}
+            onSearch={() => showSearchModal = true}
+          />
+        </div>
+
+        <div class="chat-content">
+          <!-- 訊息列表區域 - 固定高度並允許內部滾動 -->
+          <div class="message-container">
+            {#if hasCurrentRoom}
+              <MessageList
+                bind:this={desktopMessageListComponent}
+                messages={messages}
+                loading={isMessageLoading}
+                roomId={currentRoom!.id}
+                skipAutoScroll={hasMessageToScrollTo}
+                {typingUsers}
+              />
+            {:else}
+              <ChatEmptyState />
+            {/if}
+          </div>
+          
+          <!-- 輸入框區域 - 總是顯示 -->
+          <div class="input-area flex-shrink-0 border-t border-base-200">
+            <MessageInput
+              onSend={handleSendMessage}
+              onFileUploaded={handleFileUploaded}
+              onError={handleError}
+              onTyping={handleTyping}
+              bind:this={messageInputComponent}
+            />
+          </div>
+        </div>
+      </div>
+      
+      <!-- 右側：用戶列表（可收合） -->
+      {#if showUserSidebar}
+        <div class="user-sidebar" transition:fly={{ x: 300, duration: 300 }}>
+          <UserList
+            users={currentRoomUsers}
+            loading={roomStore.loading}
+            currentUserId={user?.id ?? null}
+            hasMore={roomStore.hasMoreMembers}
+            loadingMore={roomStore.loadingMoreMembers}
+            onUserClick={handleUserClick}
+            onLoadMore={() => currentRoom && roomStore.loadMoreMembers(currentRoom.id)}
+          />
+        </div>
+      {/if}
+    </div>
+  {:else}
+    <!-- 移動端布局 - 使用 DaisyUI drawer -->
+    <div class="drawer">
+      <input 
+        id="mobile-drawer" 
+        type="checkbox" 
+        class="drawer-toggle" 
+        bind:this={drawerCheckbox}
+        bind:checked={showMobileMenu}
+      />
+      
+      <!-- 主要內容 - 使用 DaisyUI 的標準佈局，支援 safe area -->
+      <div class="drawer-content flex flex-col" style="height: 100dvh; position: relative; overflow: hidden;">
+        <!-- Header - 移除 navbar，直接使用 RoomHeader -->
+        <div class="flex-none">
+          <RoomHeader
+            room={currentRoom}
+            onlineCount={onlineUserCount}
+            showMenu={showMobileMenu}
+            currentUserId={user?.id ?? null}
+            onToggleMenu={() => toggleMobileMenu()}
+            onLeave={handleLeaveRoom}
+            onDelete={handleDeleteRoom}
+            onSettings={() => { showRoomSettings = true; }}
+            onMembers={() => showMembersModal = true}
+            onSearch={() => { showSearchModal = true; }}
+          />
+        </div>
+        
+        {#if hasCurrentRoom}
+          <!-- 訊息列表 - 給底部輸入框留出空間 -->
+          <div class="flex-1 min-h-0 overflow-hidden mobile-messages-container">
+            <MessageList
+              bind:this={mobileMessageListComponent}
+              messages={messages}
+              loading={isMessageLoading}
+              roomId={currentRoom!.id}
+              skipAutoScroll={hasMessageToScrollTo}
+              {typingUsers}
+            />
+          </div>
+          
+          <!-- 輸入框 - 使用 fixed 定位確保始終可見 -->
+          <div class="mobile-input-fixed">
+            <MessageInput
+              onSend={handleSendMessage}
+              onFileUploaded={handleFileUploaded}
+              onError={handleError}
+              onTyping={handleTyping}
+              bind:this={mobileMessageInputComponent}
+            />
+          </div>
+        {:else}
+          <ChatEmptyState subtitle="點擊左上角選單選擇聊天室" />
+        {/if}
+      </div>
+      
+      <!-- 側邊欄 - 優化寬度以適應手機螢幕 -->
+      <div class="drawer-side z-40">
+        <label for="mobile-drawer" class="drawer-overlay" aria-label="關閉菜單"></label>
+        <!-- 減少側邊欄寬度，留出更多主要內容空間 -->
+        <div class="h-full w-72 max-w-[85vw] bg-base-100 flex flex-col shadow-xl">
+          <RoomList
+            currentRoomId={currentRoom?.id ?? null}
+            onRoomSelected={handleRoomSelected}
+            mobileMode={true}
+          />
+        </div>
+      </div>
+    </div>
+  {/if}
+</div>
+
+<!-- 連接狀態指示器 -->
+<ConnectionStatus />
+
+<!-- 房間設定模態框 -->
+{#if currentRoom}
+  <RoomSettings
+    bind:show={showRoomSettings}
+    room={currentRoom}
+    onClose={() => showRoomSettings = false}
+    onUpdate={(updatedRoom) => {
+      currentRoom = updatedRoom;
+      showToast('房間設定已更新', 'success');
+    }}
+  />
+{/if}
+
+<!-- 成員列表模態框（僅手機版） -->
+{#if !isDesktop}
+  <MobileMembersModal
+    show={showMembersModal}
+    users={currentRoomUsers}
+    loading={roomStore.loading}
+    currentUserId={user?.id ?? null}
+    hasMore={roomStore.hasMoreMembers}
+    loadingMore={roomStore.loadingMoreMembers}
+    onClose={() => showMembersModal = false}
+    onUserClick={handleUserClick}
+    onLoadMore={() => currentRoom && roomStore.loadMoreMembers(currentRoom.id)}
+  />
+{/if}
+
+<!-- 通知 -->
+<Toast
+  bind:show={toastState.show}
+  type={toastState.type}
+  message={toastState.message}
+  onClose={() => {
+    toastState.show = false;
+  }}
+/>
+
+<!-- 錯誤處理 -->
+{#if errorStore.currentError}
+  <ErrorToast
+    show={true}
+    title={errorStore.currentError.title}
+    message={errorStore.currentError.message}
+    type={errorStore.currentError.type}
+    action={errorStore.currentError.action ?? null}
+    autoHide={errorStore.currentError.autoHide ?? true}
+    duration={errorStore.currentError.duration ?? 5000}
+    onHide={() => {
+      if (errorStore.currentError) {
+        errorStore.removeError(errorStore.currentError.id);
+      }
+    }}
+  />
+{/if}
+
+<!-- 搜尋模態框 -->
+{#if currentRoom}
+  <MessageSearch 
+    roomId={currentRoom.id}
+    bind:isOpen={showSearchModal}
+    onClose={() => showSearchModal = false}
+    onSelectMessage={handleSelectMessage}
+  />
+{/if}
+
+<style>
+	@reference "$lib/styles/tailwind.css";
+  .chat-app {
+    @apply h-full bg-base-100;
+    width: 100%;
+  }
+  
+  /* 桌面端布局 */
+  .desktop-layout {
+    @apply h-full flex overflow-hidden;
+    width: 100%;
+  }
+  
+  .room-sidebar {
+    @apply border-r border-base-200 flex-shrink-0 h-full;
+    width: 320px;
+    min-width: 320px;
+  }
+  
+  /* 滾動條美化 - 默認隱藏，懸停或聚焦時顯示 */
+  .room-sidebar :global(.room-list) {
+    @apply h-full;
+  }
+  
+  .room-sidebar :global(.room-list-content)::-webkit-scrollbar {
+    @apply w-2;
+  }
+  
+  .room-sidebar :global(.room-list-content)::-webkit-scrollbar-track {
+    @apply bg-base-200;
+  }
+  
+  .room-sidebar :global(.room-list-content)::-webkit-scrollbar-thumb {
+    @apply bg-base-300 rounded-full transition-all duration-300;
+  }
+  
+  .room-sidebar :global(.room-list-content):hover::-webkit-scrollbar-thumb {
+    @apply bg-base-content opacity-30;
+  }
+  
+  .room-sidebar :global(.room-list-content)::-webkit-scrollbar-thumb:hover {
+    @apply bg-primary;
+  }
+  
+  .chat-area {
+    @apply flex flex-col h-full min-h-0;
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+  
+  /* 桌面版房間標題 */
+  .desktop-room-header {
+    @apply flex-shrink-0 border-b border-base-200 bg-base-100 relative z-20;
+  }
+  
+  .chat-content {
+    @apply flex-1 flex flex-col overflow-hidden;
+  }
+  
+  .message-container {
+    @apply flex-1 overflow-hidden min-h-0;
+  }
+  
+  .input-area {
+    @apply flex-shrink-0;
+    min-height: 100px; /* 最小高度給輸入框 */
+    /* 移除 max-height 限制讓檔案上傳面板可以正常顯示 */
+  }
+  
+  .user-sidebar {
+    @apply border-l border-base-200 flex-shrink-0 h-full;
+    width: 256px;
+    min-width: 256px;
+  }
+  
+  /* 移動端布局 - 使用 DaisyUI drawer */
+  .drawer {
+    @apply h-full;
+  }
+  
+  .drawer-content {
+    @apply h-full flex flex-col;
+    /* 確保容器不會超出視窗 */
+    max-height: 100vh;
+    max-height: 100dvh;
+  }
+  
+  /* 確保drawer-side 的內容不會被截斷 */
+  .drawer-side {
+    /* 移除任何可能造成截斷的樣式 */
+    overflow: visible;
+  }
+  
+  .drawer-side > div {
+    /* 確保側邊欄內容完整顯示 */
+    box-sizing: border-box;
+  }
+  
+  /* 修復 drawer 打開時的 z-index 問題 */
+  .drawer-toggle:checked ~ .drawer-content {
+    /* 確保內容不會被遮擋 */
+    position: relative;
+  }
+  
+  /* 優化 drawer 動畫 */
+  .drawer-side {
+    transition: transform 0.3s ease-out;
+  }
+  
+  /* 針對小螢幕手機的優化 (< 375px) */
+  @media (max-width: 374px) {
+    .drawer-side > div {
+      width: 260px;
+    }
+  }
+  
+  /* 確保觸控事件正確處理 */
+  @media (max-width: 768px) {
+    .drawer-overlay {
+      /* 增加 overlay 的觸控區域 */
+      -webkit-tap-highlight-color: transparent;
+    }
+  }
+  
+  /* 手機端微調 */
+  @media (max-width: 768px) {
+    /* 確保輸入框始終可見 */
+    .drawer-content {
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      height: 100dvh;
+      max-height: -webkit-fill-available; /* iOS Safari 支援 */
+    }
+    
+    /* 移動端輸入框固定定位 */
+    .mobile-input-fixed {
+      position: fixed;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      background: oklch(var(--b1));
+      border-top: 1px solid oklch(var(--b2));
+      z-index: 100;
+      /* 增加基礎 padding + iOS 安全區域 */
+      padding-bottom: calc(0.5rem + env(safe-area-inset-bottom, 0px));
+      /* 確保有最小高度 */
+      min-height: 70px;
+    }
+    
+    /* 訊息容器底部留空間給輸入框 */
+    .mobile-messages-container {
+      /* MessageInput 組件的高度 + 額外 padding + 安全區域 */
+      padding-bottom: calc(70px + 0.5rem + env(safe-area-inset-bottom, 0px));
+    }
+  }
+</style>

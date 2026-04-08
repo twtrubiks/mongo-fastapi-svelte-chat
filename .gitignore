@@ -1,0 +1,40 @@
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Environment
+.env
+.env.local
+.env.production
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.ruff_cache/
+.pytest_cache/
+.mypy_cache/
+htmlcov/
+.coverage
+
+# Node
+node_modules/
+
+# Uploads
+uploads/
+
+# Claude Code
+.claude/
+CLAUDE.md
+Plans.md
+
+# Harness 暫存檔（per-task contract 檔案）
+.claude/harness/contracts/
+/tmp/e2e-*.png
+
+# pyenv
+.python-version
