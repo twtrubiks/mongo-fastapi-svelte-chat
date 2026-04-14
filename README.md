@@ -16,7 +16,11 @@
 
 採用三層架構設計和 BFF 模式，具備完整的前後端實現。
 
-本專案使用 Claude Code 完成 + Codex Review, 不少部份屬於 MVP 階段.
+本專案使用 Claude Code 完成開發，搭配自建的 [Harness 自主迴環開發流程](docs/claude-code-harness-impl.md)
+
+進行 Plan → Work → Review 流程管理，並使用 OpenAI Codex 作為第二意見 Code Review(手動)。
+
+不少部份屬於 MVP 階段。
 
 ## 特色功能
 
@@ -272,9 +276,28 @@ cp .env.example .env
 │   │       ├── app/           # 應用頁面
 │   │       ├── (auth)/        # 認證頁面
 │   │       └── api/           # BFF API 路由
-└── docs/                       # 專案文檔
-    ├── c4-architecture.md      # C4 架構文檔
-    └── technical-reference.md  # 技術參考
+├── .claude/                        # Claude Code Harness 配置
+│   ├── commands/                   # 指令劇本（5 個 slash command）
+│   │   ├── harness-plan.md         #   /harness-plan — 任務規劃
+│   │   ├── harness-work.md         #   /harness-work — 任務迴環
+│   │   ├── harness-review.md       #   /harness-review — 品質審查
+│   │   ├── harness-e2e.md          #   /harness-e2e — 瀏覽器 E2E 測試
+│   │   └── harness-docs.md         #   /harness-docs — 文件同步驗證
+│   ├── harness/                    # 角色指示與安全 hooks
+│   │   ├── worker-prompt.md        #   Worker 架構規範（三層 + BFF）
+│   │   ├── reviewer-prompt.md      #   Reviewer 審查 checklist
+│   │   ├── sprint-contract-template.json  # Sprint Contract 模板
+│   │   └── hooks/                  #   安全防護 hooks
+│   │       ├── pre-write-check.sh  #     寫入前 secrets 掃描
+│   │       ├── pre-compact-check.sh #    壓縮前 WIP 警告
+│   │       └── stop-check.sh       #     結束前 WIP 警告
+│   └── settings.json               # 共享權限與 hook 綁定
+├── docs/                           # 專案文檔
+│   ├── c4-architecture.md          # C4 架構文檔
+│   ├── claude-code-harness-impl.md # Harness 自主迴環開發流程
+│   └── technical-reference.md      # 技術參考
+├── CLAUDE.md                       # Claude Code 專案慣例
+└── Plans.example.md                # Plans.md 任務格式範例
 ```
 
 ## 手機測試
@@ -316,8 +339,9 @@ pytest tests/ -v --cov=app --cov-report=html
 
 ## 📚 核心文檔
 
-- 🛠️ **[技術參考](docs/technical-reference.md)** - 三層架構、BFF 架構、MongoDB 優化、SvelteKit、時區處理
-- 📐 **[C4 架構文檔](docs/c4-architecture.md)** - 系統架構的完整 C4 模型視圖（Context、Container、Component、Code）
+- **[技術參考](docs/technical-reference.md)** - 三層架構、BFF 架構、MongoDB 優化、SvelteKit、時區處理
+- **[C4 架構文檔](docs/c4-architecture.md)** - 系統架構的完整 C4 模型視圖（Context、Container、Component、Code）
+- **[Harness 自主迴環開發流程](docs/claude-code-harness-impl.md)** - 概念說明、指令參照、Worker/Reviewer 規範、安全防護
 
 ### 文檔重點內容
 

@@ -1,0 +1,34 @@
+{
+  "task_id": "",
+  "subject": "",
+  "scope": {
+    "backend": [],
+    "frontend": [],
+    "shared": []
+  },
+  "checks": [],
+  "non_goals": [],
+  "runtime_validation": {
+    "backend_lint": "cd backend && ruff check . && ruff format --check .",
+    "backend_test": "cd backend && pytest tests/ -v --tb=short -x",
+    "frontend_check": "cd frontend && npm run check:all"
+  },
+  "risk_flags": [],
+  "reviewer_profile": "static",
+  "architecture_rules": {
+    "backend_pattern": "Router → Service → Repository（三層架構）",
+    "frontend_pattern": "Browser → SvelteKit BFF → FastAPI（BFF 代理）",
+    "di_pattern": "fastapi_integration.py async 工廠 + Depends 別名"
+  },
+  "affected_files": {
+    "models": [],
+    "repositories": [],
+    "services": [],
+    "routers": [],
+    "di_factory": "backend/app/core/fastapi_integration.py",
+    "bff_routes": [],
+    "frontend_components": [],
+    "frontend_types": "frontend/src/lib/types.ts",
+    "tests": []
+  }
+}
