@@ -27,13 +27,10 @@ node_modules/
 # Uploads
 uploads/
 
-# Claude Code
-.claude/
-CLAUDE.md
-Plans.md
-
-# Harness 暫存檔（per-task contract 檔案）
+# Claude Code（本地設定與 runtime 檔案）
+.claude/settings.local.json
 .claude/harness/contracts/
+Plans.md
 /tmp/e2e-*.png
 
 # pyenv
