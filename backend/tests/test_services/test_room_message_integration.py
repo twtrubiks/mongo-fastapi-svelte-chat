@@ -530,7 +530,12 @@ class TestRoomMessageIntegration:
         # 驗證服務調用
         mock_room_repository.get_by_id.assert_called_once_with(room_id)
         mock_message_repository.get_room_messages.assert_called_once_with(
-            room_id=room_id, skip=0, limit=20, message_type=None, user_id=None
+            room_id=room_id,
+            skip=0,
+            limit=20,
+            message_type=None,
+            user_id=None,
+            before_seq=None,
         )
 
     @pytest.mark.asyncio

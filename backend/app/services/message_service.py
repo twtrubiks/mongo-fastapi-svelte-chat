@@ -3,6 +3,8 @@
 import logging
 from datetime import UTC, datetime
 
+from pymongo.errors import DuplicateKeyError
+
 from app.core.exceptions import AppError, ForbiddenError, NotFoundError
 from app.models.message import (
     MAX_CONTENT_LENGTH,
@@ -21,6 +23,9 @@ from app.repositories.user_repository import UserRepository
 
 logger = logging.getLogger(__name__)
 
+# 斷線 gap 補發上限：超過此數量改為全量重載（避免一次推送過多訊息）
+SYNC_MAX_GAP = 200
+
 
 class MessageService:
     """訊息服務類別"""
@@ -30,10 +35,12 @@ class MessageService:
         message_repository: MessageRepository,
         room_repository: RoomRepository,
         user_repository: UserRepository,
+        connection_manager=None,
     ):
         self.message_repo = message_repository
         self.room_repo = room_repository
         self.user_repo = user_repository
+        self._connection_manager = connection_manager
 
     @staticmethod
     def validate_message_content(content: str) -> str:
@@ -105,6 +112,18 @@ class MessageService:
             raise NotFoundError("使用者不存在")
         logger.info(f"User {user_id} found: {user.username}")
 
+        # 冪等去重：客戶端重送相同 client_id 時直接回傳既有訊息（快速路徑）。
+        # 必須放在成員資格驗證之後，避免非成員以 (room_id, client_id) 探測訊息內容。
+        if message_data.client_id:
+            existing = await self.message_repo.get_by_client_id(
+                room_id, message_data.client_id
+            )
+            if existing:
+                logger.info(
+                    f"Idempotent resend detected: client_id={message_data.client_id}"
+                )
+                return MessageResponse(**existing.model_dump())
+
         # 驗證 reply_to 訊息是否存在且在同一房間
         if message_data.reply_to:
             logger.info(f"Validating reply_to message: {message_data.reply_to}")
@@ -116,6 +135,9 @@ class MessageService:
                 raise AppError("不能跨房間回覆訊息")
             logger.info(f"Reply_to message {message_data.reply_to} found")
 
+        # 取得房間內單調遞增序號（允許空洞：建立失敗時該序號作廢）
+        seq = await self.message_repo.next_room_seq(room_id)
+
         # 創建訊息
         message_doc = MessageInDB(
             room_id=room_id,
@@ -125,12 +147,29 @@ class MessageService:
             message_type=message_data.message_type,
             reply_to=message_data.reply_to,
             metadata=message_data.metadata,
+            seq=seq,
+            client_id=message_data.client_id,
             created_at=datetime.now(UTC),
             updated_at=datetime.now(UTC),
         )
 
         logger.info(f"Creating message for user {user_id} in room {room_id}")
-        created_message = await self.message_repo.create(message_doc)
+        try:
+            created_message = await self.message_repo.create(message_doc)
+        except DuplicateKeyError:
+            # 併發重送撞 (room_id, client_id) 唯一索引：
+            # 這不是基礎設施錯誤，而是冪等契約的預期結果——回傳既有訊息。
+            # （僅在 client_id 存在時可能發生，messages 沒有其他唯一索引）
+            if message_data.client_id:
+                existing = await self.message_repo.get_by_client_id(
+                    room_id, message_data.client_id
+                )
+                if existing:
+                    logger.info(
+                        f"Idempotent resend (race): client_id={message_data.client_id}"
+                    )
+                    return MessageResponse(**existing.model_dump())
+            raise
         logger.info(f"Message created: {created_message.id} by user {user_id}")
         return MessageResponse(**created_message.model_dump())
 
@@ -159,6 +198,7 @@ class MessageService:
         limit: int = 20,
         message_type: MessageType | None = None,
         user_id: str | None = None,
+        before_seq: int | None = None,
     ) -> list[MessageResponse]:
         """
         獲取房間訊息列表
@@ -169,6 +209,7 @@ class MessageService:
             limit: 返回的訊息數限制
             message_type: 訊息類型篩選
             user_id: 使用者 ID 篩選
+            before_seq: 游標分頁——只取序號小於此值的訊息
 
         Returns:
             List[MessageResponse]: 訊息列表
@@ -179,9 +220,46 @@ class MessageService:
             limit=limit,
             message_type=message_type,
             user_id=user_id,
+            before_seq=before_seq,
         )
+        return await self._format_with_avatars(messages)
 
-        # 批次查詢使用者頭像
+    async def sync_messages_since(
+        self, room_id: str, last_seq: int, max_gap: int = SYNC_MAX_GAP
+    ) -> tuple[list[MessageResponse], bool]:
+        """
+        斷線重連補發：回傳序號大於 last_seq 的訊息
+
+        gap 超過 max_gap 時改為全量重載（回傳最新訊息 + full_reload 標記），
+        避免長時間離線後一次推送過多訊息。
+
+        Args:
+            room_id: 房間 ID
+            last_seq: 客戶端已知的最後序號
+            max_gap: gap 上限，超過則全量重載
+
+        Returns:
+            tuple[list[MessageResponse], bool]: (訊息列表, 是否全量重載)
+        """
+        gap_count = await self.message_repo.count_after_seq(room_id, last_seq)
+
+        if gap_count == 0:
+            return [], False
+
+        if gap_count > max_gap:
+            # gap 過大：回傳最新 50 條，客戶端應清空重載
+            messages = await self.get_room_messages(room_id, skip=0, limit=50)
+            return messages, True
+
+        messages = await self.message_repo.get_after_seq(
+            room_id, last_seq, limit=max_gap
+        )
+        return await self._format_with_avatars(messages), False
+
+    async def _format_with_avatars(
+        self, messages: list[MessageInDB]
+    ) -> list[MessageResponse]:
+        """將 MessageInDB 轉為 MessageResponse 並批次補上使用者頭像"""
         unique_user_ids = list({msg.user_id for msg in messages})
         avatar_map: dict[str, str | None] = {}
         if unique_user_ids:
@@ -237,7 +315,32 @@ class MessageService:
         if not updated_message:
             raise NotFoundError("訊息不存在")
         logger.info(f"Message updated: {message_id} by user {user_id}")
-        return MessageResponse(**updated_message.model_dump())
+        response = MessageResponse(**updated_message.model_dump())
+
+        # 廣播編輯事件給房間內所有成員（編輯是業務事件，由 Service 層主動通知）
+        if self._connection_manager:
+            await self._connection_manager.broadcast_to_room(
+                message.room_id,
+                {
+                    "type": "message_edited",
+                    "room_id": message.room_id,
+                    # 只廣播會變動的欄位，前端依 id 合併
+                    "message": response.model_dump(
+                        include={
+                            "id",
+                            "content",
+                            "status",
+                            "edited",
+                            "edited_at",
+                            "updated_at",
+                            "metadata",
+                        }
+                    ),
+                    "timestamp": datetime.now(UTC).isoformat(),
+                },
+            )
+
+        return response
 
     async def delete_message(self, message_id: str, user_id: str) -> None:
         """
@@ -265,6 +368,18 @@ class MessageService:
         if not success:
             raise NotFoundError("訊息不存在")
         logger.info(f"Message deleted: {message_id} by user {user_id}")
+
+        # 廣播刪除事件給房間內所有成員（與歷史載入行為一致：前端直接移除該訊息）
+        if self._connection_manager:
+            await self._connection_manager.broadcast_to_room(
+                message.room_id,
+                {
+                    "type": "message_deleted",
+                    "room_id": message.room_id,
+                    "message_id": message_id,
+                    "timestamp": datetime.now(UTC).isoformat(),
+                },
+            )
 
     async def search_messages(
         self, room_id: str, search_query: MessageSearchQuery

@@ -25,6 +25,14 @@ async def ensure_indexes(db: AsyncDatabase) -> None:
     messages = db["messages"]
     # 複合索引：進入聊天室載入訊息（最高頻查詢）
     await messages.create_index([("room_id", ASCENDING), ("created_at", DESCENDING)])
+    # 複合索引：依序號查詢訊息（斷線補發 / 游標分頁）
+    await messages.create_index([("room_id", ASCENDING), ("seq", DESCENDING)])
+    # 部分唯一索引：冪等去重保底（客戶端重送相同 client_id 不會產生重複訊息）
+    await messages.create_index(
+        [("room_id", ASCENDING), ("client_id", ASCENDING)],
+        unique=True,
+        partialFilterExpression={"client_id": {"$type": "string"}},
+    )
 
     # ── rooms ──
     rooms = db["rooms"]

@@ -718,6 +718,80 @@ Per-Room 架構的影響比預期小，因為：
 
 **目前決策：維持 Per-Room 架構。** 核心功能沒有缺陷，改為單一全域 WS 等於重寫 WebSocket 層（後端 endpoint/handler/manager + 前端 manager 全部要改），改動量大且風險高，目前不值得。若未來跨房間即時功能需求增加，再評估重構。
 
+### ADR-003: 訊息管線可靠投遞（seq / ack / 冪等）
+
+**狀態**: Phase 0+1 已實作（2026-06）
+**決策**: 為訊息引入 per-room 單調遞增序號（seq）作為核心 primitive，搭配真 ack 協議與冪等去重
+
+#### 背景問題
+
+原始訊息管線缺乏交付保證：
+
+1. **偽 ack** — 前端 `ws.send()` 成功即標記「已送達」，實際只代表訊息離開了瀏覽器，伺服器是否持久化未知
+2. **無去重** — 網路不穩重送時產生重複訊息（前端有 `temp_id` 但後端不檢查）
+3. **排序依賴時鐘** — 只靠 `created_at` 排序，高頻訊息或時鐘偏差時順序不穩定
+4. **斷線盲補** — 重連後盲目重發最近 50 條，會漏也會重
+5. **編輯/刪除不同步** — REST 端點存在但無 WS 廣播，其他成員需刷新才看到
+
+#### 核心洞察：一個 primitive 解四個問題
+
+```
+seq ──┬── 排序不再依賴時鐘
+      ├── 斷線重連 = 「給我 seq > N 的訊息」（精確補發）
+      ├── 分頁 = 游標式 seq < N（取代 skip/limit）
+      └── 已讀 = 每人每房一個 last_read_seq 指標
+```
+
+#### 決策 1：seq 來源 — MongoDB counter（非 Redis INCR）
+
+每次建立訊息時，對 `counters` collection 執行原子操作：
+
+```python
+db["counters"].find_one_and_update(
+    {"_id": f"room_seq:{room_id}"}, {"$inc": {"seq": 1}},
+    upsert=True, return_document=ReturnDocument.AFTER,
+)
+```
+
+| 考量 | MongoDB counter（採用） | Redis INCR（未採用） |
+|------|------------------------|---------------------|
+| 正確性 | 原子、持久、崩潰不回退 | Redis 崩潰且持久化落後時計數器回退 → 重複 seq |
+| 效能 | 每則訊息多一次 DB roundtrip（~1ms） | 純記憶體，更快 |
+| 架構一致性 | MongoDB 維持單一事實來源 | Redis 從「fail-open 輔助」升級為寫入路徑關鍵依賴 |
+
+本專案哲學是「Redis 掛掉不影響核心功能」（rate limiting 與快取皆 fail-open），seq 若依賴 Redis 會打破此原則。聊天訊息的寫入頻率下，1ms 的代價可接受。
+
+**seq 允許空洞**：取號後建立失敗（驗證錯誤、撞唯一索引）該號作廢。下游一律使用「seq > N」範圍查詢而非連續性假設，空洞無影響。
+
+#### 決策 2：冪等契約 — unique index 保底 + 雙路徑處理
+
+- 客戶端為每則訊息產生 `client_id`，重送時帶相同值
+- `(room_id, client_id)` partial unique index（僅對 string 生效）為 DB 層保底
+- Service 層：快速路徑先查 `get_by_client_id`；併發競態撞 `DuplicateKeyError` 時 fallback 查詢並回傳既有訊息
+
+**安全順序**：冪等查詢必須放在成員資格驗證**之後**，否則非成員可用 (room_id, client_id) 探測訊息內容。
+
+**分層例外**：本專案規範禁止 Service 攔截 `PyMongoError`（基礎設施錯誤應由 GlobalErrorHandler 處理），但冪等 create 的 `DuplicateKeyError` 是**冪等契約的預期結果**而非基礎設施故障——「重送 = 成功，回傳第一次的結果」正是業務語意，故此處的窄域 catch 是規範的有意例外（reviewer checklist 已同步註記）。
+
+#### 決策 3：真 ack 協議
+
+```
+客戶端                     伺服器
+  │ ── message{client_id} ──▶ │ 持久化（取 seq）
+  │ ◀── ack{client_id,        │
+  │       message_id, seq} ── │ （先 ack 發送者）
+  │ ◀── broadcast{...} ────── │ （再廣播全房間）
+```
+
+- 前端 `sending` 狀態持續到收到 ack；10 秒未收到 ack → `failed`（交給重試機制）
+- 斷線時所有 pending ack 立即標記 failed，重連後自動重試——因為有冪等保底，「實際已存但 ack 丟失」的重送不會產生重複
+- 樂觀 UI：發送當下以 `client_id` 為鍵插入 pending 訊息，ack/廣播到達時原地確認取代
+
+#### 後續階段
+
+- Phase 2（待做）：`before_seq` 游標分頁；重連帶 `last_seq` 精確補 gap（超過閾值 fallback 全量重載）
+- Phase 3（待做）：訊息級已讀 — 每人每房 `last_read_seq` 指標（寫入量 O(成員數)，對比 per-message `read_by` 陣列的 O(成員數×訊息數)）
+
 ---
 
 ## 系統限制與未來改進

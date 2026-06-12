@@ -19,11 +19,13 @@ export const GET: RequestHandler = async ({ cookies, params, url }) => {
     const offset = url.searchParams.get('offset') || '0';
     const before = url.searchParams.get('before');
     const after = url.searchParams.get('after');
+    const beforeSeq = url.searchParams.get('before_seq');
 
     queryParams.append('limit', limit);
     queryParams.append('skip', offset);
     if (before) queryParams.append('before', before);
     if (after) queryParams.append('after', after);
+    if (beforeSeq) queryParams.append('before_seq', beforeSeq);
 
     const messages = await bffAuthRequest(cookies, `/api/rooms/${roomId}/messages?${queryParams.toString()}`);
     return json(createBFFResponse(messages));
@@ -50,9 +52,11 @@ export const POST: RequestHandler = async ({ cookies, params, request }) => {
       method: 'POST',
       data: {
         content: messageData.content.trim(),
-        message_type: messageData.type || 'text',
+        // 兼容 message_type（apiClient 標準欄位）與 type（舊欄位）
+        message_type: messageData.message_type || messageData.type || 'text',
         room_id: roomId,
-        metadata: messageData.metadata || {}
+        metadata: messageData.metadata || {},
+        client_id: messageData.client_id || null
       },
     });
     return json(createBFFResponse(newMessage));

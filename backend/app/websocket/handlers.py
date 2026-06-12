@@ -29,6 +29,8 @@ def _format_message_payload(msg: MessageResponse, avatar: str | None) -> dict:
         "content": msg.content,
         "message_type": msg.message_type,
         "status": msg.status,
+        "seq": msg.seq,
+        "client_id": msg.client_id,
         "created_at": msg.created_at,
         "metadata": msg.metadata,
         "user": {
@@ -77,8 +79,14 @@ async def handle_websocket_connection(websocket: WebSocket, room_id: str):
             },
         )
 
-        # 載入並發送歷史訊息（使用獨立作用域）
-        await send_recent_messages(user_id, room_id)
+        # 載入並發送歷史訊息：
+        # 重連帶 last_seq → 只補發 gap（精確、不重不漏）
+        # 首次連線（無 last_seq）→ 發送最近歷史訊息
+        last_seq_param = websocket.query_params.get("last_seq")
+        if last_seq_param and last_seq_param.isdigit():
+            await send_gap_messages(user_id, room_id, int(last_seq_param))
+        else:
+            await send_recent_messages(user_id, room_id)
 
         # 處理訊息
         while True:
@@ -190,7 +198,9 @@ async def handle_chat_message(
     """
     raw_content = message_data.get("content", "")
     message_type_str = message_data.get("message_type", "text").lower()
-    temp_id = message_data.get("temp_id")  # 前端臨時 ID
+    # 客戶端訊息 ID（冪等去重 + ack 對應），兼容舊欄位名 temp_id
+    client_id = message_data.get("client_id") or message_data.get("temp_id")
+    temp_id = client_id
     metadata = message_data.get("metadata")  # 檔案元數據
 
     # 訊息內容驗證（商業邏輯委託 MessageService）
@@ -225,17 +235,35 @@ async def handle_chat_message(
 
         # 創建訊息
         message_create = MessageCreate(
-            room_id=room_id, content=content, message_type=msg_type, metadata=metadata
+            room_id=room_id,
+            content=content,
+            message_type=msg_type,
+            metadata=metadata,
+            client_id=client_id,
         )
 
         created_message = await message_service.create_message(user_id, message_create)
+
+        # 先發送 ack 給發送者（真確認：訊息已持久化，攜帶 server id 與 seq）
+        await connection_manager.send_personal_message(
+            user_id,
+            room_id,
+            {
+                "type": "ack",
+                "client_id": client_id,
+                "message_id": created_message.id,
+                "seq": created_message.seq,
+                "room_id": room_id,
+                "timestamp": datetime.now(UTC).isoformat(),
+            },
+        )
 
         # 廣播訊息給房間內所有使用者（包括發送者，以確保訊息同步）
         message_payload = _format_message_payload(
             created_message, user_info.get("avatar")
         )
 
-        # 如果有臨時 ID，添加到回應中
+        # 如果有臨時 ID，添加到回應中（兼容舊欄位名）
         if temp_id:
             message_payload["temp_id"] = temp_id
 
@@ -468,6 +496,50 @@ async def handle_notification_read(
                 "timestamp": datetime.now(UTC).isoformat(),
             },
         )
+
+
+async def send_gap_messages(user_id: str, room_id: str, last_seq: int):
+    """
+    斷線重連補發：發送序號大於 last_seq 的訊息
+
+    gap 超過上限時 full_reload=True，客戶端應清空並以本批訊息重載。
+
+    Args:
+        user_id: 使用者 ID
+        room_id: 房間 ID
+        last_seq: 客戶端已知的最後序號
+    """
+    try:
+        message_service = await create_message_service()
+        messages, full_reload = await message_service.sync_messages_since(
+            room_id, last_seq
+        )
+
+        formatted_messages = [
+            _format_message_payload(msg, msg.avatar) for msg in messages
+        ]
+
+        await connection_manager.send_personal_message(
+            user_id,
+            room_id,
+            {
+                "type": "message_sync",
+                "messages": formatted_messages,
+                "full_reload": full_reload,
+                "last_seq": last_seq,
+                "timestamp": datetime.now(UTC).isoformat(),
+                "room_id": room_id,
+            },
+        )
+
+        logger.info(
+            f"Synced {len(formatted_messages)} messages to user {user_id} "
+            f"(last_seq={last_seq}, full_reload={full_reload})"
+        )
+
+    except Exception as e:  # intentional catch-all: gap 補發失敗退回全量歷史
+        logger.error(f"Error syncing gap messages: {e}")
+        await send_recent_messages(user_id, room_id)
 
 
 async def send_recent_messages(user_id: str, room_id: str, limit: int = 50):

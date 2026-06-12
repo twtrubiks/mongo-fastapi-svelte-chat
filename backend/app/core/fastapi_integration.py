@@ -55,8 +55,15 @@ async def create_room_service() -> RoomService:
 
 
 async def create_message_service() -> MessageService:
+    from app.websocket.manager import connection_manager
+
     db = await get_database()
-    return MessageService(MessageRepository(db), RoomRepository(db), UserRepository(db))
+    return MessageService(
+        MessageRepository(db),
+        RoomRepository(db),
+        UserRepository(db),
+        connection_manager=connection_manager,
+    )
 
 
 async def create_notification_service() -> NotificationService:

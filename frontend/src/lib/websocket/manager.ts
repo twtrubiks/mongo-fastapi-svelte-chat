@@ -1,10 +1,10 @@
-import { messageStatusStore } from '$lib/stores';
+import { messageStatusStore, messageStore } from '$lib/stores';
 import type { WebSocketMessage, WSPongMessage } from '$lib/types';
 import { apiClient } from '$lib/api/client';
 import type { HandlerContext, HandlerEvent, HandlerEventPayloadMap } from './handlers';
 import { isValidWSMessage } from './guards';
 import { handleUserJoined, handleUserLeft, handleUserStatusChanged, handleRoomUsers, handleRoomCreated, handleRoomDeleted, handleRoomUpdated, resetLastRoomUsersTime } from './roomHandlers';
-import { handleNewMessage, handleMessageHistory, handleTypingIndicator, handleError } from './messageHandlers';
+import { handleNewMessage, handleMessageHistory, handleTypingIndicator, handleError, handleAck, handleMessageEdited, handleMessageDeleted, handleMessageSync } from './messageHandlers';
 import { dispatchNotification, handleNotificationStatusChanged, cancelPendingNotificationRefresh } from './notificationHandlers';
 
 export class WebSocketManager {
@@ -22,6 +22,10 @@ export class WebSocketManager {
   private connectionId = 0;
   private pingTimeout: number | null = null; // 添加 ping 超時檢測
   private lastPingTime = 0; // 記錄最後 ping 時間
+
+  // 等待伺服器 ack 的計時器（client_id → timeout id）
+  private pendingAcks = new Map<string, number>();
+  private static readonly ACK_TIMEOUT_MS = 10000;
 
   private roomId: string | null = null;
 
@@ -46,8 +50,12 @@ export class WebSocketManager {
 
   // 建構 WebSocket URL（使用 ticket 而非 token）
   private buildWsUrl(roomId: string, ticket: string): string {
+    // 重連 gap 恢復：本地已有同房間訊息時，帶上最大 seq 讓後端精確補發
+    const lastSeq = messageStore.getMaxSeq(roomId);
+    const seqParam = lastSeq ? `&last_seq=${lastSeq}` : '';
+
     if (import.meta.env['PUBLIC_WS_URL'] && window.location.hostname === 'localhost') {
-      return `${import.meta.env['PUBLIC_WS_URL']}/ws/${roomId}?ticket=${ticket}`;
+      return `${import.meta.env['PUBLIC_WS_URL']}/ws/${roomId}?ticket=${ticket}${seqParam}`;
     }
 
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -62,7 +70,7 @@ export class WebSocketManager {
       port = `:${window.location.port}`;
     }
 
-    return `${protocol}//${host}${port}/ws/${roomId}?ticket=${ticket}`;
+    return `${protocol}//${host}${port}/ws/${roomId}?ticket=${ticket}${seqParam}`;
   }
 
   // 連接 WebSocket（透過 BFF 取得一次性 ticket）
@@ -185,6 +193,13 @@ export class WebSocketManager {
     this.connectionId++; // 增加連接 ID，使舊連接失效
     this.clearReconnectTimeout();
 
+    // 連線中斷：所有等待 ack 的訊息立即標記失敗（重連後由重試機制接手）
+    for (const [clientId, timeoutId] of this.pendingAcks) {
+      clearTimeout(timeoutId);
+      messageStatusStore.setFailed(clientId, '連線中斷，訊息未送達');
+    }
+    this.pendingAcks.clear();
+
     if (this.ws) {
       this.ws.close(1000, 'Client disconnect');
       this.ws = null;
@@ -237,16 +252,16 @@ export class WebSocketManager {
         type: 'message',
         content,
         message_type: type,
-        temp_id: messageId, // 添加臨時 ID 用於狀態追蹤
+        client_id: messageId, // 客戶端訊息 ID（冪等去重 + ack 對應）
         metadata: metadata || null, // 添加元數據支援
       };
 
       console.debug('[WebSocket] 發送訊息', { messageId, type, contentLength: content.length });
       this.ws!.send(JSON.stringify(message));
 
-      // 發送成功後設置狀態
+      // 不在此標記 sent：等待伺服器 ack 才是真確認（見 handleAck / ack 逾時）
       if (messageId) {
-        messageStatusStore.setSent(messageId);
+        this.scheduleAckTimeout(messageId);
       }
 
       return true;
@@ -334,6 +349,25 @@ export class WebSocketManager {
         handleNewMessage(data.payload);
         break;
 
+      case 'ack':
+        if (data.client_id) {
+          this.clearAckTimeout(data.client_id);
+        }
+        handleAck(data);
+        break;
+
+      case 'message_edited':
+        handleMessageEdited(data);
+        break;
+
+      case 'message_deleted':
+        handleMessageDeleted(data);
+        break;
+
+      case 'message_sync':
+        handleMessageSync(data);
+        break;
+
       case 'user_joined':
         handleUserJoined(data.user, data.timestamp, ctx);
         break;
@@ -397,6 +431,24 @@ export class WebSocketManager {
         // 後端可能新增的未知事件類型，記錄以便排查
         console.debug('[WebSocket] 未處理的事件類型:', (data as { type: string }).type);
         break;
+    }
+  }
+
+  // 排程 ack 逾時：時限內未收到伺服器確認則標記失敗（由重試機制接手）
+  private scheduleAckTimeout(clientId: string) {
+    this.clearAckTimeout(clientId);
+    const timeoutId = window.setTimeout(() => {
+      this.pendingAcks.delete(clientId);
+      messageStatusStore.setFailed(clientId, '伺服器未確認訊息，請重試');
+    }, WebSocketManager.ACK_TIMEOUT_MS);
+    this.pendingAcks.set(clientId, timeoutId);
+  }
+
+  private clearAckTimeout(clientId: string) {
+    const timeoutId = this.pendingAcks.get(clientId);
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+      this.pendingAcks.delete(clientId);
     }
   }
 

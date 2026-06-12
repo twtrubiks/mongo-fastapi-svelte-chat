@@ -64,6 +64,12 @@ export interface Message {
   content: string;
   type?: 'TEXT' | 'IMAGE' | 'SYSTEM';  // 新的類型字段
   message_type?: 'text' | 'image' | 'system' | 'file';  // 保持向後兼容
+  seq?: number;  // 房間內單調遞增序號（後端產生）
+  client_id?: string;  // 客戶端產生的訊息 ID（冪等去重 + ack 對應）
+  pending?: boolean;  // 樂觀 UI：尚未收到伺服器確認（僅前端使用）
+  status?: string;
+  edited?: boolean;
+  edited_at?: string;
   created_at: string;
   updated_at: string;
   user?: {
@@ -128,6 +134,7 @@ export interface RoomJoinRequest {
 export interface MessageCreate {
   content: string;
   message_type?: 'text' | 'image' | 'file';
+  client_id?: string;  // 冪等去重用（HTTP fallback 路徑也需攜帶）
 }
 
 // === WebSocket 事件 Discriminated Union ===
@@ -160,6 +167,42 @@ export interface WSChatMessage {
   payload: Message;
   timestamp: string;
   room_id: string;
+}
+
+/** 伺服器確認訊息已持久化（攜帶 server id 與 seq） */
+export interface WSAckMessage {
+  type: 'ack';
+  client_id: string | null;
+  message_id: string;
+  seq?: number;
+  room_id: string;
+  timestamp: string;
+}
+
+/** 訊息被編輯的即時廣播（message 為部分欄位，依 id 合併） */
+export interface WSMessageEditedMessage {
+  type: 'message_edited';
+  room_id: string;
+  message: Partial<Message> & { id: string };
+  timestamp: string;
+}
+
+/** 訊息被刪除的即時廣播（軟刪除，前端直接移除以與歷史載入行為一致） */
+export interface WSMessageDeletedMessage {
+  type: 'message_deleted';
+  room_id: string;
+  message_id: string;
+  timestamp: string;
+}
+
+/** 斷線重連 gap 補發（full_reload=true 表示 gap 過大，應清空以本批重載） */
+export interface WSMessageSyncMessage {
+  type: 'message_sync';
+  messages: Message[];
+  full_reload: boolean;
+  last_seq: number;
+  room_id: string;
+  timestamp: string;
 }
 
 export interface WSTypingMessage {
@@ -269,6 +312,10 @@ export type WebSocketMessage =
   | WSRoomUsersMessage
   | WSMessageHistoryMessage
   | WSChatMessage
+  | WSAckMessage
+  | WSMessageEditedMessage
+  | WSMessageDeletedMessage
+  | WSMessageSyncMessage
   | WSTypingMessage
   | WSUserJoinedMessage
   | WSUserLeftMessage

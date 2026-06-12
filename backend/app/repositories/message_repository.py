@@ -5,6 +5,7 @@ import re
 from datetime import UTC, datetime
 
 from bson import ObjectId
+from pymongo import ReturnDocument
 from pymongo.asynchronous.database import AsyncDatabase
 
 from app.models.message import (
@@ -31,6 +32,46 @@ class MessageRepository(BaseRepository[MessageInDB]):
 
     def _to_model(self, document: dict) -> MessageInDB:
         return MessageInDB(**document)
+
+    async def next_room_seq(self, room_id: str) -> int:
+        """
+        取得房間的下一個訊息序號（原子遞增）
+
+        使用 counters collection 的 findOneAndUpdate $inc，
+        MongoDB 為單一事實來源：原子、持久、崩潰不會回退。
+        序號保證單調遞增，但允許有空洞（建立訊息失敗時該序號作廢）。
+
+        Args:
+            room_id: 房間 ID
+
+        Returns:
+            int: 該房間的下一個序號（從 1 開始）
+        """
+        document = await self.db["counters"].find_one_and_update(
+            {"_id": f"room_seq:{room_id}"},
+            {"$inc": {"seq": 1}},
+            upsert=True,
+            return_document=ReturnDocument.AFTER,
+        )
+        return document["seq"]
+
+    async def get_by_client_id(
+        self, room_id: str, client_id: str
+    ) -> MessageInDB | None:
+        """
+        根據 (room_id, client_id) 查詢訊息（冪等去重用）
+
+        Args:
+            room_id: 房間 ID
+            client_id: 客戶端產生的訊息 ID
+
+        Returns:
+            Optional[MessageInDB]: 訊息物件，不存在則返回 None
+        """
+        document = await self.find_one({"room_id": room_id, "client_id": client_id})
+        if document:
+            return self._to_model(document)
+        return None
 
     async def get_with_reply(self, message_id: str) -> MessageWithReply | None:
         """
@@ -171,6 +212,7 @@ class MessageRepository(BaseRepository[MessageInDB]):
         message_type: MessageType | None = None,
         user_id: str | None = None,
         include_deleted: bool = False,
+        before_seq: int | None = None,
     ) -> list[MessageInDB]:
         """
         獲取房間訊息列表
@@ -182,6 +224,7 @@ class MessageRepository(BaseRepository[MessageInDB]):
             message_type: 訊息類型篩選
             user_id: 使用者 ID 篩選
             include_deleted: 是否包含已刪除的訊息
+            before_seq: 游標分頁——只取序號小於此值的訊息（提供時忽略 skip）
 
         Returns:
             List[MessageInDB]: 訊息列表
@@ -195,14 +238,64 @@ class MessageRepository(BaseRepository[MessageInDB]):
         if user_id:
             query["user_id"] = user_id
 
-        # 查詢
-        sort = [("created_at", -1)]
-        documents = await self.find_many(query, skip=skip, limit=limit, sort=sort)
+        # 游標分頁：以 seq 為游標，不受訊息增刪造成的偏移影響
+        if before_seq is not None:
+            query["seq"] = {"$lt": before_seq}
+            sort = [("seq", -1)]
+            documents = await self.find_many(query, skip=0, limit=limit, sort=sort)
+        else:
+            sort = [("created_at", -1)]
+            documents = await self.find_many(query, skip=skip, limit=limit, sort=sort)
 
         messages = [self._to_model(doc) for doc in documents]
         messages.reverse()  # 反轉順序（最舊的在前面）
 
         return messages
+
+    async def count_after_seq(self, room_id: str, after_seq: int) -> int:
+        """
+        計算房間內序號大於 after_seq 的訊息數（gap 大小估算）
+
+        Args:
+            room_id: 房間 ID
+            after_seq: 客戶端已知的最後序號
+
+        Returns:
+            int: gap 訊息數
+        """
+        return await self.count_documents(
+            {
+                "room_id": room_id,
+                "seq": {"$gt": after_seq},
+                "status": {"$ne": MessageStatus.DELETED},
+            }
+        )
+
+    async def get_after_seq(
+        self, room_id: str, after_seq: int, limit: int = 200
+    ) -> list[MessageInDB]:
+        """
+        獲取房間內序號大於 after_seq 的訊息（斷線 gap 補發）
+
+        Args:
+            room_id: 房間 ID
+            after_seq: 客戶端已知的最後序號
+            limit: 返回的訊息數上限
+
+        Returns:
+            List[MessageInDB]: 訊息列表（序號由小到大）
+        """
+        documents = await self.find_many(
+            {
+                "room_id": room_id,
+                "seq": {"$gt": after_seq},
+                "status": {"$ne": MessageStatus.DELETED},
+            },
+            skip=0,
+            limit=limit,
+            sort=[("seq", 1)],
+        )
+        return [self._to_model(doc) for doc in documents]
 
     async def search_messages(
         self, room_id: str, search_query: MessageSearchQuery

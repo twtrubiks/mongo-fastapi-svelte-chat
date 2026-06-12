@@ -162,6 +162,12 @@ def mock_message_repository():
     mock_repo.get_with_reply = AsyncMock()
     mock_repo.update = AsyncMock()
     mock_repo.delete = AsyncMock()
+    # seq 需回傳真實 int（會進入 Pydantic 驗證）；client_id 預設查無
+    mock_repo.next_room_seq = AsyncMock(return_value=1)
+    mock_repo.get_by_client_id = AsyncMock(return_value=None)
+    # gap 補發：預設無 gap
+    mock_repo.count_after_seq = AsyncMock(return_value=0)
+    mock_repo.get_after_seq = AsyncMock(return_value=[])
     # 加入 db 屬性
     mock_repo.db = Mock()
     return mock_repo

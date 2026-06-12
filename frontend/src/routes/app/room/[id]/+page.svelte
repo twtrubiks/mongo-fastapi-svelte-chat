@@ -255,16 +255,31 @@
     if (!hasCurrentRoom) {
       return;
     }
-    
+
     // 確保 type 是有效的類型
     const messageType = type as 'text' | 'image' | 'file';
-    
+
+    // 樂觀 UI：發送當下立即顯示訊息（pending 狀態，等待 ack/廣播確認）
+    const now = new Date().toISOString();
+    messageStore.addPendingMessage({
+      id: messageId,
+      client_id: messageId,
+      room_id: currentRoom!.id,
+      user_id: user?.id ?? '',
+      content,
+      message_type: messageType,
+      created_at: now,
+      updated_at: now,
+      ...(user?.username ? { username: user.username } : {}),
+      ...(user?.avatar ? { avatar: user.avatar } : {}),
+    });
+
     try {
       // 通過 WebSocket 發送
       if (isWebSocketConnected) {
         wsManager.getInstance().sendMessage(content, messageType, messageId);
       } else {
-        await messageStore.sendMessage(currentRoom!.id, { content, message_type: messageType });
+        await messageStore.sendMessage(currentRoom!.id, { content, message_type: messageType, client_id: messageId });
       }
     } catch (error) {
       console.error('發送訊息失敗:', error);

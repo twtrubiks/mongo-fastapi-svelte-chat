@@ -290,9 +290,10 @@ export class ApiClient {
 
   // 訊息相關 API
   messages = {
-    list: async (roomId: string, limit: number = 50, offset: number = 0): Promise<Message[]> => {
+    list: async (roomId: string, limit: number = 50, offset: number = 0, beforeSeq?: number): Promise<Message[]> => {
       return this.bffRequest<Message[]>('GET', `/api/rooms/${roomId}/messages`, {
-        params: { limit, offset },
+        // 提供 before_seq 時走游標分頁（後端忽略 offset）
+        params: beforeSeq ? { limit, offset, before_seq: beforeSeq } : { limit, offset },
       });
     },
 

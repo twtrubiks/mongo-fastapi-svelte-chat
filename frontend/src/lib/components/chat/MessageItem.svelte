@@ -7,6 +7,8 @@
   import { fade, fly, scale } from 'svelte/transition';
   import { elasticOut, quartOut } from 'svelte/easing';
   import type { Message } from '$lib/types';
+  import { messageStatusStore } from '$lib/stores/messageStatus.svelte';
+  import { messageRetryManager } from '$lib/utils/messageRetry';
   
   interface Props {
     message: Message;
@@ -25,6 +27,15 @@
   }: Props = $props();
   
   let isSystemMessage = $derived(message.message_type === 'system');
+  // 自己的訊息以 client_id 追蹤發送狀態（sending / sent / failed）
+  let statusKey = $derived(message.client_id ?? message.id);
+  let sendStatus = $derived(
+    isCurrentUser ? messageStatusStore.state[statusKey]?.status : undefined
+  );
+
+  async function retrySend() {
+    await messageRetryManager.manualRetry(statusKey);
+  }
   let isImageMessage = $derived(message.message_type === 'image');
   let isFileMessage = $derived(message.message_type === 'file');
   let messageTime = $derived(formatTime(message.created_at));
@@ -171,8 +182,8 @@
           {/if}
           
           {#if isCurrentUser && showTime}
-            <div 
-              class="message-time-own" 
+            <div
+              class="message-time-own"
               title={messageDate}
               in:fade={{ duration: 200, delay: 300 }}
             >
@@ -180,6 +191,21 @@
             </div>
           {/if}
         </div>
+
+        {#if isCurrentUser && sendStatus && sendStatus !== 'idle'}
+          <!-- 發送狀態指示（真 ack：等待伺服器確認） -->
+          <div class="message-send-status" class:send-status-failed={sendStatus === 'failed'}>
+            {#if sendStatus === 'sending'}
+              <span class="loading loading-spinner loading-xs"></span>
+              <span>傳送中</span>
+            {:else if sendStatus === 'sent'}
+              <span>✓ 已送達</span>
+            {:else if sendStatus === 'failed'}
+              <span>⚠ 傳送失敗</span>
+              <button class="send-retry-button" onclick={retrySend}>重試</button>
+            {/if}
+          </div>
+        {/if}
       </div>
     </div>
   {/if}
@@ -319,6 +345,19 @@
   
   .message-time-own {
     @apply text-xs text-white mt-2 text-right bg-black/40 px-2 py-1 rounded-full inline-block font-semibold;
+  }
+
+  /* 發送狀態指示 */
+  .message-send-status {
+    @apply flex items-center gap-1 mt-1 text-xs text-base-content/60;
+  }
+
+  .send-status-failed {
+    @apply text-error;
+  }
+
+  .send-retry-button {
+    @apply btn btn-ghost btn-xs text-error underline px-1;
   }
   
   .message-image {

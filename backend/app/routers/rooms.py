@@ -201,11 +201,16 @@ async def get_room_messages(
     room_id: str,
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=100),
+    before_seq: int | None = Query(
+        None, ge=1, description="游標分頁：取序號小於此值的訊息"
+    ),
     _current_user: dict = Depends(require_room_membership),
     message_service: MessageService = MessageServiceDep,
 ):
     """獲取聊天室訊息列表（需成員資格）"""
-    messages = await message_service.get_room_messages(room_id, skip=skip, limit=limit)
+    messages = await message_service.get_room_messages(
+        room_id, skip=skip, limit=limit, before_seq=before_seq
+    )
     return messages
 
 

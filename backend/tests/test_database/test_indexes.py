@@ -45,8 +45,8 @@ class TestEnsureIndexes:
 
         # users：username unique + email unique
         assert mock_users.create_index.call_count == 2
-        # messages：room_id + created_at 複合索引
-        assert mock_messages.create_index.call_count == 1
+        # messages：room_id+created_at 複合 + room_id+seq 複合 + room_id+client_id partial unique
+        assert mock_messages.create_index.call_count == 3
         # rooms：name unique + invite_code partial unique + members 索引 + is_public+created_at 複合索引
         assert mock_rooms.create_index.call_count == 4
         # notifications：user_id + created_at 複合索引
@@ -109,6 +109,42 @@ class TestEnsureIndexes:
         assert invite_calls[0].kwargs.get("partialFilterExpression") == {
             "invite_code": {"$type": "string"}
         }
+
+    async def test_messages_client_id_partial_unique_index(self):
+        """測試 messages collection 的 client_id 冪等去重索引"""
+        mock_messages = Mock()
+        mock_messages.create_index = AsyncMock()
+        mock_other = Mock()
+        mock_other.create_index = AsyncMock()
+
+        mock_db = Mock()
+        mock_db.__getitem__ = Mock(
+            side_effect=lambda name: mock_messages if name == "messages" else mock_other
+        )
+
+        await ensure_indexes(mock_db)
+
+        assert mock_messages.create_index.call_count == 3
+
+        # 檢查 (room_id, client_id) partial unique index
+        client_id_calls = [
+            c
+            for c in mock_messages.create_index.call_args_list
+            if any("client_id" in str(arg) for arg in c.args)
+        ]
+        assert len(client_id_calls) == 1
+        assert client_id_calls[0].kwargs.get("unique") is True
+        assert client_id_calls[0].kwargs.get("partialFilterExpression") == {
+            "client_id": {"$type": "string"}
+        }
+
+        # 檢查 (room_id, seq) 索引存在
+        seq_calls = [
+            c
+            for c in mock_messages.create_index.call_args_list
+            if any("seq" in str(arg) for arg in c.args)
+        ]
+        assert len(seq_calls) == 1
 
     async def test_invitations_unique_index(self):
         """測試 room_invitations collection 的唯一索引"""

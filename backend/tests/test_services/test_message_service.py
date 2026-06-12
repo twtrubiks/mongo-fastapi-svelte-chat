@@ -5,16 +5,19 @@ from unittest.mock import AsyncMock
 
 import pytest
 from bson import ObjectId
+from pymongo.errors import DuplicateKeyError
 
 from app.core.exceptions import ForbiddenError
 from app.models.message import (
     MessageCreate,
+    MessageInDB,
     MessageResponse,
     MessageStatus,
     MessageType,
     MessageUpdate,
 )
 from app.models.user import UserInDB
+from app.services.message_service import MessageService
 
 
 @pytest.mark.unit
@@ -357,3 +360,297 @@ class TestMessageServiceIntegration:
 
         with pytest.raises(ForbiddenError, match="您只能刪除自己的訊息"):
             await service.delete_message(message_id=message_id, user_id=user_id)
+
+
+def _make_user(user_id: str, username: str = "testuser") -> UserInDB:
+    """建立測試用使用者"""
+    return UserInDB(
+        id=user_id,
+        username=username,
+        email="test@example.com",
+        hashed_password="hashed_password",
+        is_active=True,
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+    )
+
+
+def _setup_create_mocks(service, room_id: str, user_id: str) -> None:
+    """配置 create_message 所需的房間/成員/使用者 mock"""
+    service.room_repo.get_by_id.return_value = {"_id": room_id, "name": "Test Room"}
+    service.room_repo.is_member.return_value = True
+    service.user_repo.get_by_id = AsyncMock(return_value=_make_user(user_id))
+
+
+@pytest.mark.unit
+class TestMessageSeqAndIdempotency:
+    """測試訊息序號與冪等去重"""
+
+    @pytest.mark.asyncio
+    async def test_create_message_assigns_seq(self, message_service_with_mocks):
+        """測試創建訊息時取得並寫入房間序號"""
+        service = message_service_with_mocks
+        room_id = str(ObjectId())
+        user_id = str(ObjectId())
+        _setup_create_mocks(service, room_id, user_id)
+
+        service.message_repo.next_room_seq.return_value = 42
+
+        async def echo_create(doc):
+            # 模擬 repository：注入 id 後原樣回傳
+            doc.id = str(ObjectId())
+            return doc
+
+        service.message_repo.create.side_effect = echo_create
+
+        result = await service.create_message(
+            user_id=user_id,
+            message_data=MessageCreate(
+                room_id=room_id, content="hello", client_id="client-abc"
+            ),
+        )
+
+        assert result.seq == 42
+        assert result.client_id == "client-abc"
+        service.message_repo.next_room_seq.assert_awaited_once_with(room_id)
+
+    @pytest.mark.asyncio
+    async def test_create_message_idempotent_fast_path(
+        self, message_service_with_mocks
+    ):
+        """測試相同 client_id 重送時直接回傳既有訊息（不重複建立）"""
+        service = message_service_with_mocks
+        room_id = str(ObjectId())
+        user_id = str(ObjectId())
+        _setup_create_mocks(service, room_id, user_id)
+
+        existing = MessageInDB(
+            id=str(ObjectId()),
+            room_id=room_id,
+            user_id=user_id,
+            username="testuser",
+            content="原訊息",
+            seq=7,
+            client_id="dup-1",
+        )
+        service.message_repo.get_by_client_id.return_value = existing
+
+        result = await service.create_message(
+            user_id=user_id,
+            message_data=MessageCreate(
+                room_id=room_id, content="原訊息", client_id="dup-1"
+            ),
+        )
+
+        assert result.id == existing.id
+        assert result.seq == 7
+        service.message_repo.create.assert_not_awaited()
+        service.message_repo.next_room_seq.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_create_message_idempotent_race(self, message_service_with_mocks):
+        """測試併發重送撞唯一索引時回傳既有訊息（原子保底）"""
+        service = message_service_with_mocks
+        room_id = str(ObjectId())
+        user_id = str(ObjectId())
+        _setup_create_mocks(service, room_id, user_id)
+
+        existing = MessageInDB(
+            id=str(ObjectId()),
+            room_id=room_id,
+            user_id=user_id,
+            username="testuser",
+            content="原訊息",
+            seq=8,
+            client_id="race-1",
+        )
+        # 快速路徑查無（另一請求尚未寫入），create 撞索引後 fallback 查到
+        service.message_repo.get_by_client_id.side_effect = [None, existing]
+        service.message_repo.next_room_seq.return_value = 9
+        service.message_repo.create.side_effect = DuplicateKeyError(
+            "E11000 duplicate key"
+        )
+
+        result = await service.create_message(
+            user_id=user_id,
+            message_data=MessageCreate(
+                room_id=room_id, content="原訊息", client_id="race-1"
+            ),
+        )
+
+        assert result.id == existing.id
+        assert result.seq == 8
+
+
+def _make_msg_indb(room_id: str, seq: int, content: str = "msg") -> MessageInDB:
+    """建立測試用 MessageInDB"""
+    return MessageInDB(
+        id=str(ObjectId()),
+        room_id=room_id,
+        user_id="test_user_id",
+        username="testuser",
+        content=content,
+        seq=seq,
+    )
+
+
+@pytest.mark.unit
+class TestMessageSync:
+    """測試斷線 gap 補發與游標分頁"""
+
+    @pytest.mark.asyncio
+    async def test_sync_no_gap(self, message_service_with_mocks):
+        """測試無 gap 時回傳空列表"""
+        service = message_service_with_mocks
+        service.message_repo.count_after_seq.return_value = 0
+
+        messages, full_reload = await service.sync_messages_since("room-1", 10)
+
+        assert messages == []
+        assert full_reload is False
+        service.message_repo.get_after_seq.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_sync_small_gap(self, message_service_with_mocks):
+        """測試 gap 在上限內時精確補發"""
+        service = message_service_with_mocks
+        service.message_repo.count_after_seq.return_value = 3
+        service.message_repo.get_after_seq.return_value = [
+            _make_msg_indb("room-1", seq) for seq in (11, 12, 13)
+        ]
+
+        messages, full_reload = await service.sync_messages_since("room-1", 10)
+
+        assert full_reload is False
+        assert [m.seq for m in messages] == [11, 12, 13]
+        service.message_repo.get_after_seq.assert_awaited_once_with(
+            "room-1", 10, limit=200
+        )
+
+    @pytest.mark.asyncio
+    async def test_sync_large_gap_full_reload(self, message_service_with_mocks):
+        """測試 gap 超過上限時改為全量重載"""
+        service = message_service_with_mocks
+        service.message_repo.count_after_seq.return_value = 500
+        service.message_repo.get_room_messages.return_value = [
+            _make_msg_indb("room-1", seq) for seq in range(451, 501)
+        ]
+
+        messages, full_reload = await service.sync_messages_since("room-1", 10)
+
+        assert full_reload is True
+        assert len(messages) == 50
+        # 全量重載走 get_room_messages（最新 50 條），不走 get_after_seq
+        service.message_repo.get_after_seq.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_get_room_messages_with_cursor(self, message_service_with_mocks):
+        """測試游標分頁參數透傳至 repository"""
+        service = message_service_with_mocks
+        service.message_repo.get_room_messages.return_value = []
+
+        await service.get_room_messages("room-1", limit=50, before_seq=42)
+
+        service.message_repo.get_room_messages.assert_awaited_once_with(
+            room_id="room-1",
+            skip=0,
+            limit=50,
+            message_type=None,
+            user_id=None,
+            before_seq=42,
+        )
+
+
+@pytest.mark.unit
+class TestMessageBroadcast:
+    """測試編輯/刪除訊息的 WS 廣播"""
+
+    @pytest.fixture
+    def service_with_cm(
+        self, mock_message_repository, mock_room_repository, mock_user_repository
+    ):
+        """帶 mock connection_manager 的訊息服務"""
+        cm = AsyncMock()
+        service = MessageService(
+            mock_message_repository,
+            mock_room_repository,
+            mock_user_repository,
+            connection_manager=cm,
+        )
+        return service, cm
+
+    @pytest.mark.asyncio
+    async def test_update_message_broadcasts_edit(self, service_with_cm):
+        """測試更新訊息後廣播 message_edited 事件"""
+        service, cm = service_with_cm
+        room_id = "test_room_id"
+        user_id = "test_user_id"
+        message_id = str(ObjectId())
+
+        original = MessageResponse(
+            id=message_id,
+            content="原始訊息",
+            message_type=MessageType.TEXT,
+            user_id=user_id,
+            room_id=room_id,
+            username="testuser",
+            status=MessageStatus.SENT,
+            edited=False,
+            created_at=datetime.now(),
+            updated_at=datetime.now(),
+        )
+        updated = original.model_copy(
+            update={"content": "更新後的訊息", "edited": True}
+        )
+
+        service.message_repo.get_by_id.return_value = original
+        service.message_repo.update.return_value = updated
+
+        await service.update_message(
+            message_id=message_id,
+            user_id=user_id,
+            update_data=MessageUpdate(content="更新後的訊息"),
+        )
+
+        cm.broadcast_to_room.assert_awaited_once()
+        call_args = cm.broadcast_to_room.await_args
+        assert call_args.args[0] == room_id
+        event = call_args.args[1]
+        assert event["type"] == "message_edited"
+        assert event["room_id"] == room_id
+        assert event["message"]["id"] == message_id
+        assert event["message"]["content"] == "更新後的訊息"
+        assert event["message"]["edited"] is True
+
+    @pytest.mark.asyncio
+    async def test_delete_message_broadcasts(self, service_with_cm):
+        """測試刪除訊息後廣播 message_deleted 事件"""
+        service, cm = service_with_cm
+        room_id = "test_room_id"
+        user_id = "test_user_id"
+        message_id = str(ObjectId())
+
+        original = MessageResponse(
+            id=message_id,
+            content="原始訊息",
+            message_type=MessageType.TEXT,
+            user_id=user_id,
+            room_id=room_id,
+            username="testuser",
+            status=MessageStatus.SENT,
+            edited=False,
+            created_at=datetime.now(),
+            updated_at=datetime.now(),
+        )
+
+        service.message_repo.get_by_id.return_value = original
+        service.message_repo.delete.return_value = True
+
+        await service.delete_message(message_id=message_id, user_id=user_id)
+
+        cm.broadcast_to_room.assert_awaited_once()
+        call_args = cm.broadcast_to_room.await_args
+        assert call_args.args[0] == room_id
+        event = call_args.args[1]
+        assert event["type"] == "message_deleted"
+        assert event["message_id"] == message_id

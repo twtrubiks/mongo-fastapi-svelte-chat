@@ -87,8 +87,10 @@
   // 發送訊息
   function sendMessage() {
     const content = message.trim();
-    
-    if (!content || disabled || sendingStatus === 'sending') {
+
+    // 不以 sending 狀態阻擋：每則訊息有獨立 client_id 追蹤，
+    // 真 ack 機制下 sending 會持續到伺服器確認，不應阻塞連續發送
+    if (!content || disabled) {
       return;
     }
     

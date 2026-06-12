@@ -1,11 +1,42 @@
 import type { HandlerContext } from './handlers';
-import type { Message, WSMessageHistoryMessage, WSTypingMessage, WSErrorMessage } from '$lib/types';
+import type { Message, WSMessageHistoryMessage, WSTypingMessage, WSErrorMessage, WSAckMessage, WSMessageEditedMessage, WSMessageDeletedMessage, WSMessageSyncMessage } from '$lib/types';
 import { messageStore, typingIndicatorStore, messageStatusStore } from '$lib/stores';
 import { extractUserId } from '$lib/utils/userIdNormalizer';
 
 // 處理新訊息
 export function handleNewMessage(message: Message) {
   messageStore.addMessage(message);
+}
+
+// 處理伺服器 ack（訊息已持久化）
+export function handleAck(data: WSAckMessage) {
+  const clientId = data.client_id;
+  if (!clientId) return;
+
+  // 以伺服器 id/seq 確認樂觀訊息
+  messageStore.confirmMessage(clientId, data.message_id, data.seq);
+
+  // 動態載入避免循環 import（messageRetry → manager → messageHandlers）
+  void import('$lib/utils/messageRetry').then(({ messageRetryManager }) => {
+    // 從重試佇列移除（會一併清除狀態），再標記為已送達供氣泡顯示
+    messageRetryManager.removeFromQueue(clientId);
+    messageStatusStore.setSent(clientId);
+  });
+}
+
+// 處理訊息編輯廣播
+export function handleMessageEdited(data: WSMessageEditedMessage) {
+  messageStore.applyEdit(data.message);
+}
+
+// 處理訊息刪除廣播
+export function handleMessageDeleted(data: WSMessageDeletedMessage) {
+  messageStore.removeMessage(data.message_id);
+}
+
+// 處理斷線重連 gap 補發
+export function handleMessageSync(data: WSMessageSyncMessage) {
+  messageStore.applySync(data.messages, data.full_reload);
 }
 
 // 處理歷史訊息

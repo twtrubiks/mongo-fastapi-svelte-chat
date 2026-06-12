@@ -43,6 +43,9 @@ class MessageCreate(MessageBase):
     """創建訊息模型"""
 
     room_id: str = Field(..., description="房間 ID")
+    client_id: str | None = Field(
+        None, max_length=64, description="客戶端產生的訊息 ID（冪等去重用）"
+    )
 
 
 class MessageUpdate(BaseModel):
@@ -62,6 +65,8 @@ class MessageInDB(MessageBase):
     room_id: str = Field(..., description="房間 ID")
     user_id: str = Field(..., description="發送者 ID")
     username: str = Field(..., description="發送者用戶名")
+    seq: int | None = Field(None, description="房間內單調遞增序號")
+    client_id: str | None = Field(None, description="客戶端產生的訊息 ID（冪等去重用）")
     status: MessageStatus = Field(default=MessageStatus.SENT, description="訊息狀態")
     edited: bool = Field(default=False, description="是否已編輯")
     edited_at: datetime | None = Field(None, description="編輯時間")
@@ -82,6 +87,8 @@ class MessageResponse(BaseModel):
     room_id: str = Field(..., description="房間 ID")
     user_id: str = Field(..., description="發送者 ID")
     username: str = Field(..., description="發送者用戶名")
+    seq: int | None = Field(None, description="房間內單調遞增序號")
+    client_id: str | None = Field(None, description="客戶端產生的訊息 ID（冪等去重用）")
     avatar: str | None = Field(None, description="發送者頭像")
     content: str = Field(..., description="訊息內容")
     message_type: MessageType = Field(..., description="訊息類型")
