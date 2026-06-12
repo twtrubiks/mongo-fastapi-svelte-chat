@@ -69,7 +69,8 @@ app.add_middleware(
     allow_origins=cors_origins,
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    allow_headers=["*"],
+    # 白名單明確列舉，避免 ["*"] 放行任意自訂標頭
+    allow_headers=["Accept", "Authorization", "Content-Type", "X-Requested-With"],
 )
 
 # 設定信任的主機

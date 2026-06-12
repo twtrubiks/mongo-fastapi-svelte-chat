@@ -7,8 +7,8 @@ from pydantic_settings import BaseSettings
 class Settings(BaseSettings):
     """應用程式設定類別"""
 
-    # MongoDB 設定
-    MONGODB_URL: str = "mongodb://root:password@localhost:27017"
+    # MongoDB 設定（含認證的連線字串請放 .env，預設值不帶憑證）
+    MONGODB_URL: str = "mongodb://localhost:27017"
     MONGODB_DATABASE: str = "chatroom"
 
     # JWT 設定（必須透過環境變數或 .env 設定，無預設值）
@@ -28,8 +28,8 @@ class Settings(BaseSettings):
     RATE_LIMIT_REQUESTS_PER_HOUR: int = 1000
     RATE_LIMIT_BURST_SIZE: int = 10
 
-    # 應用程式設定
-    DEBUG: bool = True
+    # 應用程式設定（安全預設：DEBUG 預設關閉，開發環境在 .env 設 DEBUG=true）
+    DEBUG: bool = False
     FRONTEND_URL: str = "http://localhost:5173"
 
     # CORS 和允許的主機設定
