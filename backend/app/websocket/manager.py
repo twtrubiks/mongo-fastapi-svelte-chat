@@ -155,15 +155,31 @@ class ConnectionManager:
             user_id, user_info, True, exclude_room=room_id
         )
 
-    async def disconnect(self, user_id: str, room_id: str):
+    async def disconnect(
+        self, user_id: str, room_id: str, websocket: WebSocket | None = None
+    ):
         """
         斷開 WebSocket 連線
 
         Args:
             user_id: 使用者 ID
             room_id: 房間 ID
+            websocket: 要斷開的連線物件。提供時會比對 identity，
+                僅當儲存的連線正是這條 websocket 才清理；
+                若已被新連線取代（同 user 同房重連），則為 stale 清理直接略過，
+                避免舊連線的 finally 誤刪新連線。None 時維持無條件清理（舊語意）。
         """
         async with self._lock:
+            # identity 比對：連線已被新連線取代時，這是舊連線的延遲清理，
+            # 不可動到新連線的任何狀態（連線、room_users、room-leave 排程）
+            if websocket is not None:
+                current = self.active_connections.get(user_id, {}).get(room_id)
+                if current is not websocket:
+                    logger.info(
+                        f"Stale disconnect ignored for user {user_id} room {room_id}"
+                    )
+                    return
+
             # 移除連線
             if user_id in self.active_connections:
                 if room_id in self.active_connections[user_id]:
@@ -322,7 +338,8 @@ class ConnectionManager:
             except Exception as e:  # intentional catch-all: 發送失敗延遲清理連線
                 logger.error(f"Error sending message to {user_id}: {e}")
                 # 延遲清理，避免在持有 _lock 時呼叫 disconnect 造成死鎖
-                asyncio.create_task(self.disconnect(user_id, room_id))
+                # 帶上 websocket 比對 identity，避免誤刪已取代的新連線
+                asyncio.create_task(self.disconnect(user_id, room_id, websocket))
 
     async def broadcast_to_room(
         self, room_id: str, message: dict, exclude_user: str | None = None
@@ -355,7 +372,8 @@ class ConnectionManager:
                 except Exception as e:  # intentional catch-all: 廣播失敗延遲清理連線
                     logger.error(f"Error broadcasting to {user_id}: {e}")
                     # 延遲清理，避免在持有 _lock 時呼叫 disconnect 造成死鎖
-                    asyncio.create_task(self.disconnect(user_id, room_id))
+                    # 帶上 websocket 比對 identity，避免誤刪已取代的新連線
+                    asyncio.create_task(self.disconnect(user_id, room_id, websocket))
 
     async def broadcast_message(
         self, room_id: str, message: dict, sender_id: str | None

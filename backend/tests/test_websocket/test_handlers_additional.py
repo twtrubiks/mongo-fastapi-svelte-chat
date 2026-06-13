@@ -103,8 +103,10 @@ class TestWebSocketHandlersAdditional:
             )
             # 驗證歡迎訊息
             assert mock_cm.send_personal_message.call_count >= 1
-            # 驗證清理連線
-            mock_cm.disconnect.assert_called_once_with("user123", "room123")
+            # 驗證清理連線（帶上 websocket 以比對 identity）
+            mock_cm.disconnect.assert_called_once_with(
+                "user123", "room123", mock_websocket
+            )
 
     @pytest.mark.asyncio
     async def test_handle_websocket_connection_websocket_disconnect_exception(
@@ -125,8 +127,10 @@ class TestWebSocketHandlersAdditional:
 
             await handle_websocket_connection(mock_websocket, "room123")
 
-            # 驗證清理連線
-            mock_cm.disconnect.assert_called_once_with("user123", "room123")
+            # 驗證清理連線（帶上 websocket 以比對 identity）
+            mock_cm.disconnect.assert_called_once_with(
+                "user123", "room123", mock_websocket
+            )
 
     @pytest.mark.asyncio
     async def test_handle_websocket_connection_setup_exception(self, mock_websocket):

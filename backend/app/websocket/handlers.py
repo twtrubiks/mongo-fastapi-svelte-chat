@@ -136,9 +136,10 @@ async def handle_websocket_connection(websocket: WebSocket, room_id: str):
         except Exception:  # intentional: close 失敗可安全忽略
             pass
     finally:
-        # 清理連線
+        # 清理連線：傳入當前 websocket 比對 identity，
+        # 避免同 user 同房重連時舊連線的 finally 誤刪新連線
         if user_id:
-            await connection_manager.disconnect(user_id, room_id)
+            await connection_manager.disconnect(user_id, room_id, websocket)
 
 
 async def handle_message(

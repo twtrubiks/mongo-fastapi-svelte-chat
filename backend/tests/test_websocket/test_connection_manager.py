@@ -142,6 +142,52 @@ class TestConnectionManager:
         mock_ws1.close.assert_called_once()
 
     @pytest.mark.asyncio
+    async def test_stale_disconnect_preserves_new_connection(self, connection_manager):
+        """測試舊連線的 disconnect 不會誤刪已取代的新連線（競態修復）
+
+        重現情境：同一 user 同房重複連線。connect 以新 websocket 覆寫並關閉舊連線後，
+        舊連線 handler 的 finally 會呼叫 disconnect。若 disconnect 無條件清理，
+        會把已是新連線的項刪掉，導致新連線收不到後續 personal message。
+        傳入 websocket 比對 identity 後，stale disconnect 應被略過。
+        """
+        user_id = "user123"
+        room_id = "room456"
+        user_info = {"id": user_id, "username": "testuser", "avatar": None}
+
+        old_ws = Mock(spec=WebSocket)
+        old_ws.accept = AsyncMock()
+        old_ws.close = AsyncMock()
+        old_ws.send_text = AsyncMock()
+
+        new_ws = Mock(spec=WebSocket)
+        new_ws.accept = AsyncMock()
+        new_ws.close = AsyncMock()
+        new_ws.send_text = AsyncMock()
+
+        # 第一條連線，接著第二條連線取代它
+        await connection_manager.connect(old_ws, user_id, room_id, user_info)
+        await connection_manager.connect(new_ws, user_id, room_id, user_info)
+        assert connection_manager.active_connections[user_id][room_id] is new_ws
+
+        # 模擬舊連線 handler 的 finally：用舊 websocket 呼叫 disconnect
+        await connection_manager.disconnect(user_id, room_id, old_ws)
+
+        # 新連線不應被刪除
+        assert user_id in connection_manager.active_connections
+        assert connection_manager.active_connections[user_id][room_id] is new_ws
+        assert user_id in connection_manager.room_users[room_id]
+        # 不應排程離線 / 房間離開
+        assert user_id not in connection_manager._pending_offline
+        assert (user_id, room_id) not in connection_manager._pending_room_leave
+
+        # 新連線仍能收到 personal message
+        new_ws.send_text.reset_mock()
+        await connection_manager.send_personal_message(
+            user_id, room_id, {"type": "test", "content": "still reachable"}
+        )
+        new_ws.send_text.assert_called_once()
+
+    @pytest.mark.asyncio
     async def test_multiple_rooms_same_user(self, connection_manager):
         """測試同一用戶連接到多個房間"""
         user_id = "user123"
