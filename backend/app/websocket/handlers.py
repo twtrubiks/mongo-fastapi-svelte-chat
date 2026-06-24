@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from fastapi import WebSocket, WebSocketDisconnect
 
 from app.config import settings
-from app.core.bot import get_bot_user_id, is_bot_trigger
+from app.core.bot import BOT_USERNAME, get_bot_user_id, is_bot_trigger
 from app.core.exceptions import AppError, NotFoundError
 from app.core.fastapi_integration import (
     create_ai_service,
@@ -351,7 +351,7 @@ async def handle_chat_message(
 
 
 async def _send_bot_error(user_id: str, room_id: str, message: str):
-    """回報 bot 相關錯誤給觸發者（不影響其原始訊息）"""
+    """回報 bot 前置錯誤給觸發者（限流／空問題，尚無預覽可收）"""
     await connection_manager.send_personal_message(
         user_id,
         room_id,
@@ -363,12 +363,30 @@ async def _send_bot_error(user_id: str, room_id: str, message: str):
     )
 
 
+async def _broadcast_bot_error(room_id: str, message: str):
+    """廣播 bot 錯誤給房間，讓前端把 streaming 預覽收掉（而非卡在「打字中」）"""
+    await connection_manager.broadcast_to_room(
+        room_id,
+        {
+            "type": "bot_error",
+            "room_id": room_id,
+            "message": message,
+            "timestamp": datetime.now(UTC).isoformat(),
+        },
+    )
+
+
 async def handle_bot_mention(user_id: str, room_id: str, question: str):
     """
-    處理 @bot 觸發：限流 → 呼叫 AI → bot 身分正規落地廣播（A0 非 streaming）。
+    處理 @bot 觸發（A1 streaming，兩階段）。
 
-    完整自我守護：任何失敗只回報觸發者，不影響其原始訊息，也不會中斷 WS 連線。
-    LLM 呼叫委託 ai_service（商業邏輯不寫在 handler）；bot 訊息不發通知，
+    階段一（瞬態預覽）：streaming 過程用 broadcast_to_room 發 bot_typing 增量，
+        不走 seq、不持久化。
+    階段二（正規落地）：streaming 結束後以 bot 身分走正規 create_message →
+        broadcast_message（產生 seq、可持久化、可被 gap 補回）；前端收到正式
+        訊息後把預覽替換成最終訊息。失敗時發 bot_error 讓前端收掉預覽。
+
+    LLM 呼叫委託 ai_service（商業邏輯不寫在 handler）；bot 訊息刻意不發通知，
     避免每次回話全房間收到通知轟炸。
 
     Args:
@@ -381,8 +399,8 @@ async def handle_bot_mention(user_id: str, room_id: str, question: str):
     if not bot_user_id or user_id == bot_user_id:
         return
 
+    # --- 前置檢查：限流／空問題（尚無預覽，僅回報觸發者）---
     try:
-        # 限流：每使用者每分鐘上限（複用 Redis 滑動視窗），避免被狂 @ 燒 token
         redis_client = await get_redis()
         limiter = SlidingWindowRateLimiter(redis_client, settings)
         allowed, _, reset_time = await limiter.is_allowed(
@@ -390,25 +408,53 @@ async def handle_bot_mention(user_id: str, room_id: str, question: str):
             window_size=60,
             max_requests=settings.BOT_RATE_LIMIT_PER_MINUTE,
         )
-        if not allowed:
-            await _send_bot_error(
-                user_id, room_id, f"你呼叫 @bot 太頻繁了，請 {reset_time} 秒後再試"
-            )
-            return
+    except Exception as e:  # intentional fail-open: 限流檢查失敗不擋 bot
+        logger.error(f"Bot rate limit check failed: {e}")
+        allowed, reset_time = True, 0
+    if not allowed:
+        await _send_bot_error(
+            user_id, room_id, f"你呼叫 @bot 太頻繁了，請 {reset_time} 秒後再試"
+        )
+        return
+    if not question:
+        await _send_bot_error(user_id, room_id, "請在 @bot 後面輸入你的問題")
+        return
 
-        # 空問題：給提示，不打 API
-        if not question:
-            await _send_bot_error(user_id, room_id, "請在 @bot 後面輸入你的問題")
-            return
-
-        # 呼叫 LLM（商業邏輯在 ai_service）
+    # --- 階段一：streaming 瞬態預覽（廣播給全房間，含觸發者）---
+    bot_user = {"id": bot_user_id, "username": BOT_USERNAME, "avatar": None}
+    buffer = ""
+    try:
         ai_service = await create_ai_service()
-        answer = (await ai_service.reply(question)).strip()[:MAX_CONTENT_LENGTH]
-        if not answer:
-            await _send_bot_error(user_id, room_id, "AI 助理沒有產生回覆，請稍後再試")
-            return
+        async for delta in ai_service.stream_reply(question):
+            if not delta:
+                continue
+            buffer += delta
+            await connection_manager.broadcast_to_room(
+                room_id,
+                {
+                    "type": "bot_typing",
+                    "room_id": room_id,
+                    "user": bot_user,
+                    "content": delta,
+                    "timestamp": datetime.now(UTC).isoformat(),
+                },
+            )
+    except AppError as e:
+        # 可預期錯誤（如未配置 NVIDIA_API_KEY）：收掉預覽並回報原因
+        await _broadcast_bot_error(room_id, str(e))
+        return
+    except Exception as e:  # intentional catch-all: 外部服務逾時/斷線/429 收尾
+        logger.error(f"Bot streaming failed: {e}")
+        await _broadcast_bot_error(room_id, "AI 助理回覆中斷，請稍後再試")
+        return
 
-        # 正規落地：bot 身分（跳過成員檢查），產生 seq、持久化、可被 gap 補回
+    answer = buffer.strip()[:MAX_CONTENT_LENGTH]
+    if not answer:
+        await _broadcast_bot_error(room_id, "AI 助理沒有產生回覆，請稍後再試")
+        return
+
+    # --- 階段二：正規落地（產生 seq、持久化）→ 前端用它替換預覽 ---
+    try:
         message_service = await create_message_service()
         bot_message = await message_service.create_message(
             bot_user_id,
@@ -417,15 +463,12 @@ async def handle_bot_mention(user_id: str, room_id: str, question: str):
             ),
             skip_membership_check=True,
         )
-
-        # 廣播給房間所有人（bot 無頭像，前端以暱稱首字母 fallback）；刻意不發通知
         payload = _format_message_payload(bot_message, None)
         await connection_manager.broadcast_message(room_id, payload, None)
-        logger.info(f"Bot replied in room {room_id} (triggered by {user_id})")
-
-    except Exception as e:  # intentional catch-all: bot 回覆失敗不影響使用者原始訊息
-        logger.error(f"Error handling bot mention: {e}")
-        await _send_bot_error(user_id, room_id, "AI 助理暫時無法回覆，請稍後再試")
+        logger.info(f"Bot streamed reply in room {room_id} (triggered by {user_id})")
+    except Exception as e:  # intentional catch-all: 落地失敗收掉預覽
+        logger.error(f"Bot landing failed: {e}")
+        await _broadcast_bot_error(room_id, "AI 助理回覆儲存失敗，請稍後再試")
 
 
 async def handle_typing_indicator(

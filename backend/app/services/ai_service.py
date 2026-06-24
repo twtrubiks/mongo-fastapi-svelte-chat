@@ -5,6 +5,7 @@
 """
 
 import logging
+from collections.abc import AsyncIterator
 
 from pydantic_ai import Agent
 from pydantic_ai.models.openai import OpenAIChatModel
@@ -48,23 +49,24 @@ def _get_chat_agent() -> Agent:
 
 
 class AIService:
-    """聊天室 AI 助理服務（A0：非 streaming）。"""
+    """聊天室 AI 助理服務（A1：streaming）。"""
 
-    async def reply(self, question: str) -> str:
-        """呼叫 LLM 取得完整回覆（非 streaming）。
+    async def stream_reply(self, question: str) -> AsyncIterator[str]:
+        """逐段 yield 文字增量；商業邏輯留在 service，handler 只負責廣播。
 
         Args:
             question: 使用者問題（已去除 @bot 前綴）
 
-        Returns:
-            str: bot 回覆內容
+        Yields:
+            str: 文字增量（delta）
 
         Raises:
-            AppError: 當 NVIDIA_API_KEY 未配置時
+            AppError: 當 NVIDIA_API_KEY 未配置時（首次迭代時拋出）
         """
         if not settings.NVIDIA_API_KEY:
             raise AppError("AI 助理尚未配置（缺少 NVIDIA_API_KEY）")
 
         agent = _get_chat_agent()
-        result = await agent.run(question)
-        return result.output
+        async with agent.run_stream(question) as result:
+            async for delta in result.stream_text(delta=True):
+                yield delta

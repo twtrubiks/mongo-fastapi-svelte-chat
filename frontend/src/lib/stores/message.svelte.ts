@@ -203,6 +203,59 @@ export const messageStore = {
     messageState = { ...messageState, messages: newMessages };
   },
 
+  // === bot streaming 瞬態預覽（不持久化、無 seq）===
+  // 每個房間最多一則預覽，id 固定為 `bot-stream-${roomId}`，content 隨 delta 累積，
+  // 待正式訊息（帶 seq）抵達後由 resolveBotStreamOnLanding 收掉並替換。
+
+  // 累積 bot streaming 增量（首個 delta 建立預覽，其後就地追加）
+  appendBotStream: (
+    roomId: string,
+    user: { id: string; username: string; avatar?: string | null },
+    delta: string
+  ) => {
+    const previewId = `bot-stream-${roomId}`;
+    const index = messageState.messages.findIndex(msg => msg.id === previewId);
+    if (index !== -1) {
+      const newMessages = [...messageState.messages];
+      const prev = newMessages[index]!;
+      newMessages[index] = { ...prev, content: prev.content + delta };
+      messageState = { ...messageState, messages: newMessages };
+      return;
+    }
+    // created_at = now 讓預覽排到列表底部（addMessage 依時間排序）
+    // exactOptionalPropertyTypes：avatar 有值才帶（bot 通常無頭像，前端以首字母 fallback）
+    const now = new Date().toISOString();
+    const avatar = user.avatar ?? undefined;
+    const preview: Message = {
+      id: previewId,
+      room_id: roomId,
+      user_id: user.id,
+      username: user.username,
+      content: delta,
+      message_type: 'text',
+      created_at: now,
+      updated_at: now,
+      streaming: true,
+      ...(avatar ? { avatar } : {}),
+      user: { id: user.id, username: user.username, ...(avatar ? { avatar } : {}) },
+    };
+    messageState = { ...messageState, messages: [...messageState.messages, preview] };
+  },
+
+  // 收掉某房間的 bot streaming 預覽（bot_error 收尾）
+  clearBotStream: (roomId: string) => {
+    messageStore.removeMessage(`bot-stream-${roomId}`);
+  },
+
+  // 正式訊息抵達時，若同房存在同一 bot 的預覽則收掉（預覽被正式訊息替換）
+  resolveBotStreamOnLanding: (message: Message) => {
+    const previewId = `bot-stream-${message.room_id}`;
+    const preview = messageState.messages.find(msg => msg.id === previewId);
+    if (preview && preview.user_id === message.user_id) {
+      messageStore.removeMessage(previewId);
+    }
+  },
+
   // 套用斷線重連補發（message_sync）
   applySync: (messages: Message[], fullReload: boolean) => {
     if (fullReload) {

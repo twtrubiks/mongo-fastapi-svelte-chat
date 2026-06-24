@@ -49,6 +49,18 @@ def _bot_message_stub():
     )
 
 
+async def _async_gen(items):
+    """把序列包成 async generator（模擬 stream_reply 逐段 yield）"""
+    for item in items:
+        yield item
+
+
+async def _async_gen_partial_then_raise():
+    """先 yield 半句再拋錯（模擬 streaming 中途逾時/斷線）"""
+    yield "半"
+    raise RuntimeError("nvidia down")
+
+
 class TestHandleBotMention:
     """handle_bot_mention 各情境"""
 
@@ -120,10 +132,10 @@ class TestHandleBotMention:
             sent = mock_cm.send_personal_message.call_args.args[2]
             assert "請在 @bot" in sent["message"]
 
-    async def test_happy_path_lands_as_bot(self, allowed_limiter):
-        """正常流程：呼叫 AI → bot 身分落地（skip_membership_check=True）→ 廣播、不發通知"""
+    async def test_happy_path_streams_then_lands(self, allowed_limiter):
+        """正常流程：streaming bot_typing 增量 → bot 身分落地（skip_membership_check=True）→ 廣播"""
         mock_ai_service = Mock()
-        mock_ai_service.reply = AsyncMock(return_value="這是 bot 回覆")
+        mock_ai_service.stream_reply = Mock(return_value=_async_gen(["你", "好"]))
         mock_msg_service = Mock()
         mock_msg_service.create_message = AsyncMock(return_value=_bot_message_stub())
 
@@ -144,27 +156,37 @@ class TestHandleBotMention:
             ),
             patch("app.websocket.handlers.connection_manager") as mock_cm,
         ):
+            mock_cm.broadcast_to_room = AsyncMock()
             mock_cm.broadcast_message = AsyncMock()
             mock_cm.send_personal_message = AsyncMock()
             await handle_bot_mention("user1", "room1", "你好")
 
-            # 呼叫 AI（去除前綴後的問題）
-            mock_ai_service.reply.assert_awaited_once_with("你好")
+            # 以去除前綴後的問題開啟 streaming
+            mock_ai_service.stream_reply.assert_called_once_with("你好")
 
-            # 以 bot 身分落地，且跳過成員檢查
+            # 階段一：每個 delta 廣播一則 bot_typing
+            assert mock_cm.broadcast_to_room.await_count == 2
+            first = mock_cm.broadcast_to_room.call_args_list[0].args[1]
+            assert first["type"] == "bot_typing"
+            assert first["content"] == "你"
+            assert first["user"]["id"] == "bot123"
+
+            # 階段二：以 bot 身分落地、跳過成員檢查、內容為累積後的完整回覆
             mock_msg_service.create_message.assert_awaited_once()
             call = mock_msg_service.create_message.call_args
             assert call.args[0] == "bot123"
             assert call.kwargs["skip_membership_check"] is True
+            assert call.args[1].content == "你好"
 
-            # 廣播一則 bot 訊息，且不回報錯誤
+            # 廣播最終訊息一次
             mock_cm.broadcast_message.assert_awaited_once()
-            mock_cm.send_personal_message.assert_not_called()
 
-    async def test_ai_failure_reports_error(self, allowed_limiter):
-        """AI 呼叫失敗 → 回報錯誤、不建立訊息"""
+    async def test_streaming_failure_broadcasts_bot_error(self, allowed_limiter):
+        """streaming 中途失敗 → 廣播 bot_error 收掉預覽、不落地"""
         mock_ai_service = Mock()
-        mock_ai_service.reply = AsyncMock(side_effect=RuntimeError("nvidia down"))
+        mock_ai_service.stream_reply = Mock(
+            return_value=_async_gen_partial_then_raise()
+        )
         mock_msg_service = Mock()
         mock_msg_service.create_message = AsyncMock()
 
@@ -185,11 +207,15 @@ class TestHandleBotMention:
             ),
             patch("app.websocket.handlers.connection_manager") as mock_cm,
         ):
+            mock_cm.broadcast_to_room = AsyncMock()
             mock_cm.broadcast_message = AsyncMock()
-            mock_cm.send_personal_message = AsyncMock()
             await handle_bot_mention("user1", "room1", "你好")
 
+            # 失敗不落地、不廣播最終訊息
             mock_msg_service.create_message.assert_not_called()
             mock_cm.broadcast_message.assert_not_called()
-            sent = mock_cm.send_personal_message.call_args.args[2]
-            assert "暫時無法回覆" in sent["message"]
+
+            # 最後一則廣播為 bot_error（半句預覽 + 收尾錯誤）
+            assert mock_cm.broadcast_to_room.await_count >= 1
+            last = mock_cm.broadcast_to_room.call_args_list[-1].args[1]
+            assert last["type"] == "bot_error"

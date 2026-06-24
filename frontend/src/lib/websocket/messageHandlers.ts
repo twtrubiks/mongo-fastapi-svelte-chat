@@ -1,11 +1,26 @@
 import type { HandlerContext } from './handlers';
-import type { Message, WSMessageHistoryMessage, WSTypingMessage, WSErrorMessage, WSAckMessage, WSMessageEditedMessage, WSMessageDeletedMessage, WSMessageSyncMessage } from '$lib/types';
+import type { Message, WSMessageHistoryMessage, WSTypingMessage, WSErrorMessage, WSAckMessage, WSMessageEditedMessage, WSMessageDeletedMessage, WSMessageSyncMessage, WSBotTypingMessage, WSBotErrorMessage } from '$lib/types';
 import { messageStore, typingIndicatorStore, messageStatusStore } from '$lib/stores';
 import { extractUserId } from '$lib/utils/userIdNormalizer';
 
 // 處理新訊息
 export function handleNewMessage(message: Message) {
   messageStore.addMessage(message);
+  // bot streaming 落地：正式訊息（帶 seq）抵達後收掉對應預覽
+  messageStore.resolveBotStreamOnLanding(message);
+}
+
+// 處理 bot streaming 瞬態增量（累積成預覽氣泡）
+export function handleBotTyping(data: WSBotTypingMessage) {
+  if (!data.room_id || !data.user || typeof data.content !== 'string') return;
+  messageStore.appendBotStream(data.room_id, data.user, data.content);
+}
+
+// 處理 bot streaming 收尾錯誤（僅收掉預覽，不對全房間跳錯誤提示以免吵雜）
+export function handleBotError(data: WSBotErrorMessage) {
+  if (data.room_id) {
+    messageStore.clearBotStream(data.room_id);
+  }
 }
 
 // 處理伺服器 ack（訊息已持久化）

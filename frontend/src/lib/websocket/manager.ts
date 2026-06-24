@@ -4,7 +4,7 @@ import { apiClient } from '$lib/api/client';
 import type { HandlerContext, HandlerEvent, HandlerEventPayloadMap } from './handlers';
 import { isValidWSMessage } from './guards';
 import { handleUserJoined, handleUserLeft, handleUserStatusChanged, handleRoomUsers, handleRoomCreated, handleRoomDeleted, handleRoomUpdated, resetLastRoomUsersTime } from './roomHandlers';
-import { handleNewMessage, handleMessageHistory, handleTypingIndicator, handleError, handleAck, handleMessageEdited, handleMessageDeleted, handleMessageSync } from './messageHandlers';
+import { handleNewMessage, handleMessageHistory, handleTypingIndicator, handleError, handleAck, handleMessageEdited, handleMessageDeleted, handleMessageSync, handleBotTyping, handleBotError } from './messageHandlers';
 import { dispatchNotification, handleNotificationStatusChanged, cancelPendingNotificationRefresh } from './notificationHandlers';
 
 export class WebSocketManager {
@@ -421,6 +421,14 @@ export class WebSocketManager {
 
       case 'error':
         handleError(data, ctx);
+        break;
+
+      case 'bot_typing':
+        handleBotTyping(data);
+        break;
+
+      case 'bot_error':
+        handleBotError(data);
         break;
 
       case 'read_status_response':

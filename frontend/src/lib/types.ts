@@ -67,6 +67,7 @@ export interface Message {
   seq?: number;  // 房間內單調遞增序號（後端產生）
   client_id?: string;  // 客戶端產生的訊息 ID（冪等去重 + ack 對應）
   pending?: boolean;  // 樂觀 UI：尚未收到伺服器確認（僅前端使用）
+  streaming?: boolean;  // bot streaming 瞬態預覽（不持久化、無 seq；僅前端使用）
   status?: string;
   edited?: boolean;
   edited_at?: string;
@@ -306,6 +307,23 @@ export interface WSErrorMessage {
   temp_id?: string;
 }
 
+/** bot streaming 瞬態增量（不走 seq、不持久化；前端累積成預覽氣泡） */
+export interface WSBotTypingMessage {
+  type: 'bot_typing';
+  room_id: string;
+  user: { id: string; username: string; avatar?: string | null };
+  content: string;  // 文字增量（delta）
+  timestamp: string;
+}
+
+/** bot streaming 收尾錯誤（讓前端收掉預覽，而非卡在「打字中」） */
+export interface WSBotErrorMessage {
+  type: 'bot_error';
+  room_id: string;
+  message: string;
+  timestamp: string;
+}
+
 /** 所有 WebSocket 伺服器→客戶端事件的 discriminated union */
 export type WebSocketMessage =
   | WSWelcomeMessage
@@ -328,7 +346,9 @@ export type WebSocketMessage =
   | WSRoomCreatedMessage
   | WSRoomUpdatedMessage
   | WSRoomDeletedMessage
-  | WSErrorMessage;
+  | WSErrorMessage
+  | WSBotTypingMessage
+  | WSBotErrorMessage;
 
 // 狀態管理型別
 export interface AuthState {

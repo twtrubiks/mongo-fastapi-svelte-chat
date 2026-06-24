@@ -23,6 +23,8 @@ const KNOWN_WS_TYPES = new Set<WebSocketMessage['type']>([
   'room_updated',
   'room_deleted',
   'error',
+  'bot_typing',
+  'bot_error',
 ]);
 
 /** 檢查 JSON.parse 結果是否為合法的 WS 訊息結構 */
