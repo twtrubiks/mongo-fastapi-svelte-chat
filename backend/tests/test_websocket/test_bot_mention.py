@@ -1,6 +1,7 @@
-"""@bot AI 助理觸發（A0 非 streaming）測試
+"""AI 助理觸發測試（@bot streaming + /summary 摘要）
 
-涵蓋 is_bot_trigger 觸發判斷與 handle_bot_mention 各情境，全部不打外部 API。
+涵蓋 is_bot_trigger / is_summary_command 觸發判斷，以及 handle_bot_mention /
+handle_summary_command 各情境，全部不打外部 API。
 """
 
 from datetime import UTC, datetime
@@ -8,9 +9,9 @@ from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
-from app.core.bot import is_bot_trigger
+from app.core.bot import is_bot_trigger, is_summary_command
 from app.models.message import MessageType
-from app.websocket.handlers import handle_bot_mention
+from app.websocket.handlers import handle_bot_mention, handle_summary_command
 
 
 class TestIsBotTrigger:
@@ -219,3 +220,143 @@ class TestHandleBotMention:
             assert mock_cm.broadcast_to_room.await_count >= 1
             last = mock_cm.broadcast_to_room.call_args_list[-1].args[1]
             assert last["type"] == "bot_error"
+
+
+class TestIsSummaryCommand:
+    """is_summary_command 指令判斷"""
+
+    @pytest.mark.parametrize(
+        "content,expected",
+        [
+            ("/summary", True),
+            ("  /SUMMARY  ", True),  # 大小寫不敏感 + 前後空白
+            ("/summarytext", False),  # 完整比對，不前綴誤判
+            ("/summary 最近", False),  # 不接受參數（完整比對）
+            ("@bot hi", False),
+            ("hello", False),
+        ],
+    )
+    def test_is_summary_command(self, content, expected):
+        assert is_summary_command(content) is expected
+
+
+def _room_msg(username, content, user_id="u1", mtype=MessageType.TEXT):
+    """組一個 get_room_messages 回傳的訊息 stub"""
+    return Mock(username=username, content=content, user_id=user_id, message_type=mtype)
+
+
+class TestHandleSummaryCommand:
+    """handle_summary_command 各情境"""
+
+    @pytest.fixture
+    def allowed_limiter(self):
+        limiter = Mock()
+        limiter.is_allowed = AsyncMock(return_value=(True, 4, 60))
+        return limiter
+
+    async def test_not_seeded_reports_error(self):
+        """bot 尚未種子化 → 回報觸發者、不撈訊息"""
+        with (
+            patch("app.websocket.handlers.get_bot_user_id", return_value=None),
+            patch("app.websocket.handlers.create_message_service") as mock_msvc,
+            patch("app.websocket.handlers.connection_manager") as mock_cm,
+        ):
+            mock_cm.send_personal_message = AsyncMock()
+            await handle_summary_command("user1", "room1")
+            mock_msvc.assert_not_called()
+            sent = mock_cm.send_personal_message.call_args.args[2]
+            assert "尚未就緒" in sent["message"]
+
+    async def test_rate_limited(self):
+        """超過限流 → 回提示、不撈訊息、不打 API"""
+        limiter = Mock()
+        limiter.is_allowed = AsyncMock(return_value=(False, 0, 30))
+        with (
+            patch("app.websocket.handlers.get_bot_user_id", return_value="bot123"),
+            patch("app.websocket.handlers.get_redis", new=AsyncMock()),
+            patch(
+                "app.websocket.handlers.SlidingWindowRateLimiter", return_value=limiter
+            ),
+            patch("app.websocket.handlers.create_ai_service") as mock_ai,
+            patch("app.websocket.handlers.connection_manager") as mock_cm,
+        ):
+            mock_cm.send_personal_message = AsyncMock()
+            await handle_summary_command("user1", "room1")
+            mock_ai.assert_not_called()
+            sent = mock_cm.send_personal_message.call_args.args[2]
+            assert "太頻繁" in sent["message"]
+
+    async def test_no_messages_reports_error(self, allowed_limiter):
+        """沒有可摘要的訊息 → 回提示、不打 API"""
+        mock_msg_service = Mock()
+        mock_msg_service.get_room_messages = AsyncMock(return_value=[])
+
+        with (
+            patch("app.websocket.handlers.get_bot_user_id", return_value="bot123"),
+            patch("app.websocket.handlers.get_redis", new=AsyncMock()),
+            patch(
+                "app.websocket.handlers.SlidingWindowRateLimiter",
+                return_value=allowed_limiter,
+            ),
+            patch(
+                "app.websocket.handlers.create_message_service",
+                new=AsyncMock(return_value=mock_msg_service),
+            ),
+            patch("app.websocket.handlers.create_ai_service") as mock_ai,
+            patch("app.websocket.handlers.connection_manager") as mock_cm,
+        ):
+            mock_cm.send_personal_message = AsyncMock()
+            await handle_summary_command("user1", "room1")
+            mock_ai.assert_not_called()
+            sent = mock_cm.send_personal_message.call_args.args[2]
+            assert "沒有可摘要" in sent["message"]
+
+    async def test_happy_path_lands_summary(self, allowed_limiter):
+        """正常流程：撈訊息 → 摘要（排除 bot 自己）→ bot 身分落地廣播"""
+        mock_msg_service = Mock()
+        mock_msg_service.get_room_messages = AsyncMock(
+            return_value=[
+                _room_msg("alice", "今天部署成功", user_id="u1"),
+                _room_msg("bot", "（舊的 bot 訊息）", user_id="bot123"),
+                _room_msg("bob", "太好了", user_id="u2"),
+            ]
+        )
+        mock_msg_service.create_message = AsyncMock(return_value=_bot_message_stub())
+        mock_ai_service = Mock()
+        mock_ai_service.summarize = AsyncMock(return_value="- 部署成功\n- 大家滿意")
+
+        with (
+            patch("app.websocket.handlers.get_bot_user_id", return_value="bot123"),
+            patch("app.websocket.handlers.get_redis", new=AsyncMock()),
+            patch(
+                "app.websocket.handlers.SlidingWindowRateLimiter",
+                return_value=allowed_limiter,
+            ),
+            patch(
+                "app.websocket.handlers.create_message_service",
+                new=AsyncMock(return_value=mock_msg_service),
+            ),
+            patch(
+                "app.websocket.handlers.create_ai_service",
+                new=AsyncMock(return_value=mock_ai_service),
+            ),
+            patch("app.websocket.handlers.connection_manager") as mock_cm,
+        ):
+            mock_cm.broadcast_message = AsyncMock()
+            mock_cm.send_personal_message = AsyncMock()
+            await handle_summary_command("user1", "room1")
+
+            # transcript 排除 bot 自己的訊息，依時間順序組成
+            mock_ai_service.summarize.assert_awaited_once_with(
+                "alice: 今天部署成功\nbob: 太好了"
+            )
+
+            # 以 bot 身分落地、跳過成員檢查、內容含摘要標題
+            mock_msg_service.create_message.assert_awaited_once()
+            call = mock_msg_service.create_message.call_args
+            assert call.args[0] == "bot123"
+            assert call.kwargs["skip_membership_check"] is True
+            assert call.args[1].content.startswith("📋 對話摘要")
+
+            mock_cm.broadcast_message.assert_awaited_once()
+            mock_cm.send_personal_message.assert_not_called()

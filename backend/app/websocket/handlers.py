@@ -7,7 +7,12 @@ from datetime import UTC, datetime
 from fastapi import WebSocket, WebSocketDisconnect
 
 from app.config import settings
-from app.core.bot import BOT_USERNAME, get_bot_user_id, is_bot_trigger
+from app.core.bot import (
+    BOT_USERNAME,
+    get_bot_user_id,
+    is_bot_trigger,
+    is_summary_command,
+)
 from app.core.exceptions import AppError, NotFoundError
 from app.core.fastapi_integration import (
     create_ai_service,
@@ -328,11 +333,14 @@ async def handle_chat_message(
         except Exception as e:  # intentional fail-open: 通知前置準備失敗不影響訊息發送
             logger.error(f"Error preparing notifications: {e}")
 
-        # @bot 觸發：使用者訊息已落地廣播後，產生 AI 回覆（A0 非 streaming）
+        # AI 觸發：使用者訊息已落地廣播後處理（僅 TEXT）
+        # @bot → streaming 問答；/summary → 對話摘要
         if msg_type == MessageType.TEXT:
             bot_question = is_bot_trigger(content)
             if bot_question is not None:
                 await handle_bot_mention(user_id, room_id, bot_question)
+            elif is_summary_command(content):
+                await handle_summary_command(user_id, room_id)
 
         logger.info(f"Message saved and broadcasted: {user_id} -> {room_id}")
 
@@ -348,6 +356,26 @@ async def handle_chat_message(
                 "temp_id": temp_id,
             },
         )
+
+
+async def _check_bot_rate_limit(user_id: str) -> tuple[bool, int]:
+    """每使用者每分鐘 AI 使用上限（@bot 與 /summary 共用額度，複用 Redis 滑動視窗）。
+
+    Returns:
+        tuple[bool, int]: (是否允許, 重置秒數)；檢查失敗時 fail-open
+    """
+    try:
+        redis_client = await get_redis()
+        limiter = SlidingWindowRateLimiter(redis_client, settings)
+        allowed, _, reset_time = await limiter.is_allowed(
+            f"rate_limit:bot:{user_id}",
+            window_size=60,
+            max_requests=settings.BOT_RATE_LIMIT_PER_MINUTE,
+        )
+        return allowed, reset_time
+    except Exception as e:  # intentional fail-open: 限流檢查失敗不擋 AI
+        logger.error(f"Bot rate limit check failed: {e}")
+        return True, 0
 
 
 async def _send_bot_error(user_id: str, room_id: str, message: str):
@@ -400,17 +428,7 @@ async def handle_bot_mention(user_id: str, room_id: str, question: str):
         return
 
     # --- 前置檢查：限流／空問題（尚無預覽，僅回報觸發者）---
-    try:
-        redis_client = await get_redis()
-        limiter = SlidingWindowRateLimiter(redis_client, settings)
-        allowed, _, reset_time = await limiter.is_allowed(
-            f"rate_limit:bot:{user_id}",
-            window_size=60,
-            max_requests=settings.BOT_RATE_LIMIT_PER_MINUTE,
-        )
-    except Exception as e:  # intentional fail-open: 限流檢查失敗不擋 bot
-        logger.error(f"Bot rate limit check failed: {e}")
-        allowed, reset_time = True, 0
+    allowed, reset_time = await _check_bot_rate_limit(user_id)
     if not allowed:
         await _send_bot_error(
             user_id, room_id, f"你呼叫 @bot 太頻繁了，請 {reset_time} 秒後再試"
@@ -469,6 +487,77 @@ async def handle_bot_mention(user_id: str, room_id: str, question: str):
     except Exception as e:  # intentional catch-all: 落地失敗收掉預覽
         logger.error(f"Bot landing failed: {e}")
         await _broadcast_bot_error(room_id, "AI 助理回覆儲存失敗，請稍後再試")
+
+
+# /summary 取用的近期訊息數
+SUMMARY_MESSAGE_LIMIT = 30
+
+
+async def handle_summary_command(user_id: str, room_id: str):
+    """
+    處理 /summary 指令（C）：撈近期訊息 → 摘要 → 以 bot 身分落地廣播。
+
+    摘要為 one-shot（非 streaming），完整自我守護：失敗只回報觸發者，
+    不影響聊天。與 @bot 共用每使用者限流額度；bot 訊息刻意不發通知。
+
+    Args:
+        user_id: 觸發者 ID
+        room_id: 房間 ID
+    """
+    bot_user_id = get_bot_user_id()
+    if not bot_user_id:
+        await _send_bot_error(user_id, room_id, "AI 助理尚未就緒，請稍後再試")
+        return
+
+    # 限流（與 @bot 共用每使用者額度）
+    allowed, reset_time = await _check_bot_rate_limit(user_id)
+    if not allowed:
+        await _send_bot_error(
+            user_id, room_id, f"你呼叫 AI 太頻繁了，請 {reset_time} 秒後再試"
+        )
+        return
+
+    try:
+        # 撈近期訊息並組成 transcript（最舊→最新；排除 bot 自己與非文字訊息）
+        message_service = await create_message_service()
+        messages = await message_service.get_room_messages(
+            room_id=room_id, skip=0, limit=SUMMARY_MESSAGE_LIMIT
+        )
+        lines = [
+            f"{msg.username}: {msg.content}"
+            for msg in messages
+            if msg.message_type == MessageType.TEXT and msg.user_id != bot_user_id
+        ]
+        if not lines:
+            await _send_bot_error(user_id, room_id, "目前沒有可摘要的訊息")
+            return
+
+        # 摘要（one-shot，商業邏輯在 ai_service）
+        ai_service = await create_ai_service()
+        summary = (await ai_service.summarize("\n".join(lines))).strip()
+        if not summary:
+            await _send_bot_error(user_id, room_id, "AI 助理沒有產生摘要，請稍後再試")
+            return
+        content = f"📋 對話摘要\n{summary}"[:MAX_CONTENT_LENGTH]
+
+        # 以 bot 身分落地廣播（跳過成員檢查；刻意不發通知）
+        bot_message = await message_service.create_message(
+            bot_user_id,
+            MessageCreate(
+                room_id=room_id, content=content, message_type=MessageType.TEXT
+            ),
+            skip_membership_check=True,
+        )
+        payload = _format_message_payload(bot_message, None)
+        await connection_manager.broadcast_message(room_id, payload, None)
+        logger.info(f"Summary generated for room {room_id} (triggered by {user_id})")
+
+    except AppError as e:
+        # 可預期錯誤（如未配置 NVIDIA_API_KEY）
+        await _send_bot_error(user_id, room_id, str(e))
+    except Exception as e:  # intentional catch-all: 摘要失敗不影響聊天
+        logger.error(f"Error handling summary command: {e}")
+        await _send_bot_error(user_id, room_id, "AI 助理暫時無法產生摘要，請稍後再試")
 
 
 async def handle_typing_indicator(

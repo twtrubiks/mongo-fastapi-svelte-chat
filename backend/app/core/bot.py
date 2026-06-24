@@ -25,6 +25,9 @@ BOT_FULL_NAME = "聊天室 AI 助理"
 # 觸發前綴：使用者輸入以此開頭即呼叫 bot（大小寫不敏感）
 BOT_TRIGGER = "@bot"
 
+# 對話摘要指令（大小寫不敏感，完整比對）
+SUMMARY_TRIGGER = "/summary"
+
 # 啟動時快取 bot 的 user_id（ObjectId 字串）
 _bot_user_id: str | None = None
 
@@ -86,3 +89,8 @@ def is_bot_trigger(content: str) -> str | None:
     if lowered.startswith(BOT_TRIGGER) and stripped[len(BOT_TRIGGER)].isspace():
         return stripped[len(BOT_TRIGGER) :].strip()
     return None
+
+
+def is_summary_command(content: str) -> bool:
+    """判斷訊息是否為 /summary 指令（大小寫不敏感，允許前後空白）。"""
+    return content.strip().lower() == SUMMARY_TRIGGER

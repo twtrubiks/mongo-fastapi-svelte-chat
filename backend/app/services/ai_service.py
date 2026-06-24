@@ -23,16 +23,22 @@ BOT_TEMPERATURE = 0.6
 BOT_MAX_TOKENS = 1024  # 約對應中文 400~700 字，足夠完整聊天回答
 BOT_TIMEOUT_SECONDS = 60.0
 BOT_SYSTEM_PROMPT = "你是聊天室助理，回答簡潔友善，使用繁體中文。"
+SUMMARY_SYSTEM_PROMPT = (
+    "你是聊天室摘要助理。請用繁體中文，以條列式簡潔摘要以下對話的重點，"
+    "聚焦討論主題與結論，不要逐句覆述。"
+)
 
-# 共用 agent（惰性建立，避免 import 時就要求 API key）
+# 共用模型與 agent（惰性建立，避免 import 時就要求 API key）
+_model: OpenAIChatModel | None = None
 _chat_agent: Agent | None = None
+_summary_agent: Agent | None = None
 
 
-def _get_chat_agent() -> Agent:
-    """惰性建立共用的 chat agent。"""
-    global _chat_agent
-    if _chat_agent is None:
-        model = OpenAIChatModel(
+def _get_model() -> OpenAIChatModel:
+    """惰性建立共用的 NVIDIA NIM 模型（所有 agent 共用）。"""
+    global _model
+    if _model is None:
+        _model = OpenAIChatModel(
             settings.NVIDIA_MODEL,
             provider=OpenAIProvider(
                 base_url=settings.NVIDIA_BASE_URL,
@@ -44,12 +50,27 @@ def _get_chat_agent() -> Agent:
                 timeout=BOT_TIMEOUT_SECONDS,
             ),
         )
-        _chat_agent = Agent(model, system_prompt=BOT_SYSTEM_PROMPT)
+    return _model
+
+
+def _get_chat_agent() -> Agent:
+    """惰性建立 @bot 對話 agent。"""
+    global _chat_agent
+    if _chat_agent is None:
+        _chat_agent = Agent(_get_model(), system_prompt=BOT_SYSTEM_PROMPT)
     return _chat_agent
 
 
+def _get_summary_agent() -> Agent:
+    """惰性建立 /summary 摘要 agent。"""
+    global _summary_agent
+    if _summary_agent is None:
+        _summary_agent = Agent(_get_model(), system_prompt=SUMMARY_SYSTEM_PROMPT)
+    return _summary_agent
+
+
 class AIService:
-    """聊天室 AI 助理服務（A1：streaming）。"""
+    """聊天室 AI 助理服務（@bot streaming + /summary 摘要）。"""
 
     async def stream_reply(self, question: str) -> AsyncIterator[str]:
         """逐段 yield 文字增量；商業邏輯留在 service，handler 只負責廣播。
@@ -70,3 +91,22 @@ class AIService:
         async with agent.run_stream(question) as result:
             async for delta in result.stream_text(delta=True):
                 yield delta
+
+    async def summarize(self, transcript: str) -> str:
+        """對近期對話 transcript 產生摘要（one-shot，非 streaming）。
+
+        Args:
+            transcript: 「使用者: 內容」逐行組成的對話文字
+
+        Returns:
+            str: 摘要內容
+
+        Raises:
+            AppError: 當 NVIDIA_API_KEY 未配置時
+        """
+        if not settings.NVIDIA_API_KEY:
+            raise AppError("AI 助理尚未配置（缺少 NVIDIA_API_KEY）")
+
+        agent = _get_summary_agent()
+        result = await agent.run(transcript)
+        return result.output
