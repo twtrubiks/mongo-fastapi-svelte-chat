@@ -8,6 +8,7 @@
   import { elasticOut, quartOut } from 'svelte/easing';
   import type { Message } from '$lib/types';
   import { messageStatusStore } from '$lib/stores/messageStatus.svelte';
+  import { messageStore } from '$lib/stores/message.svelte';
   import { messageRetryManager } from '$lib/utils/messageRetry';
   
   interface Props {
@@ -41,6 +42,90 @@
   let messageTime = $derived(formatTime(message.created_at));
   let messageDate = $derived(formatDateTime(message.created_at));
   let normalizedContentUrl = $derived(normalizeFileUrl(message.content));
+
+  // 訊息編輯／刪除（僅作者本人；圖片／檔案只能刪不能編）
+  let canEdit = $derived(isCurrentUser && !isSystemMessage && !isImageMessage && !isFileMessage);
+  let canDelete = $derived(isCurrentUser && !isSystemMessage);
+
+  let isEditing = $state(false);
+  let editContent = $state('');
+  let isConfirmingDelete = $state(false);
+  let isSaving = $state(false);
+  let actionError = $state('');
+
+  // 進入編輯態時自動聚焦並選取內容
+  function focusOnMount(node: HTMLTextAreaElement) {
+    node.focus();
+    node.select();
+  }
+
+  function startEdit() {
+    editContent = message.content;
+    actionError = '';
+    isEditing = true;
+  }
+
+  function cancelEdit() {
+    isEditing = false;
+    editContent = '';
+    actionError = '';
+  }
+
+  async function saveEdit() {
+    const trimmed = editContent.trim();
+    if (!trimmed) {
+      actionError = '訊息內容不能為空';
+      return;
+    }
+    if (trimmed === message.content) {
+      cancelEdit(); // 內容未變更，直接關閉
+      return;
+    }
+    isSaving = true;
+    actionError = '';
+    try {
+      await messageStore.editMessage(message.id, trimmed);
+      isEditing = false;
+      editContent = '';
+    } catch {
+      actionError = '編輯失敗，請稍後再試';
+    } finally {
+      isSaving = false;
+    }
+  }
+
+  function handleEditKeydown(event: KeyboardEvent) {
+    if (event.key === 'Enter' && !event.shiftKey) {
+      event.preventDefault();
+      saveEdit();
+    } else if (event.key === 'Escape') {
+      event.preventDefault();
+      cancelEdit();
+    }
+  }
+
+  function startDelete() {
+    actionError = '';
+    isConfirmingDelete = true;
+  }
+
+  function cancelDelete() {
+    isConfirmingDelete = false;
+    actionError = '';
+  }
+
+  async function confirmDelete() {
+    isSaving = true;
+    actionError = '';
+    try {
+      await messageStore.deleteMessage(message.id);
+      // 成功後訊息會從 store 移除，元件隨之卸載
+    } catch {
+      actionError = '刪除失敗，請稍後再試';
+      isSaving = false;
+      isConfirmingDelete = false;
+    }
+  }
 
   let showImageViewer = $state(false);
   let imageViewerSrc = $state('');
@@ -171,13 +256,33 @@
                 onPlay={handleFilePlay}
               />
             </div>
+          {:else if isEditing}
+            <!-- 編輯態（inline 編輯文字訊息） -->
+            <div class="message-edit">
+              <textarea
+                class="message-edit-input"
+                bind:value={editContent}
+                onkeydown={handleEditKeydown}
+                use:focusOnMount
+                rows="2"
+                disabled={isSaving}
+                aria-label="編輯訊息"
+              ></textarea>
+              <div class="message-edit-actions">
+                <button class="message-edit-cancel" onclick={cancelEdit} disabled={isSaving}>取消</button>
+                <button class="message-edit-save" onclick={saveEdit} disabled={isSaving}>儲存</button>
+              </div>
+              {#if actionError}
+                <div class="message-action-error">{actionError}</div>
+              {/if}
+            </div>
           {:else}
             <!-- 文字訊息 -->
-            <div 
+            <div
               class="message-text"
               in:fade={{ duration: 300, delay: 200 }}
             >
-              {message.content}
+              {message.content}{#if message.edited}<span class="message-edited-tag">（已編輯）</span>{/if}
             </div>
           {/if}
           
@@ -191,6 +296,34 @@
             </div>
           {/if}
         </div>
+
+        {#if (canEdit || canDelete) && !isEditing && !isConfirmingDelete}
+          <!-- 訊息操作（hover 顯示，僅作者本人） -->
+          <div class="message-actions">
+            {#if canEdit}
+              <button class="message-action-btn" onclick={startEdit} aria-label="編輯訊息" title="編輯">
+                ✏️ 編輯
+              </button>
+            {/if}
+            {#if canDelete}
+              <button class="message-action-btn message-action-delete" onclick={startDelete} aria-label="刪除訊息" title="刪除">
+                🗑️ 刪除
+              </button>
+            {/if}
+          </div>
+        {/if}
+
+        {#if isConfirmingDelete}
+          <!-- 刪除確認 -->
+          <div class="message-delete-confirm">
+            <span>確定刪除這則訊息？</span>
+            <button class="message-confirm-cancel" onclick={cancelDelete} disabled={isSaving}>取消</button>
+            <button class="message-confirm-delete" onclick={confirmDelete} disabled={isSaving}>刪除</button>
+          </div>
+          {#if actionError}
+            <div class="message-action-error">{actionError}</div>
+          {/if}
+        {/if}
 
         {#if isCurrentUser && sendStatus && sendStatus !== 'idle'}
           <!-- 發送狀態指示（真 ack：等待伺服器確認） -->
@@ -358,6 +491,69 @@
 
   .send-retry-button {
     @apply btn btn-ghost btn-xs text-error underline px-1;
+  }
+
+  /* 訊息操作（編輯／刪除）：平時隱藏，hover 訊息時浮現 */
+  .message-actions {
+    @apply flex items-center gap-1 mt-1 opacity-0 transition-opacity duration-200;
+  }
+
+  .message-item:hover .message-actions {
+    @apply opacity-100;
+  }
+
+  .message-action-btn {
+    @apply btn btn-ghost btn-xs px-2 text-xs font-normal;
+  }
+
+  .message-action-delete {
+    @apply text-error;
+  }
+
+  /* 編輯態 */
+  .message-edit {
+    @apply flex flex-col gap-2;
+    min-width: 12rem;
+  }
+
+  .message-edit-input {
+    @apply w-full text-sm leading-relaxed text-base-content bg-base-100 rounded-lg border border-base-300 px-2 py-1 resize-none;
+    @apply focus:outline-none focus:ring-2 focus:ring-primary/40;
+  }
+
+  .message-edit-actions {
+    @apply flex items-center gap-2 justify-end;
+  }
+
+  .message-edit-save {
+    @apply btn btn-primary btn-xs;
+  }
+
+  .message-edit-cancel {
+    @apply btn btn-ghost btn-xs;
+  }
+
+  /* 已編輯標記 */
+  .message-edited-tag {
+    @apply text-xs opacity-60 ml-1;
+  }
+
+  /* 刪除確認 */
+  .message-delete-confirm {
+    @apply flex items-center gap-2 mt-1 text-xs text-base-content/80;
+  }
+
+  .message-confirm-delete {
+    @apply btn btn-error btn-xs;
+  }
+
+  .message-confirm-cancel {
+    @apply btn btn-ghost btn-xs;
+  }
+
+  /* 操作錯誤訊息 */
+  .message-action-error {
+    @apply text-xs text-error mt-1;
   }
   
   .message-image {

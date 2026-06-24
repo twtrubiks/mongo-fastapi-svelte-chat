@@ -113,6 +113,21 @@ export const messageStore = {
     return message;
   },
 
+  // 編輯訊息（呼叫 API；後端會廣播 message_edited 給房間所有人）
+  // API 成功後本地先套用一次，確保 WS 降級時自己仍即時看到；廣播回來時冪等覆蓋
+  editMessage: async (messageId: string, content: string) => {
+    const updated = await apiClient.messages.update(messageId, content);
+    messageStore.applyEdit({ id: messageId, content: updated.content, edited: true });
+    return updated;
+  },
+
+  // 刪除訊息（呼叫 API；後端軟刪除後廣播 message_deleted）
+  // API 成功後本地先移除；廣播回來時 removeMessage 找不到即略過（冪等）
+  deleteMessage: async (messageId: string) => {
+    await apiClient.messages.delete(messageId);
+    messageStore.removeMessage(messageId);
+  },
+
   // 添加訊息 (WebSocket 事件)
   addMessage: (message: Message) => {
     // 避免重複添加

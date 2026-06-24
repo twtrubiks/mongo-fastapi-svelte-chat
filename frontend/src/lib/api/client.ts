@@ -301,6 +301,14 @@ export class ApiClient {
       return this.bffRequest<Message>('POST', `/api/rooms/${roomId}/messages`, { data: messageData });
     },
 
+    update: async (messageId: string, content: string): Promise<Message> => {
+      return this.bffRequest<Message>('PUT', `/api/messages/${messageId}`, { data: { content } });
+    },
+
+    delete: async (messageId: string): Promise<void> => {
+      await this.bffRequest<void>('DELETE', `/api/messages/${messageId}`);
+    },
+
     search: async (roomId: string, query: {
       keyword?: string;
       message_type?: 'text' | 'image' | 'file' | 'system';
