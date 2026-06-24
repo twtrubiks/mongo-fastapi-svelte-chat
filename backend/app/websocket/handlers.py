@@ -41,6 +41,9 @@ def _format_message_payload(msg: MessageResponse, avatar: str | None) -> dict:
         "id": msg.id,
         "room_id": msg.room_id,
         "user_id": msg.user_id,
+        # top-level username：前端 Message 型別與 REST 回應皆以反正規化的 top-level
+        # username 渲染；WS payload 必須一致，否則即時訊息會缺名稱（重整才正常）
+        "username": msg.username,
         "content": msg.content,
         "message_type": msg.message_type,
         "status": msg.status,
