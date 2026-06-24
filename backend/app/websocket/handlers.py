@@ -6,13 +6,23 @@ from datetime import UTC, datetime
 
 from fastapi import WebSocket, WebSocketDisconnect
 
+from app.config import settings
+from app.core.bot import get_bot_user_id, is_bot_trigger
 from app.core.exceptions import AppError, NotFoundError
 from app.core.fastapi_integration import (
+    create_ai_service,
     create_message_service,
     create_notification_service,
     create_room_service,
 )
-from app.models.message import MessageCreate, MessageResponse, MessageType
+from app.database.redis_conn import get_redis
+from app.middleware.rate_limiting import SlidingWindowRateLimiter
+from app.models.message import (
+    MAX_CONTENT_LENGTH,
+    MessageCreate,
+    MessageResponse,
+    MessageType,
+)
 from app.services.message_service import MessageService
 from app.websocket.auth import websocket_auth_middleware
 from app.websocket.manager import connection_manager
@@ -318,6 +328,12 @@ async def handle_chat_message(
         except Exception as e:  # intentional fail-open: 通知前置準備失敗不影響訊息發送
             logger.error(f"Error preparing notifications: {e}")
 
+        # @bot 觸發：使用者訊息已落地廣播後，產生 AI 回覆（A0 非 streaming）
+        if msg_type == MessageType.TEXT:
+            bot_question = is_bot_trigger(content)
+            if bot_question is not None:
+                await handle_bot_mention(user_id, room_id, bot_question)
+
         logger.info(f"Message saved and broadcasted: {user_id} -> {room_id}")
 
     except Exception as e:  # intentional catch-all: 訊息儲存失敗回報前端錯誤
@@ -332,6 +348,84 @@ async def handle_chat_message(
                 "temp_id": temp_id,
             },
         )
+
+
+async def _send_bot_error(user_id: str, room_id: str, message: str):
+    """回報 bot 相關錯誤給觸發者（不影響其原始訊息）"""
+    await connection_manager.send_personal_message(
+        user_id,
+        room_id,
+        {
+            "type": "error",
+            "message": message,
+            "timestamp": datetime.now(UTC).isoformat(),
+        },
+    )
+
+
+async def handle_bot_mention(user_id: str, room_id: str, question: str):
+    """
+    處理 @bot 觸發：限流 → 呼叫 AI → bot 身分正規落地廣播（A0 非 streaming）。
+
+    完整自我守護：任何失敗只回報觸發者，不影響其原始訊息，也不會中斷 WS 連線。
+    LLM 呼叫委託 ai_service（商業邏輯不寫在 handler）；bot 訊息不發通知，
+    避免每次回話全房間收到通知轟炸。
+
+    Args:
+        user_id: 觸發者 ID
+        room_id: 房間 ID
+        question: 去除 @bot 前綴後的問題（可能為空字串）
+    """
+    bot_user_id = get_bot_user_id()
+    # 防迴圈保險：bot 尚未種子化或觸發者就是 bot 自身時不處理
+    if not bot_user_id or user_id == bot_user_id:
+        return
+
+    try:
+        # 限流：每使用者每分鐘上限（複用 Redis 滑動視窗），避免被狂 @ 燒 token
+        redis_client = await get_redis()
+        limiter = SlidingWindowRateLimiter(redis_client, settings)
+        allowed, _, reset_time = await limiter.is_allowed(
+            f"rate_limit:bot:{user_id}",
+            window_size=60,
+            max_requests=settings.BOT_RATE_LIMIT_PER_MINUTE,
+        )
+        if not allowed:
+            await _send_bot_error(
+                user_id, room_id, f"你呼叫 @bot 太頻繁了，請 {reset_time} 秒後再試"
+            )
+            return
+
+        # 空問題：給提示，不打 API
+        if not question:
+            await _send_bot_error(user_id, room_id, "請在 @bot 後面輸入你的問題")
+            return
+
+        # 呼叫 LLM（商業邏輯在 ai_service）
+        ai_service = await create_ai_service()
+        answer = (await ai_service.reply(question)).strip()[:MAX_CONTENT_LENGTH]
+        if not answer:
+            await _send_bot_error(user_id, room_id, "AI 助理沒有產生回覆，請稍後再試")
+            return
+
+        # 正規落地：bot 身分（跳過成員檢查），產生 seq、持久化、可被 gap 補回
+        message_service = await create_message_service()
+        bot_message = await message_service.create_message(
+            bot_user_id,
+            MessageCreate(
+                room_id=room_id, content=answer, message_type=MessageType.TEXT
+            ),
+            skip_membership_check=True,
+        )
+
+        # 廣播給房間所有人（bot 無頭像，前端以暱稱首字母 fallback）；刻意不發通知
+        payload = _format_message_payload(bot_message, None)
+        await connection_manager.broadcast_message(room_id, payload, None)
+        logger.info(f"Bot replied in room {room_id} (triggered by {user_id})")
+
+    except Exception as e:  # intentional catch-all: bot 回覆失敗不影響使用者原始訊息
+        logger.error(f"Error handling bot mention: {e}")
+        await _send_bot_error(user_id, room_id, "AI 助理暫時無法回覆，請稍後再試")
 
 
 async def handle_typing_indicator(

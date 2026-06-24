@@ -66,7 +66,10 @@ class MessageService:
         return content
 
     async def create_message(
-        self, user_id: str, message_data: MessageCreate
+        self,
+        user_id: str,
+        message_data: MessageCreate,
+        skip_membership_check: bool = False,
     ) -> MessageResponse:
         """
         創建新訊息
@@ -74,6 +77,8 @@ class MessageService:
         Args:
             user_id: 使用者 ID
             message_data: 訊息資料 (包含 room_id)
+            skip_membership_check: 是否跳過成員資格檢查（僅供系統 bot 以固定身分
+                發訊息使用——bot 不是房間成員；一般使用者一律維持 False）
 
         Returns:
             MessageResponse: 創建的訊息
@@ -96,12 +101,13 @@ class MessageService:
             raise NotFoundError("房間不存在")
         logger.info(f"Room {room_id} found")
 
-        # 驗證使用者是否為房間成員
-        logger.info(f"Checking if user {user_id} is member of room {room_id}")
-        is_member = await self.room_repo.is_member(room_id, user_id)
-        logger.info(f"User {user_id} is member of room {room_id}: {is_member}")
-        if not is_member:
-            raise ForbiddenError("使用者不是該房間的成員")
+        # 驗證使用者是否為房間成員（系統 bot 以固定身分發訊息時跳過）
+        if not skip_membership_check:
+            logger.info(f"Checking if user {user_id} is member of room {room_id}")
+            is_member = await self.room_repo.is_member(room_id, user_id)
+            logger.info(f"User {user_id} is member of room {room_id}: {is_member}")
+            if not is_member:
+                raise ForbiddenError("使用者不是該房間的成員")
 
         # 獲取使用者資訊
         logger.info(f"Getting user info for user {user_id}")

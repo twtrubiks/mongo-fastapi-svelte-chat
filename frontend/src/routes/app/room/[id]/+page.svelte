@@ -470,12 +470,8 @@
       if (data.temp_id) {
         // 不顯示錯誤 toast，讓 MessageInput 組件處理重試 UI
       } else {
-        // 沒有 temp_id 的通用錯誤
-        errorStore.showMessageSendError('', {
-          label: '重試',
-          handler: () => {
-          }
-        });
+        // 沒有 temp_id 的通用錯誤（如 @bot 限流、空問題、載入失敗）：顯示後端訊息
+        errorStore.showError(data.message || '操作失敗，請稍後再試');
       }
     });
     

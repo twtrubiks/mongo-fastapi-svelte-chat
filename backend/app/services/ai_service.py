@@ -16,10 +16,11 @@ from app.core.exceptions import AppError
 
 logger = logging.getLogger(__name__)
 
-# 生成參數（對齊 nvidia_nemotron_demo.py），timeout 防止外部服務卡住 handler
+# 生成參數：max_tokens 提高避免長回覆在生成階段被硬截（講到一半就停），
+# timeout 同步放寬，預留較長回覆的生成時間，仍防止外部服務無限卡住 handler
 BOT_TEMPERATURE = 0.6
-BOT_MAX_TOKENS = 512
-BOT_TIMEOUT_SECONDS = 30.0
+BOT_MAX_TOKENS = 1024  # 約對應中文 400~700 字，足夠完整聊天回答
+BOT_TIMEOUT_SECONDS = 60.0
 BOT_SYSTEM_PROMPT = "你是聊天室助理，回答簡潔友善，使用繁體中文。"
 
 # 共用 agent（惰性建立，避免 import 時就要求 API key）

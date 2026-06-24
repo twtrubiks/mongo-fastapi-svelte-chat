@@ -90,10 +90,11 @@ export const errorStore = {
     });
   },
 
-  showMessageSendError(messageId: string, action?: ErrorInfo['action']) {
+  // 通用錯誤：顯示伺服器提供的訊息（如 @bot 限流、空問題、載入失敗）
+  showError(message: string, action?: ErrorInfo['action']) {
     return this.addError({
-      title: '訊息發送失敗',
-      message: '訊息發送失敗，請檢查網路連接並重試。',
+      title: '提示',
+      message,
       type: 'error',
       action
     });
