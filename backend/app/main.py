@@ -8,6 +8,7 @@ from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import JSONResponse
 
 from app.config import settings
+from app.core.bot import ensure_bot_user
 from app.core.exceptions import AppError
 from app.core.fastapi_integration import get_health_check_info
 from app.database.indexes import ensure_indexes
@@ -37,6 +38,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     # 建立 MongoDB 索引（冪等，已存在會跳過）
     db = await get_database()
     await ensure_indexes(db)
+    # 種子化 AI 助理（@bot）使用者並快取其 user_id（冪等）
+    await ensure_bot_user(db)
     yield
     # 關閉時清理
     await close_database()

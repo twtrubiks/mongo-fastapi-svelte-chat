@@ -28,6 +28,14 @@ class Settings(BaseSettings):
     RATE_LIMIT_REQUESTS_PER_HOUR: int = 1000
     RATE_LIMIT_BURST_SIZE: int = 10
 
+    # AI 助理（@bot）— NVIDIA NIM（OpenAI 相容端點）
+    # NVIDIA_API_KEY 未設定時，@bot 會回覆「尚未配置」而不打 API；取得 key：https://build.nvidia.com/
+    NVIDIA_API_KEY: str | None = None
+    NVIDIA_BASE_URL: str = "https://integrate.api.nvidia.com/v1"
+    NVIDIA_MODEL: str = "nvidia/nemotron-3-super-120b-a12b"
+    # 每使用者每分鐘 @bot 上限（複用 Redis 滑動視窗）
+    BOT_RATE_LIMIT_PER_MINUTE: int = 5
+
     # 應用程式設定（安全預設：DEBUG 預設關閉，開發環境在 .env 設 DEBUG=true）
     DEBUG: bool = False
     FRONTEND_URL: str = "http://localhost:5173"

@@ -12,6 +12,7 @@ from app.repositories.message_repository import MessageRepository
 from app.repositories.notification_repository import NotificationRepository
 from app.repositories.room_repository import RoomRepository
 from app.repositories.user_repository import UserRepository
+from app.services.ai_service import AIService
 from app.services.file_service import FileService
 from app.services.invitation_service import InvitationService
 from app.services.message_service import MessageService
@@ -95,6 +96,11 @@ async def create_file_service() -> FileService:
     )
 
 
+async def create_ai_service() -> AIService:
+    # AIService 無狀態（共用 module 層 agent），WebSocket handler 直接 await 呼叫
+    return AIService()
+
+
 # --- FastAPI Depends 別名（Router 直接使用，保持原有 import 介面）---
 
 UserServiceDep = Depends(create_user_service)
@@ -103,6 +109,9 @@ MessageServiceDep = Depends(create_message_service)
 NotificationServiceDep = Depends(create_notification_service)
 InvitationServiceDep = Depends(create_invitation_service)
 FileServiceDep = Depends(create_file_service)
+# AI 目前為 WebSocket-only（@bot / summary 由 handler 直接 await create_ai_service）。
+# 此別名為 DI 範本一致性保留，待 HTTP AI 入口（如翻譯 / 語意搜尋）啟用時使用。
+AIServiceDep = Depends(create_ai_service)
 
 
 # --- 健康檢查 ---
