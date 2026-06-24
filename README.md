@@ -1,9 +1,9 @@
 # 多人即時聊天室應用
 
 [![Python](https://img.shields.io/badge/Python-3.13+-blue.svg)](https://www.python.org/)
-[![FastAPI](https://img.shields.io/badge/FastAPI-0.135-green.svg)](https://fastapi.tiangolo.com/)
-[![PyMongo](https://img.shields.io/badge/PyMongo-4.16-green.svg)](https://pymongo.readthedocs.io/)
-[![SvelteKit](https://img.shields.io/badge/SvelteKit-2.57-orange.svg)](https://svelte.dev/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.138-green.svg)](https://fastapi.tiangolo.com/)
+[![PyMongo](https://img.shields.io/badge/PyMongo-4.17-green.svg)](https://pymongo.readthedocs.io/)
+[![SvelteKit](https://img.shields.io/badge/SvelteKit-2.67-orange.svg)](https://svelte.dev/)
 [![Svelte](https://img.shields.io/badge/Svelte-5-red.svg)](https://svelte.dev/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-6-blue.svg)](https://www.typescriptlang.org/)
 [![Tailwind CSS](https://img.shields.io/badge/Tailwind_CSS-4-blue.svg)](https://tailwindcss.com/)

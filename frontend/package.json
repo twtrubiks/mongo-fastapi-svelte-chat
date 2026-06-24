@@ -17,27 +17,27 @@
 	},
 	"devDependencies": {
 		"@sveltejs/adapter-auto": "^7.0.1",
-		"@sveltejs/kit": "^2.57.1",
-		"@sveltejs/vite-plugin-svelte": "^7.0.0",
-		"@tailwindcss/typography": "^0.5.19",
-		"@tailwindcss/vite": "^4.2.2",
-		"@typescript-eslint/eslint-plugin": "^8.58.2",
-		"@typescript-eslint/parser": "^8.58.2",
-		"daisyui": "^5.5.19",
-		"eslint": "^10.2.0",
-		"eslint-plugin-svelte": "^3.17.0",
+		"@sveltejs/kit": "^2.67.0",
+		"@sveltejs/vite-plugin-svelte": "^7.1.2",
+		"@tailwindcss/typography": "^0.5.20",
+		"@tailwindcss/vite": "^4.3.1",
+		"@typescript-eslint/eslint-plugin": "^8.62.0",
+		"@typescript-eslint/parser": "^8.62.0",
+		"daisyui": "^5.5.23",
+		"eslint": "^10.5.0",
+		"eslint-plugin-svelte": "^3.19.0",
 		"glob": "^13.0.6",
-		"svelte": "^5.55.3",
-		"svelte-check": "^4.4.6",
-		"svelte-eslint-parser": "^1.6.0",
-		"tailwindcss": "^4.2.2",
-		"typescript": "^6.0.2",
-		"vite": "^8.0.8"
+		"svelte": "^5.56.4",
+		"svelte-check": "^4.7.0",
+		"svelte-eslint-parser": "^1.8.0",
+		"tailwindcss": "^4.3.1",
+		"typescript": "^6.0.3",
+		"vite": "^8.1.0"
 	},
 	"dependencies": {
 		"@eslint/js": "^10.0.1",
-		"axios": "^1.15.0",
-		"date-fns": "^4.1.0",
-		"nanoid": "^5.1.7"
+		"axios": "^1.18.1",
+		"date-fns": "^4.4.0",
+		"nanoid": "^5.1.15"
 	}
 }
