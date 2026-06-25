@@ -1,6 +1,7 @@
 <script lang="ts">
   import { Avatar, Loading } from '$lib/components/ui';
   import { formatDateTime } from '$lib/utils';
+  import { aiStatus, loadAIStatus } from '$lib/stores/aiStatus.svelte';
   import type { User } from '$lib/types';
   
   interface Props {
@@ -24,6 +25,12 @@
     onUserClick,
     onLoadMore
   }: Props = $props();
+
+  // AI 助理狀態（登入後查一次；元件掛載時觸發，store 內部去重）
+  $effect(() => {
+    loadAIStatus();
+  });
+  let ai = $derived(aiStatus());
 
   // 按狀態分組用戶 - 使用 $derived，確保 users 是陣列
   let onlineUsers = $derived(Array.isArray(users) ? users.filter(user => user.is_active) : []);
@@ -63,6 +70,27 @@
       </div>
     {:else}
       <div class="user-sections">
+        <!-- AI 助理（獨立置頂；狀態 = 後端是否配置 API key，非 WebSocket 連線） -->
+        <div class="user-section ai-section">
+          <div class="section-header">
+            <span class="section-title">AI 助理</span>
+          </div>
+          <div class="user-items">
+            <div class="user-item ai-item" class:offline={!ai.enabled}>
+              <div class="user-avatar ai-avatar">🤖</div>
+
+              {#if !compact}
+                <div class="user-info">
+                  <div class="user-name">
+                    <span class="user-name-text">{ai.botUsername}</span>
+                  </div>
+                  <div class="user-status">{ai.enabled ? '在線' : '未啟用'}</div>
+                </div>
+              {/if}
+            </div>
+          </div>
+        </div>
+
         <!-- 在線用戶 -->
         {#if onlineUsers.length > 0}
           <div class="user-section">
@@ -209,6 +237,19 @@
   
   .user-section:last-child .section-title::before {
     content: "⚫";
+  }
+
+  /* AI 助理區塊：圖示獨立於既有 online/offline 規則 */
+  .ai-section .section-title::before {
+    content: "🤖";
+  }
+
+  .ai-avatar {
+    @apply flex items-center justify-center w-8 h-8 text-base bg-base-300 rounded-full;
+  }
+
+  .ai-item.offline .user-status::before {
+    content: "⚪";
   }
   
   .user-list.compact .section-header {

@@ -109,6 +109,13 @@ def _get_summary_agent() -> Agent:
 class AIService:
     """聊天室 AI 助理服務（@bot streaming + /summary 摘要）。"""
 
+    def is_available(self) -> bool:
+        """回傳 AI 助理是否可用（當前供應商已配置 API key）。
+
+        純設定判斷，不呼叫外部 AI API；供 HTTP 狀態端點查詢上線狀態。
+        """
+        return _get_api_key() is not None
+
     async def stream_reply(self, question: str) -> AsyncIterator[str]:
         """逐段 yield 文字增量；商業邏輯留在 service，handler 只負責廣播。
 

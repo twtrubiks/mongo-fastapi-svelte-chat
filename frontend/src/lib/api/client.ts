@@ -12,6 +12,7 @@ import type {
   Notification,
   RequestOptions,
   RoomJoinRequest,
+  AIStatus,
 } from '../types';
 import type { NotificationStats } from '../stores/notification.svelte';
 
@@ -390,6 +391,13 @@ export class ApiClient {
         data: { room_id: roomId },
       });
       return result.ticket;
+    },
+  };
+
+  // AI 助理相關 API
+  ai = {
+    getStatus: async (): Promise<AIStatus> => {
+      return this.bffRequest<AIStatus>('GET', '/api/ai/status');
     },
   };
 }

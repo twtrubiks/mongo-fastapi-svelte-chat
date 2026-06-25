@@ -12,6 +12,12 @@ export interface User {
   updated_at?: string;
 }
 
+// AI 助理狀態（後端 GET /api/ai/status 回應）
+export interface AIStatus {
+  enabled: boolean; // 當前供應商已配置 API key 時為 true
+  bot_username: string; // AI 助理顯示名稱（後端 BOT_USERNAME 為權威來源）
+}
+
 // 房間權限相關枚舉
 export enum RoomType {
   PUBLIC = 'public',        // 公開房間 - 任何人可見可加入

@@ -109,8 +109,8 @@ MessageServiceDep = Depends(create_message_service)
 NotificationServiceDep = Depends(create_notification_service)
 InvitationServiceDep = Depends(create_invitation_service)
 FileServiceDep = Depends(create_file_service)
-# AI 目前為 WebSocket-only（@bot / summary 由 handler 直接 await create_ai_service）。
-# 此別名為 DI 範本一致性保留，待 HTTP AI 入口（如翻譯 / 語意搜尋）啟用時使用。
+# @bot / summary 觸發發生在 WebSocket，由 handler 直接 await create_ai_service()；
+# AIServiceDep 供 HTTP 端點注入（目前用於 GET /api/ai/status 上線狀態查詢）。
 AIServiceDep = Depends(create_ai_service)
 
 

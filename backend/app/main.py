@@ -18,6 +18,7 @@ from app.middleware.error_handler import GlobalErrorHandler
 from app.middleware.rate_limiting import RateLimitingMiddleware
 from app.middleware.security_headers import SecurityHeadersMiddleware
 from app.routers import (
+    ai,
     auth,
     files,
     invitations,
@@ -123,6 +124,7 @@ async def app_error_handler(request: Request, exc: AppError) -> JSONResponse:
 
 
 # 註冊 API 路由
+app.include_router(ai.router, prefix="/api")
 app.include_router(auth.router, prefix="/api")
 app.include_router(rooms.router, prefix="/api")
 app.include_router(messages.router, prefix="/api")
