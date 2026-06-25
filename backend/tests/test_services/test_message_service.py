@@ -230,6 +230,35 @@ class TestMessageServiceIntegration:
         assert all(msg.room_id == room_id for msg in result)
 
     @pytest.mark.asyncio
+    async def test_get_room_messages_for_context_skips_avatar(
+        self, message_service_with_mocks
+    ):
+        """脈絡用途撈取：原樣回傳 MessageInDB，且不觸發頭像批次查詢"""
+        service = message_service_with_mocks
+        room_id = "test_room_id"
+
+        mock_messages = [
+            MessageInDB(
+                content=f"訊息 {i}",
+                message_type=MessageType.TEXT,
+                user_id="u1",
+                room_id=room_id,
+                username="testuser",
+                created_at=datetime.now(UTC),
+            )
+            for i in range(3)
+        ]
+        service.message_repo.get_room_messages.return_value = mock_messages
+
+        result = await service.get_room_messages_for_context(room_id=room_id)
+
+        # 原樣回傳 repo 的 MessageInDB（領域模型），不轉 MessageResponse
+        assert result == mock_messages
+        assert all(isinstance(msg, MessageInDB) for msg in result)
+        # 關鍵：不補頭像 → 不打使用者批次查詢
+        service.user_repo.get_by_ids.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_update_message(self, message_service_with_mocks):
         """測試更新訊息"""
         service = message_service_with_mocks

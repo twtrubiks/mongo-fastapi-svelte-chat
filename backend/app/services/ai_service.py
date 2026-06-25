@@ -10,7 +10,7 @@ from collections.abc import AsyncIterator
 from httpx import AsyncClient
 from pydantic_ai import Agent
 from pydantic_ai.models import Model
-from pydantic_ai.models.google import GoogleModel
+from pydantic_ai.models.google import GoogleModel, GoogleModelSettings
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.google import GoogleProvider
 from pydantic_ai.providers.openai import OpenAIProvider
@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 # 生成參數：max_tokens 提高避免長回覆在生成階段被硬截（講到一半就停），
 # timeout 同步放寬，預留較長回覆的生成時間，仍防止外部服務無限卡住 handler
 BOT_TEMPERATURE = 0.6
-BOT_MAX_TOKENS = 1024  # 約對應中文 400~700 字，足夠完整聊天回答
+BOT_MAX_TOKENS = 2048  # 約對應中文 800~1400 字，足夠完整聊天回答
 BOT_TIMEOUT_SECONDS = 60.0
 BOT_SYSTEM_PROMPT = "你是聊天室助理，回答簡潔友善，使用繁體中文。"
 SUMMARY_SYSTEM_PROMPT = (
@@ -48,7 +48,9 @@ def _get_api_key() -> str | None:
 def _build_gemini_model() -> Model:
     """建立 Gemini（Google 原生 SDK）模型。
 
-    timeout 須透過自訂 httpx client 設定（ModelSettings.timeout 對 Google 不生效）。
+    - timeout 須透過自訂 httpx client 設定（ModelSettings.timeout 對 Google 不生效）。
+    - thinking_budget=0 關閉 gemini-2.5 的思考：思考 token 會算進 max_tokens 預算，
+      不關會在生成中途把回覆截斷（本專案聊天/摘要為非思考用途，亦更快更省）。
     """
     return GoogleModel(
         settings.GEMINI_MODEL,
@@ -56,9 +58,10 @@ def _build_gemini_model() -> Model:
             api_key=settings.GOOGLE_API_KEY,
             http_client=AsyncClient(timeout=BOT_TIMEOUT_SECONDS),
         ),
-        settings=ModelSettings(
+        settings=GoogleModelSettings(
             temperature=BOT_TEMPERATURE,
             max_tokens=BOT_MAX_TOKENS,
+            google_thinking_config={"thinking_budget": 0},
         ),
     )
 
@@ -106,6 +109,22 @@ def _get_summary_agent() -> Agent:
     return _summary_agent
 
 
+def _build_chat_prompt(question: str, history: str | None) -> str:
+    """將近期對話歷史併入當前問題，讓 @bot 能多輪接續（無歷史時原樣回傳問題）。
+
+    採 context 段落而非 pydantic-ai message_history 結構：聊天室歷史為多人交錯，
+    易有有問無答／連續提問等不合法配對，拼成 prompt 對髒資料更穩健。
+    """
+    if not history:
+        return question
+    return (
+        "以下是這個聊天室近期與你的對話（供你理解脈絡，不必覆述）：\n"
+        f"{history}\n\n"
+        "請接續上面的脈絡，回答這個新問題：\n"
+        f"{question}"
+    )
+
+
 class AIService:
     """聊天室 AI 助理服務（@bot streaming + /summary 摘要）。"""
 
@@ -116,11 +135,14 @@ class AIService:
         """
         return _get_api_key() is not None
 
-    async def stream_reply(self, question: str) -> AsyncIterator[str]:
+    async def stream_reply(
+        self, question: str, history: str | None = None
+    ) -> AsyncIterator[str]:
         """逐段 yield 文字增量；商業邏輯留在 service，handler 只負責廣播。
 
         Args:
             question: 使用者問題（已去除 @bot 前綴）
+            history: 近期對話歷史段落（整房 @bot 往返），用於多輪接續；None 為單輪
 
         Yields:
             str: 文字增量（delta）
@@ -132,7 +154,8 @@ class AIService:
             raise AppError(f"AI 助理尚未配置（{settings.AI_PROVIDER} 缺少 API key）")
 
         agent = _get_chat_agent()
-        async with agent.run_stream(question) as result:
+        prompt = _build_chat_prompt(question, history)
+        async with agent.run_stream(prompt) as result:
             async for delta in result.stream_text(delta=True):
                 yield delta
 

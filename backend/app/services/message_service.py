@@ -230,6 +230,25 @@ class MessageService:
         )
         return await self._format_with_avatars(messages)
 
+    async def get_room_messages_for_context(
+        self,
+        room_id: str,
+        skip: int = 0,
+        limit: int = 20,
+    ) -> list[MessageInDB]:
+        """獲取房間近期訊息（領域模型，不補頭像）。
+
+        供 @bot 多輪歷史、/summary transcript 等純文字用途——這些呼叫端只需
+        username/content，不渲染頭像。相較 get_room_messages 省去
+        _format_with_avatars 的批次使用者查詢（一次 $in），避免無謂 DB 往返。
+
+        Returns:
+            list[MessageInDB]: 訊息列表（最舊→最新排序）
+        """
+        return await self.message_repo.get_room_messages(
+            room_id=room_id, skip=skip, limit=limit
+        )
+
     async def sync_messages_since(
         self, room_id: str, last_seq: int, max_gap: int = SYNC_MAX_GAP
     ) -> tuple[list[MessageResponse], bool]:

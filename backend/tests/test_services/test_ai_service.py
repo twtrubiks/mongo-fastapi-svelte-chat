@@ -4,6 +4,7 @@
 """
 
 import pytest
+from pydantic_ai.messages import UserPromptPart
 from pydantic_ai.models.function import FunctionModel
 from pydantic_ai.models.test import TestModel
 
@@ -11,6 +12,7 @@ from app.core.exceptions import AppError
 from app.services import ai_service
 from app.services.ai_service import (
     AIService,
+    _build_chat_prompt,
     _get_api_key,
     _get_chat_agent,
     _get_model,
@@ -125,6 +127,39 @@ class TestStreamReplyBehavior:
 
         assert "".join(deltas) == "這是一段測試回覆"
 
+    async def test_history_reaches_agent_prompt(self, configured_nvidia):
+        """帶 history 時，含歷史與新問題的組合 prompt 確實送進 pydantic-ai agent。
+
+        用 FunctionModel 攔截 agent 實際收到的 messages，驗證 history 不只是被
+        傳進 stream_reply（那由 handler 測涵蓋），而是真的進到送往模型的 prompt。
+        """
+        captured: dict[str, str] = {}
+
+        async def stream_fn(messages, info):
+            prompts = [
+                part.content
+                for m in messages
+                for part in m.parts
+                if isinstance(part, UserPromptPart)
+            ]
+            captured["prompt"] = "\n".join(str(p) for p in prompts)
+            yield "好的"
+
+        agent = _get_chat_agent()
+        history = "Bob: 什麼是 Docker?\nAI 助理: 容器化技術"
+        with agent.override(model=FunctionModel(stream_function=stream_fn)):
+            deltas = [
+                delta
+                async for delta in AIService().stream_reply(
+                    "那它跟 VM 差在哪?", history
+                )
+            ]
+
+        assert "".join(deltas) == "好的"
+        # 歷史與新問題都進到送往 agent 的 prompt
+        assert "什麼是 Docker?" in captured["prompt"]
+        assert "那它跟 VM 差在哪?" in captured["prompt"]
+
 
 class TestSummarizeBehavior:
     """summarize one-shot 輸出（以 TestModel override agent，不打 API）"""
@@ -136,3 +171,20 @@ class TestSummarizeBehavior:
             result = await AIService().summarize("alice: 你好\nbob: 嗨")
 
         assert result == "• 重點一\n• 重點二"
+
+
+class TestBuildChatPrompt:
+    """_build_chat_prompt 純函數：對話歷史併入問題（不打 API）"""
+
+    def test_no_history_returns_question(self):
+        """無歷史（None 或空字串）時原樣回傳問題"""
+        assert _build_chat_prompt("你好", None) == "你好"
+        assert _build_chat_prompt("你好", "") == "你好"
+
+    def test_with_history_embeds_both_in_order(self):
+        """有歷史時，歷史與當前問題都併入，且問題接在歷史之後（接續脈絡）"""
+        history = "Bob: 什麼是 Docker?\nAI 助理: 容器化技術"
+        prompt = _build_chat_prompt("那它跟 VM 差在哪?", history)
+        assert history in prompt
+        assert "那它跟 VM 差在哪?" in prompt
+        assert prompt.index(history) < prompt.index("那它跟 VM 差在哪?")

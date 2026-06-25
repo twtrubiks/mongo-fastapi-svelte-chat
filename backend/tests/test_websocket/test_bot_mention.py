@@ -4,12 +4,18 @@
 handle_summary_command 各情境，全部不打外部 API。
 """
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
-from app.core.bot import is_bot_trigger, is_summary_command
+from app.core.bot import (
+    BOT_HISTORY_MAX_ANSWER_CHARS,
+    BOT_HISTORY_MAX_PAIRS,
+    build_bot_history,
+    is_bot_trigger,
+    is_summary_command,
+)
 from app.models.message import MessageType
 from app.websocket.handlers import handle_bot_mention, handle_summary_command
 
@@ -62,6 +68,17 @@ async def _async_gen_partial_then_raise():
     """先 yield 半句再拋錯（模擬 streaming 中途逾時/斷線）"""
     yield "半"
     raise RuntimeError("nvidia down")
+
+
+def _hist_msg(username, content, user_id="u1", mtype=MessageType.TEXT, created_at=None):
+    """組一個 build_bot_history 用的訊息 stub（含 created_at 供時間窗判斷）"""
+    return Mock(
+        username=username,
+        content=content,
+        user_id=user_id,
+        message_type=mtype,
+        created_at=created_at or datetime.now(UTC),
+    )
 
 
 class TestHandleBotMention:
@@ -141,6 +158,7 @@ class TestHandleBotMention:
         mock_ai_service.stream_reply = Mock(return_value=_async_gen(["你", "好"]))
         mock_msg_service = Mock()
         mock_msg_service.create_message = AsyncMock(return_value=_bot_message_stub())
+        mock_msg_service.get_room_messages_for_context = AsyncMock(return_value=[])
 
         with (
             patch("app.websocket.handlers.get_bot_user_id", return_value="bot123"),
@@ -164,8 +182,8 @@ class TestHandleBotMention:
             mock_cm.send_personal_message = AsyncMock()
             await handle_bot_mention("user1", "room1", "你好")
 
-            # 以去除前綴後的問題開啟 streaming
-            mock_ai_service.stream_reply.assert_called_once_with("你好")
+            # 以去除前綴後的問題開啟 streaming；無歷史往返時 history 為空字串
+            mock_ai_service.stream_reply.assert_called_once_with("你好", "")
 
             # 階段一：每個 delta 廣播一則 bot_typing
             assert mock_cm.broadcast_to_room.await_count == 2
@@ -192,6 +210,7 @@ class TestHandleBotMention:
         )
         mock_msg_service = Mock()
         mock_msg_service.create_message = AsyncMock()
+        mock_msg_service.get_room_messages_for_context = AsyncMock(return_value=[])
 
         with (
             patch("app.websocket.handlers.get_bot_user_id", return_value="bot123"),
@@ -274,6 +293,7 @@ class TestHandleBotMention:
         mock_ai_service.stream_reply = Mock(return_value=_async_gen(["你", "好"]))
         mock_msg_service = Mock()
         mock_msg_service.create_message = AsyncMock(return_value=_bot_message_stub())
+        mock_msg_service.get_room_messages_for_context = AsyncMock(return_value=[])
 
         with (
             patch("app.websocket.handlers.get_bot_user_id", return_value="bot123"),
@@ -299,6 +319,49 @@ class TestHandleBotMention:
 
             assert "room_lock_test" not in _bot_streaming_rooms
 
+    async def test_passes_history_to_stream_reply(self, allowed_limiter):
+        """撈到的近期 @bot 往返會組成歷史並傳入 stream_reply（多輪接續）"""
+        mock_ai_service = Mock()
+        mock_ai_service.stream_reply = Mock(return_value=_async_gen(["VM", "..."]))
+        mock_msg_service = Mock()
+        mock_msg_service.create_message = AsyncMock(return_value=_bot_message_stub())
+        mock_msg_service.get_room_messages_for_context = AsyncMock(
+            return_value=[
+                _hist_msg("Bob", "@bot 什麼是 Docker?", user_id="u1"),
+                _hist_msg("AI 助理", "Docker 是容器化技術", user_id="bot123"),
+            ]
+        )
+
+        with (
+            patch("app.websocket.handlers.get_bot_user_id", return_value="bot123"),
+            patch("app.websocket.handlers.get_redis", new=AsyncMock()),
+            patch(
+                "app.websocket.handlers.SlidingWindowRateLimiter",
+                return_value=allowed_limiter,
+            ),
+            patch(
+                "app.websocket.handlers.create_ai_service",
+                new=AsyncMock(return_value=mock_ai_service),
+            ),
+            patch(
+                "app.websocket.handlers.create_message_service",
+                new=AsyncMock(return_value=mock_msg_service),
+            ),
+            patch("app.websocket.handlers.connection_manager") as mock_cm,
+        ):
+            mock_cm.broadcast_to_room = AsyncMock()
+            mock_cm.broadcast_message = AsyncMock()
+            mock_cm.send_personal_message = AsyncMock()
+            await handle_bot_mention("user1", "room1", "那它跟 VM 差在哪?")
+
+            # 撈到的 @bot 往返被組成歷史傳入 stream_reply 的第二參數
+            mock_ai_service.stream_reply.assert_called_once()
+            call = mock_ai_service.stream_reply.call_args
+            assert call.args[0] == "那它跟 VM 差在哪?"
+            history_arg = call.args[1]
+            assert "什麼是 Docker?" in history_arg
+            assert "Docker 是容器化技術" in history_arg
+
 
 class TestIsSummaryCommand:
     """is_summary_command 指令判斷"""
@@ -321,7 +384,7 @@ class TestIsSummaryCommand:
 
 
 def _room_msg(username, content, user_id="u1", mtype=MessageType.TEXT):
-    """組一個 get_room_messages 回傳的訊息 stub"""
+    """組一個 get_room_messages_for_context 回傳的訊息 stub"""
     return Mock(username=username, content=content, user_id=user_id, message_type=mtype)
 
 
@@ -369,7 +432,7 @@ class TestHandleSummaryCommand:
     async def test_no_messages_reports_error(self, allowed_limiter):
         """沒有可摘要的訊息 → 回提示、不打 API"""
         mock_msg_service = Mock()
-        mock_msg_service.get_room_messages = AsyncMock(return_value=[])
+        mock_msg_service.get_room_messages_for_context = AsyncMock(return_value=[])
 
         with (
             patch("app.websocket.handlers.get_bot_user_id", return_value="bot123"),
@@ -394,7 +457,7 @@ class TestHandleSummaryCommand:
     async def test_happy_path_lands_summary(self, allowed_limiter):
         """正常流程：撈訊息 → 摘要（排除 bot 自己）→ bot 身分落地廣播"""
         mock_msg_service = Mock()
-        mock_msg_service.get_room_messages = AsyncMock(
+        mock_msg_service.get_room_messages_for_context = AsyncMock(
             return_value=[
                 _room_msg("alice", "今天部署成功", user_id="u1"),
                 _room_msg("bot", "（舊的 bot 訊息）", user_id="bot123"),
@@ -440,3 +503,87 @@ class TestHandleSummaryCommand:
 
             mock_cm.broadcast_message.assert_awaited_once()
             mock_cm.send_personal_message.assert_not_called()
+
+
+class TestBuildBotHistory:
+    """build_bot_history 純函數：整房 @bot 往返組裝（不打 API）"""
+
+    def test_pairs_question_and_answer(self):
+        """使用者 @bot 提問 + bot 回答 → 配成一組，提問去除 @bot 前綴"""
+        messages = [
+            _hist_msg("Bob", "@bot 什麼是 Docker?", user_id="u1"),
+            _hist_msg("AI 助理", "Docker 是容器化技術", user_id="bot123"),
+        ]
+        result = build_bot_history(messages, "bot123")
+        assert "Bob: 什麼是 Docker?" in result
+        assert "AI 助理: Docker 是容器化技術" in result
+
+    def test_skips_chitchat(self):
+        """一般閒聊（非 @bot）不入歷史"""
+        messages = [
+            _hist_msg("Alice", "今天天氣真好", user_id="u2"),
+            _hist_msg("Bob", "@bot 什麼是 Docker?", user_id="u1"),
+            _hist_msg("AI 助理", "Docker 是容器化技術", user_id="bot123"),
+        ]
+        result = build_bot_history(messages, "bot123")
+        assert "今天天氣真好" not in result
+        assert "什麼是 Docker?" in result
+
+    def test_excludes_unanswered_current_question(self):
+        """最後一個尚未回答的提問（即當前這次）不入歷史"""
+        messages = [
+            _hist_msg("Bob", "@bot 什麼是 Docker?", user_id="u1"),
+            _hist_msg("AI 助理", "Docker 是容器化技術", user_id="bot123"),
+            _hist_msg("Bob", "@bot 那它跟 VM 差在哪?", user_id="u1"),
+        ]
+        result = build_bot_history(messages, "bot123")
+        assert "什麼是 Docker?" in result
+        assert "VM 差在哪" not in result
+
+    def test_empty_when_no_answered_pairs(self):
+        """只有閒聊或未回答提問 → 回空字串"""
+        messages = [
+            _hist_msg("Alice", "閒聊", user_id="u2"),
+            _hist_msg("Bob", "@bot 只問沒答", user_id="u1"),
+        ]
+        assert build_bot_history(messages, "bot123") == ""
+
+    def test_window_excludes_old_pairs(self):
+        """超過時間窗的往返視為舊對話，不帶入"""
+        now = datetime.now(UTC)
+        old = now - timedelta(minutes=30)
+        messages = [
+            _hist_msg("Bob", "@bot 舊問題", user_id="u1", created_at=old),
+            _hist_msg("AI 助理", "舊回答", user_id="bot123", created_at=old),
+        ]
+        assert build_bot_history(messages, "bot123", now=now) == ""
+
+    def test_keeps_only_recent_pairs(self):
+        """超過則數上限時只保留最近數組"""
+        messages = []
+        for i in range(BOT_HISTORY_MAX_PAIRS + 3):
+            messages.append(_hist_msg("Bob", f"@bot 問題{i}", user_id="u1"))
+            messages.append(_hist_msg("AI 助理", f"回答{i}", user_id="bot123"))
+        result = build_bot_history(messages, "bot123")
+        assert result.count("AI 助理:") == BOT_HISTORY_MAX_PAIRS
+        assert "問題0" not in result  # 最舊的被丟棄
+        assert f"問題{BOT_HISTORY_MAX_PAIRS + 2}" in result  # 最新的保留
+
+    def test_truncates_long_answer(self):
+        """過長的 bot 歷史回答會被截斷以控制 token"""
+        long_answer = "字" * 500
+        messages = [
+            _hist_msg("Bob", "@bot 問題", user_id="u1"),
+            _hist_msg("AI 助理", long_answer, user_id="bot123"),
+        ]
+        result = build_bot_history(messages, "bot123")
+        assert "字" * BOT_HISTORY_MAX_ANSWER_CHARS in result
+        assert "字" * (BOT_HISTORY_MAX_ANSWER_CHARS + 1) not in result
+
+    def test_skips_non_text_messages(self):
+        """非文字訊息（如圖片）不參與配對"""
+        messages = [
+            _hist_msg("Bob", "@bot 問題", user_id="u1"),
+            _hist_msg("AI 助理", "圖片", user_id="bot123", mtype=MessageType.IMAGE),
+        ]
+        assert build_bot_history(messages, "bot123") == ""

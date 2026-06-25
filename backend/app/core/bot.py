@@ -8,11 +8,13 @@ Bot 是一個真實的 MongoDB 使用者（擁有固定 user_id），讓 bot 訊
 import logging
 import secrets
 import unicodedata
+from datetime import UTC, datetime, timedelta
 
 from pymongo.asynchronous.database import AsyncDatabase
 from pymongo.errors import DuplicateKeyError
 
 from app.auth.password import get_password_hash
+from app.models.message import MessageInDB, MessageType
 from app.models.user import UserInDB
 from app.repositories.user_repository import UserRepository
 
@@ -101,3 +103,64 @@ def is_summary_command(content: str) -> bool:
     """
     normalized = unicodedata.normalize("NFKC", content.strip()).lower()
     return normalized == SUMMARY_TRIGGER
+
+
+# @bot 多輪對話歷史參數（整房共享：只取「使用者 @bot 提問 → bot 回答」往返，
+# 略過一般閒聊；套時間窗與則數上限避免翻舊帳、控制 token）
+BOT_HISTORY_MAX_PAIRS = 6  # 最多帶入最近幾組往返
+BOT_HISTORY_WINDOW_MINUTES = 10  # 超過此分鐘數的往返視為舊對話，不帶入
+BOT_HISTORY_MAX_ANSWER_CHARS = 200  # 單則 bot 歷史回答截斷上限（控制 token）
+
+
+def _as_utc(dt: datetime) -> datetime:
+    """無 tzinfo 的時間視為 UTC（PyMongo 預設回傳 naive UTC），統一成 aware 以利比較。"""
+    return dt if dt.tzinfo else dt.replace(tzinfo=UTC)
+
+
+def build_bot_history(
+    messages: list[MessageInDB],
+    bot_user_id: str,
+    now: datetime | None = None,
+) -> str:
+    """從近期房間訊息組出 @bot 對話歷史段落（整房共享，供多輪記憶）。
+
+    只取「使用者 @bot 提問 → 緊接的 bot 回答」配對，略過一般閒聊；當前這次尚未
+    回答的提問（最後一個未配對者）自然不入歷史。套用時間窗與則數上限控制長度。
+
+    Args:
+        messages: get_room_messages_for_context 回傳的訊息（最舊→最新排序）
+        bot_user_id: bot 的 user_id（用於辨識 bot 回答）
+        now: 時間窗基準（預設現在；測試可注入）
+
+    Returns:
+        str: 格式化對話歷史（最舊→最新）；無可用往返時回空字串
+    """
+    if now is None:
+        now = datetime.now(UTC)
+    cutoff = now - timedelta(minutes=BOT_HISTORY_WINDOW_MINUTES)
+
+    pairs: list[tuple[str, str, str]] = []  # (提問者, 問題, bot 回答)
+    pending: tuple[str, str] | None = None  # 最近一個未回答的 @bot 提問
+
+    for msg in messages:
+        if msg.message_type != MessageType.TEXT:
+            continue
+        if msg.user_id == bot_user_id:
+            # bot 回答：與最近未回答的提問配對（須落在時間窗內）
+            if pending is not None and _as_utc(msg.created_at) >= cutoff:
+                pairs.append((pending[0], pending[1], msg.content))
+            pending = None
+            continue
+        # 使用者訊息：是 @bot 提問才暫存待配對（空問題與閒聊略過）
+        question = is_bot_trigger(msg.content)
+        if question:
+            pending = (msg.username, question)
+
+    if not pairs:
+        return ""
+
+    lines: list[str] = []
+    for username, question, answer in pairs[-BOT_HISTORY_MAX_PAIRS:]:
+        lines.append(f"{username}: {question}")
+        lines.append(f"{BOT_USERNAME}: {answer[:BOT_HISTORY_MAX_ANSWER_CHARS]}")
+    return "\n".join(lines)

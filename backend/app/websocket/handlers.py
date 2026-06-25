@@ -9,6 +9,7 @@ from fastapi import WebSocket, WebSocketDisconnect
 from app.config import settings
 from app.core.bot import (
     BOT_USERNAME,
+    build_bot_history,
     get_bot_user_id,
     is_bot_trigger,
     is_summary_command,
@@ -412,6 +413,24 @@ async def _broadcast_bot_error(room_id: str, message: str):
     )
 
 
+# @bot 多輪記憶撈取的近期訊息數（涵蓋足夠 @bot 往返；過濾後僅取最近數組）
+BOT_HISTORY_FETCH_LIMIT = 50
+
+
+async def _load_bot_history(
+    message_service: MessageService, room_id: str, bot_user_id: str
+) -> str:
+    """撈近期訊息組成 @bot 對話歷史（fail-open：撈取／組裝失敗回空字串，不擋回答）。"""
+    try:
+        messages = await message_service.get_room_messages_for_context(
+            room_id=room_id, skip=0, limit=BOT_HISTORY_FETCH_LIMIT
+        )
+        return build_bot_history(messages, bot_user_id)
+    except Exception as e:  # intentional fail-open: 歷史組裝失敗不擋 @bot 回答
+        logger.warning(f"Bot history build failed: {e}")
+        return ""
+
+
 async def handle_bot_mention(user_id: str, room_id: str, question: str):
     """
     處理 @bot 觸發（A1 streaming，兩階段）。
@@ -453,12 +472,16 @@ async def handle_bot_mention(user_id: str, room_id: str, question: str):
         return
     _bot_streaming_rooms.add(room_id)
     try:
+        # 撈近期訊息組成對話歷史（整房 @bot 往返，供多輪接續）；message_service 階段二複用
+        message_service = await create_message_service()
+        history = await _load_bot_history(message_service, room_id, bot_user_id)
+
         # --- 階段一：streaming 瞬態預覽（廣播給全房間，含觸發者）---
         bot_user = {"id": bot_user_id, "username": BOT_USERNAME, "avatar": None}
         buffer = ""
         try:
             ai_service = await create_ai_service()
-            async for delta in ai_service.stream_reply(question):
+            async for delta in ai_service.stream_reply(question, history):
                 if not delta:
                     continue
                 buffer += delta
@@ -488,7 +511,6 @@ async def handle_bot_mention(user_id: str, room_id: str, question: str):
 
         # --- 階段二：正規落地（產生 seq、持久化）→ 前端用它替換預覽 ---
         try:
-            message_service = await create_message_service()
             bot_message = await message_service.create_message(
                 bot_user_id,
                 MessageCreate(
@@ -538,8 +560,9 @@ async def handle_summary_command(user_id: str, room_id: str):
 
     try:
         # 撈近期訊息並組成 transcript（最舊→最新；排除 bot 自己與非文字訊息）
+        # 純文字用途，走 get_room_messages_for_context 不補頭像
         message_service = await create_message_service()
-        messages = await message_service.get_room_messages(
+        messages = await message_service.get_room_messages_for_context(
             room_id=room_id, skip=0, limit=SUMMARY_MESSAGE_LIMIT
         )
         lines = [
