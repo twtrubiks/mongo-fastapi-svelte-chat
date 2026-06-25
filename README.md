@@ -2,11 +2,11 @@
 
 [![Python](https://img.shields.io/badge/Python-3.13+-blue.svg)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.138-green.svg)](https://fastapi.tiangolo.com/)
+[![Pydantic AI](https://img.shields.io/badge/Pydantic_AI-2.0-blueviolet.svg)](https://ai.pydantic.dev/)
 [![PyMongo](https://img.shields.io/badge/PyMongo-4.17-green.svg)](https://pymongo.readthedocs.io/)
 [![SvelteKit](https://img.shields.io/badge/SvelteKit-2.67-orange.svg)](https://svelte.dev/)
 [![Svelte](https://img.shields.io/badge/Svelte-5-red.svg)](https://svelte.dev/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-6-blue.svg)](https://www.typescriptlang.org/)
-[![Tailwind CSS](https://img.shields.io/badge/Tailwind_CSS-4-blue.svg)](https://tailwindcss.com/)
 [![DaisyUI](https://img.shields.io/badge/DaisyUI-5-purple.svg)](https://daisyui.com/)
 [![MongoDB](https://img.shields.io/badge/MongoDB-8.0-green.svg)](https://www.mongodb.com/)
 [![Redis](https://img.shields.io/badge/Redis-8-red.svg)](https://redis.io/)
@@ -29,6 +29,7 @@
 - **完整用戶系統**: JWT 認證（HttpOnly cookie + BFF 透明 refresh）、個人資料管理、頭像上傳
 - **豐富檔案支援**: 圖片、文件上傳，自動縮圖生成，多媒體預覽
 - **通知系統**: 瀏覽器通知、音效提醒、已讀狀態同步
+- **AI 聊天助理**: `@bot` streaming 即時問答 + `/summary` 對話摘要，支援 NVIDIA NIM / Google Gemini 雙供應商切換，bot 以真實身分回覆並引用所回應的提問；點側欄「AI 助理」即彈出用法小卡，一鍵將指令帶入輸入框
 - **現代化界面**: Tailwind CSS 4 + DaisyUI 5
 
 ## 📸 畫面截圖
@@ -38,6 +39,22 @@
 *聊天界面*
 
 ![img](https://cdn.imgpile.com/f/qG4es09_xl.png)
+
+*AI助理*
+
+![img](https://cdn.imgpile.com/f/xOJEcoA_xl.png)
+
+![img](https://cdn.imgpile.com/f/6XtEDMd_xl.png)
+
+*指令自動完成*
+
+![img](https://cdn.imgpile.com/f/951Qbh6_xl.png)
+
+![img](https://cdn.imgpile.com/f/i7s0STn_xl.png)
+
+*訊息編輯刪除*
+
+![img](https://cdn.imgpile.com/f/5hC31f4_xl.png)
 
 *聊天室種類以及是否設定密碼*
 
@@ -203,6 +220,8 @@ fastapi dev app/main.py
 
 API 文檔 [http://localhost:8000/docs](http://localhost:8000/docs)
 
+> 💡 **AI 助理為選用**：在 `.env` 設定 `AI_PROVIDER`（`nvidia` 或 `gemini`）與對應的 `NVIDIA_API_KEY` 或 `GOOGLE_API_KEY` 後，`@bot` 與 `/summary` 才會啟用；未設定時聊天室其他功能不受影響。
+
 ### 3. 啟動前端
 
 ```bash
@@ -261,6 +280,7 @@ cp .env.example .env
 │   │   ├── lib/               # 核心功能庫
 │   │   │   ├── api/           # API 客戶端
 │   │   │   ├── components/    # UI 組件
+│   │   │   ├── constants/     # 指令常數 (botCommands)
 │   │   │   ├── stores/        # Svelte 狀態管理
 │   │   │   ├── websocket/     # WebSocket 客戶端
 │   │   │   ├── styles/        # Tailwind CSS 設定
@@ -287,6 +307,7 @@ cp .env.example .env
 │   │   ├── worker-prompt.md        #   Worker 架構規範（三層 + BFF）
 │   │   ├── reviewer-prompt.md      #   Reviewer 審查 checklist
 │   │   ├── sprint-contract-template.json  # Sprint Contract 模板
+│   │   ├── contracts/              #   各 Sprint 的 Contract 實例（Pxx.sprint-contract.json）
 │   │   └── hooks/                  #   安全防護 hooks
 │   │       ├── pre-write-check.sh  #     寫入前 secrets 掃描
 │   │       ├── pre-compact-check.sh #    壓縮前 WIP 警告
@@ -361,9 +382,10 @@ pytest tests/ -v --cov=app --cov-report=html
 |------|------|------|
 | 認證 | `/api/auth` | 註冊、登入、Token 刷新、個人資料、頭像 |
 | 聊天室 | `/api/rooms` | CRUD、加入/離開、成員管理、搜尋 |
-| 訊息 | `/api/messages` | 發送、歷史記錄、搜尋 |
+| 訊息 | `/api/messages` | 發送、歷史記錄、搜尋、編輯、刪除（軟刪除） |
 | 檔案 | `/api/files` | 上傳、縮圖、多媒體存取 |
 | 通知 | `/api/notifications` | 通知列表、已讀、統計、清除全部 |
+| AI 助理 | `/api/ai` | AI 助理上線狀態（`@bot` / `/summary` 本身由 WebSocket 觸發） |
 | 邀請和申請 | `/api/invitations` | 邀請碼、加入申請、審核 |
 | WS Ticket | `/api/ws` | 一次性 WebSocket 連線 ticket（Redis TTL 30s）（`ws_ticket.py`） |
 | WebSocket | `WS /ws/{room_id}` | 房間即時通訊（ticket 認證） |
@@ -377,6 +399,7 @@ pytest tests/ -v --cov=app --cov-report=html
 3. **MongoDB 效能優化**: 反規範化設計 + 啟動時自動建立索引（unique 約束 + 複合索引）
 4. **完整中間件系統**: 錯誤處理、速率限制、安全標頭保護
 5. **WebSocket 管理**: 連線 debounce、心跳檢測、房間隔離機制、一次性 ticket 認證
+6. **AI 聊天助理**: LLM 呼叫收斂於 Service 層（`AIService` 無狀態），`@bot` streaming 兩階段（瞬態預覽 + 正規落地）、NVIDIA / Gemini 雙供應商可切換、整房共享多輪記憶；AI 為選用功能，未配置即 fail-soft（設計取捨見 ADR-004）
 
 ### 前端架構特色
 
@@ -404,3 +427,23 @@ MIT License - 開源且免費使用
 ---
 
 ⭐ **如果這個專案對您有幫助，請給一個 Star！** ⭐
+
+## Donation
+
+文章都是我自己研究內化後原創，如果有幫助到您，也想鼓勵我的話，歡迎請我喝一杯咖啡 :laughing:
+
+綠界科技ECPAY ( 不需註冊會員 )
+
+![alt tag](https://payment.ecpay.com.tw/Upload/QRCode/201906/QRCode_672351b8-5ab3-42dd-9c7c-c24c3e6a10a0.png)
+
+[贊助者付款](http://bit.ly/2F7Jrha)
+
+歐付寶 ( 需註冊會員 )
+
+![alt tag](https://i.imgur.com/LRct9xa.png)
+
+[贊助者付款](https://payment.opay.tw/Broadcaster/Donate/9E47FDEF85ABE383A0F5FC6A218606F8)
+
+## 贊助名單
+
+[贊助名單](https://github.com/twtrubiks/Thank-you-for-donate)

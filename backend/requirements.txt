@@ -9,7 +9,7 @@ Pillow==12.2.0
 bcrypt==5.0.0
 
 # AI 助理（@bot / summary）— Pydantic AI 接 NVIDIA NIM（OpenAI 相容端點）或 Gemini（Google 原生 SDK）
-pydantic-ai-slim[openai,google]==1.107.0
+pydantic-ai-slim[openai,google]==2.0.0
 
 # Development tools
 ruff==0.15.19

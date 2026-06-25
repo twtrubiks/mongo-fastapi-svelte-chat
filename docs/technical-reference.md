@@ -316,8 +316,10 @@ await ensure_indexes(db)  # 啟動時自動建立索引
 | `users` | `username` | unique | 防止重複用戶名，加速登入查詢 |
 | `users` | `email` | unique | 防止重複 email，加速註冊檢查 |
 | `messages` | `{ room_id, created_at desc }` | 複合索引 | 進入聊天室載入訊息（最高頻查詢） |
+| `messages` | `{ room_id, seq desc }` | 複合索引 | 依序號查詢訊息（斷線 gap 補發 / 游標分頁，見 ADR-003） |
+| `messages` | `{ room_id, client_id }` | partial unique | 訊息冪等去重保底（僅對 client_id 為字串的文件生效） |
 | `rooms` | `name` | unique | 防止重複房間名稱（TOCTOU 競態防護） |
-| `rooms` | `invite_code` | partial unique | 防止重複邀請碼（僅對有 invite_code 的文件生效） |
+| `rooms` | `invite_code` | partial unique | 防止重複邀請碼（僅對 invite_code 為字串的文件生效） |
 | `rooms` | `members` | multikey | 查詢「我的房間」列表（陣列欄位） |
 | `rooms` | `{ is_public, created_at desc }` | 複合索引 | 探索頁面公開房間查詢 + 排序 |
 | `notifications` | `{ user_id, created_at desc }` | 複合索引 | 通知列表 + 未讀計數 |
@@ -326,7 +328,7 @@ await ensure_indexes(db)  # 啟動時自動建立索引
 ### 索引選擇原則
 
 - **Unique 索引**：不只是效能，更是資料正確性約束（防止重複 username/email/room name）
-- **Partial unique 索引**：`rooms.invite_code` 使用 `partialFilterExpression: {invite_code: {$exists: true}}`，僅對有該欄位的文件生效，避免無邀請碼的房間因 `null` 衝突
+- **Partial unique 索引**：`rooms.invite_code` 與 `messages.{room_id, client_id}` 使用 `partialFilterExpression: {欄位: {$type: "string"}}`，僅對該欄位為字串的文件生效。用 `$type: "string"` 而非 `$exists: true`——因為 `null` 也算 `$exists`，會讓多個無邀請碼／無 client_id 的文件互相衝突；限定字串才能正確排除 `null` 與缺欄位
 - **複合索引**：針對同時使用 filter + sort 的高頻查詢（如 `room_id` 過濾 + `created_at` 排序）
 - **Multikey 索引**：`rooms.members` 是陣列欄位，MongoDB 自動為陣列中的每個值建立索引條目
 
@@ -756,9 +758,142 @@ class WebSocketManager {
 
 ---
 
+## 🤖 AI 聊天助理
+
+聊天室內建 AI 助理，提供兩個入口：`@bot <問題>` 即時問答（streaming）與 `/summary` 對話摘要。LLM 呼叫封裝於 Service 層（`app/services/ai_service.py`），WebSocket handler 只負責觸發與廣播，遵守三層架構（商業邏輯不寫在 handler）。AI 為**選用**功能：未配置 API key 時功能停用，不影響聊天室其他功能。
+
+> **設計理由見 ADR**：本章聚焦 AI 助理**如何運作與使用**（契約、流程、設定）。背後「為什麼這樣設計」的取捨——bot 為何是真實使用者、LLM 為何收斂於 Service 層、AI 為何採選用 fail-soft、streaming 為何切兩階段——統一記錄於 `c4-architecture.md` 的 **ADR-004**。本章不重述理由，僅於對應段落標註決策編號，避免兩份文件各自演化而脫節。
+
+### 基礎建設
+
+**AI 服務層（`AIService`）**
+
+- 使用 [Pydantic AI](https://ai.pydantic.dev/) 封裝 LLM agent，**供應商可切換**（`AI_PROVIDER`）：`nvidia`（NVIDIA NIM，OpenAI 相容端點）或 `gemini`（Google 原生 SDK）。`_get_model` 依設定分派，所有 agent 共用同一個惰性模型。
+- agent **惰性建立**（首次使用才需 API key），所有呼叫共用同一個 module 層 agent；`AIService` 本身無狀態，故 DI 工廠每次回傳新實例也不會重複初始化模型。
+- 未配置**當前供應商**的 API key 時拋 `AppError`（訊息含供應商名，如「AI 助理尚未配置（gemini 缺少 API key）」），不會真的打 API。
+- **供應商差異**：
+  - **逾時**：Gemini 須透過自訂 httpx client 設定（`ModelSettings.timeout` 對 Google SDK 不生效）；NVIDIA 走 `ModelSettings.timeout`。
+  - **思考（thinking）**：Gemini 用 `GoogleModelSettings` 並設 `google_thinking_config={"thinking_budget": 0}` 關閉思考——`gemini-2.5-flash` 預設開啟思考，而思考 token 會算進 `max_tokens` 預算，不關會把回覆在生成中途截斷（本專案為非思考用途）。NVIDIA（Nemotron）思考預設關閉、需 system prompt 顯式開啟，故無此設定。
+  - 兩者皆套用相同的 temperature / max_tokens。
+
+**Bot 身分（`app/core/bot.py`）**
+
+- Bot 是一個**真實的 MongoDB 使用者**（固定 `user_id`），讓 bot 訊息能正常渲染頭像／暱稱並走正規訊息流（理由見 ADR-004 決策 1）。
+- 啟動時由 lifespan 呼叫 `ensure_bot_user` 冪等種子化（隨機密碼雜湊，永不可透過密碼登入）；user_id 快取於模組層供 WebSocket handler 取用。
+- `is_bot_trigger(content)` 判斷訊息是否呼叫 bot：僅當 `@bot` 後接空白或為字串結尾才觸發（避免「@bother」之類誤判），回傳去除前綴後的問題。
+
+**設定（`app/config.py`）**
+
+| 設定 | 預設 | 說明 |
+|------|------|------|
+| `AI_PROVIDER` | `nvidia` | 供應商切換：`nvidia`（NIM）或 `gemini`（Google） |
+| `NVIDIA_API_KEY` | `None` | NVIDIA NIM key；當前供應商未設 key 時 @bot 回「尚未配置」而不打 API |
+| `NVIDIA_BASE_URL` | `https://integrate.api.nvidia.com/v1` | OpenAI 相容端點 |
+| `NVIDIA_MODEL` | `nvidia/nemotron-3-super-120b-a12b` | NVIDIA 使用的模型 |
+| `GOOGLE_API_KEY` | `None` | Gemini key（`AI_PROVIDER=gemini` 時生效） |
+| `GEMINI_MODEL` | `gemini-2.5-flash` | Gemini 使用的模型 |
+| `BOT_RATE_LIMIT_PER_MINUTE` | `5` | 每使用者每分鐘 AI 上限（@bot 與 /summary 共用） |
+
+**依賴注入**：`create_ai_service()` 工廠 + `AIServiceDep` 別名（與其他 service 一致）。`GET /api/ai/status`（HTTP）透過 `AIServiceDep` 注入；`@bot` / `/summary` 觸發發生在 WebSocket，handler 則直接 `await create_ai_service()`。
+
+### 觸發與限流
+
+`handle_chat_message` 在訊息落地後偵測是否為 AI 觸發（僅 `TEXT` 訊息），命中則交由對應 handler。這段「管線與防護」與回覆生成方式無關，無論回覆是否 streaming 都一致：
+
+| 機制 | 說明 |
+|------|------|
+| **限流** | 每使用者每分鐘上限（`BOT_RATE_LIMIT_PER_MINUTE`，預設 5；`@bot` 與 `/summary` **共用此額度**），複用既有的 `SlidingWindowRateLimiter`（Redis 滑動視窗，key `rate_limit:bot:{user_id}`）。檢查失敗 fail-open，不擋 AI |
+| **防迴圈保險** | bot 尚未種子化、或觸發者就是 bot 自身時直接不處理，避免 bot 回覆自己無限觸發 |
+| **空問題提示** | `@bot` 後無內容時回提示且不打 API |
+| **`skip_membership_check`** | bot 是系統發訊者、非房間成員，`create_message` 以此參數（預設 `False`，現有呼叫零影響）跳過成員資格檢查；也因此正常訊息的通知迴圈不會掃到 bot |
+| **刻意不發通知** | bot 訊息走正規落地（產生 seq、持久化、廣播）但**不觸發通知**，避免每次回話全房間收到通知轟炸 |
+| **完整自我守護** | handler 內任何失敗只回報觸發者（或收掉預覽），不影響使用者的原始訊息與聊天室運作 |
+
+> bot 回覆透過正規 `create_message` 落地，因此會取得 seq、可持久化、可被 ADR-003 的斷線 gap 補發涵蓋——與真人訊息走同一條管線。
+
+### @bot streaming 兩階段
+
+`@bot` 採 streaming，讓 bot 回覆像真人逐字打字（為何切成兩階段、預覽為何不持久化，見 ADR-004 決策 4）。`AIService.stream_reply` 以 `agent.run_stream` + `stream_text(delta=True)` 逐段 yield 文字增量（async generator），handler 分兩階段廣播：
+
+```
+階段一（瞬態預覽）         階段二（正規落地）
+─────────────────         ─────────────────
+streaming 中：            streaming 結束：
+broadcast bot_typing      bot 身分 create_message（取 seq、持久化）
+  每個 delta 廣播全房間    → broadcast_message 廣播正式訊息
+  不走 seq、不持久化       → 前端用它替換預覽氣泡
+失敗 → broadcast bot_error（前端收掉預覽，不卡在「打字中」）
+```
+
+- **階段一**只是體驗層的「打字中」效果，刻意不持久化——重整／斷線重連不會看到半截預覽。
+- **階段二**才是真正的訊息，享有 seq / 持久化 / gap 補發；前端收到正式訊息（`resolveBotStreamOnLanding`）後把預覽替換成最終訊息。落地時並以 `reply_to` 指回觸發的提問訊息（見〈@bot 回覆引用提問者〉）。
+- 任一階段失敗（外部服務逾時／斷線／429）發 `bot_error`，前端收掉預覽。
+
+**同房並發保護**：預覽 id 僅含 `roomId`，同房同時兩個 @bot 會讓第二次的 delta 累積進同一個預覽、首次落地又誤收他人預覽。以 module-level 的 `_bot_streaming_rooms` 集合做鎖——同房一次只允許一個 streaming，第二個請求走既有 error 路徑回報觸發者「正在回覆中」，`try/finally` 保證釋放。此鎖為單實例 in-memory，符合目前 per-room WS／單後端實例架構。
+
+**WebSocket 事件契約（伺服器 → 客戶端）**：
+
+| 事件 | 用途 | 主要欄位 |
+|------|------|---------|
+| `bot_typing` | streaming 瞬態增量 | `user`（bot 身分）、`content`（文字 delta） |
+| `bot_error` | streaming 收尾錯誤 | `message`（錯誤原因） |
+| （正式訊息）`message` | 階段二落地的正規訊息 | 與真人訊息相同（含 seq、`reply_to_message` 引用預覽） |
+
+前端 `types.ts` 對應 `WSBotTypingMessage` / `WSBotErrorMessage`（已納入 `WebSocketMessage` discriminated union），`guards.ts` 的 `KNOWN_WS_TYPES` 收錄 `bot_typing` / `bot_error`；message store 以 `appendBotStream`（累積預覽）/ `resolveBotStreamOnLanding`（落地替換）/ `clearBotStream`（錯誤收尾）管理預覽生命週期。預覽重用既有訊息渲染，未動聊天頁元件。
+
+### @bot 回覆引用提問者（reply_to）
+
+bot 落地時帶 `reply_to` 指向觸發它的使用者提問，前端在 bot 回覆氣泡頂部顯示「引用提問」區塊（`MessageItem`；目前僅 @bot 回覆使用，未開放使用者主動回覆）。`/summary` 為指令、非回覆某人，故不帶 `reply_to`。
+
+- **引用預覽組裝（無 N+1）**：`MessageRepository.get_reply_previews` 以單次 `$in` 批次撈回被回覆訊息，`MessageService._attach_reply_previews` 讓訊息列表回傳 `MessageWithReply`（含 `reply_to_message` 預覽：被回覆訊息的 `id`／`content`／`username`）。一般房間多無 `reply_to`，`reply_ids` 為空時不查 DB。
+- **三條 WS 路徑一致**：`_format_message_payload` 偵測 `reply_to_message` 即一併輸出，覆蓋即時新訊息、歷史載入（`message_history`）、斷線補發（`message_sync`）。
+- **重整也帶引用**：前端載入歷史走 `GET /api/rooms/{id}/messages`（對應後端 `rooms.py`，**非** `messages.py` 的 `/messages/room/{id}`），其 `response_model` 為 `list[MessageWithReply]`。FastAPI 會用 `response_model` 過濾欄位，回傳型別即使含 `reply_to_message`，端點宣告若仍是 `MessageResponse` 就會被靜默濾掉，造成「即時有、重整無」。因此 `get_room_messages`／`get_message_by_id` 兩個 service 方法的所有出口端點（`rooms.py` 與 `messages.py` 對應端點）`response_model` 一律對齊 `MessageWithReply`，避免換走另一條端點時引用神秘消失。
+- **補引用為 fail-open**：階段二落地時，bot 訊息先以 `create_message` 寫入（產生 seq、持久化），再以 `get_message_by_id` 取含引用預覽的版本廣播。後者僅為了補上引用區塊，**包在獨立的 try 內**：取預覽失敗時降級用原訊息廣播（不帶引用），不可因此走進落地的 catch-all 而誤報「回覆儲存失敗」——訊息已經落地，重整即見。
+
+### @bot 多輪對話記憶
+
+@bot 預設無記憶（單輪），追問（如「那它跟 VM 差在哪」）會失去前文。為支援多輪接續，handler 在呼叫 `stream_reply` 前撈近期房間訊息組成**整房共享**的對話歷史段落傳入：
+
+- `build_bot_history`（`core/bot.py`，純函數）只配對「使用者 @bot 提問 → 緊接的 bot 回答」，略過一般閒聊；當前這次尚未回答的提問自然不入歷史。
+- 控制長度與 token 成本：時間窗 `BOT_HISTORY_WINDOW_MINUTES`（10 分鐘，過舊不帶）、最多 `BOT_HISTORY_MAX_PAIRS`（6 組往返）、單則 bot 回答截斷 `BOT_HISTORY_MAX_ANSWER_CHARS`（200 字）。
+- `_build_chat_prompt` 以 **context 段落**併入當前問題，而非 pydantic-ai 的 `message_history` 結構——聊天室歷史為多人交錯、易有有問無答／連續提問等不合法配對，拼成 prompt 對髒資料更穩健。
+- `AIService` 維持**無狀態**（不注入 repo）；歷史由 handler 撈取後當參數傳入。撈取／組裝失敗 **fail-open** 回空字串，不擋回答。
+- 撈取走 `MessageService.get_room_messages_for_context`（回傳 `MessageInDB`、**不補頭像**）：歷史與 `/summary` 都只需 `username`／`content`，跳過 `get_room_messages` 尾端 `_format_with_avatars` 的批次使用者查詢，省一次無謂 `$in`。
+- tz 正規化：PyMongo 預設回傳 naive UTC datetime，套時間窗比較前統一成 aware，避免炸裂。
+
+### /summary 對話摘要
+
+使用者輸入 `/summary`（大小寫不敏感、完整比對）即由 AI 助理摘要近期對話：
+
+1. 撈近期 30 則訊息（經 `get_room_messages_for_context`，純文字、不補頭像），組成 transcript（最舊→最新，排除 bot 自己與非文字訊息）。
+2. 呼叫 `AIService.summarize`（**one-shot，非 streaming**，獨立的 summary agent，與 @bot 共用同一個 `_get_model()`）。
+3. 以 bot 身分正規落地廣播（跳過成員檢查、刻意不發通知），訊息前綴 `📋 對話摘要`。
+
+與 @bot 共用每使用者限流額度。`/summary` 指令本身以一般訊息呈現並正常 ack，故**前端零改動**即支援。`handle_chat_message` 以 `elif` 與 @bot 並列偵測（兩者互斥）。
+
+### 輸入輔助與全形相容
+
+- **指令自動完成**：`MessageInput` 在開頭輸入 `/` 或 `@` 時跳出指令提示 popup（`@bot`、`/summary`），支援 ↑↓ 導航、Enter/Tab/點擊選定、Esc 關閉，提升指令可發現性。
+- **全形相容**：後端觸發判斷（`is_bot_trigger` / `is_summary_command`）先做 **NFKC 正規化**再比對，修正中文輸入法常打出的全形「＠bot」「／summary」靜默失敗問題。全形→半形為 1:1 對應，故前綴長度與原字串索引對齊，問題內容仍取原文。
+
+### 上線狀態顯示
+
+`GET /api/ai/status` 回傳 AI 助理是否可用，供前端在成員列表標示。**「上線」語意 = 當前供應商已配置 API key**（`AIService.is_available()`，純設定判斷，不呼叫外部 AI API）——bot 永不連 WebSocket，故不沿用 `global_online_users` 機制。
+
+- 回應 `{ enabled, bot_username }`（`bot_username` 以後端 `BOT_USERNAME` 為權威來源）。
+- 前端 `aiStatus` store 登入後查一次並去重（樂觀標記避免多元件實例並發重複請求），fail-open：取不到狀態時維持「不可用」，不阻斷聊天。
+- `UserList` 將 AI 助理置頂顯示，依 `enabled` 標示上線／離線。
+
+### AI 測試（零成本）
+
+AI 相關測試**全程不打真實 API**：用 Pydantic AI 的 `TestModel` / `FunctionModel` 搭配 `agent.override(model=...)` 覆寫 agent 模型，驗證 `stream_reply` 的串流拼接內容與 `summarize` 的摘要輸出。這正是「LLM 邏輯收斂於 Service 層」（ADR-004 決策 2）帶來的可測試性。
+
+> 注意：`stream_text(delta=True)` 內建 debounce，無延遲時增量會合併，故測試驗證「拼接後的完整內容」而非逐段 delta 序列。
+
+---
+
 ## 🔗 相關檔案參考
 
-- **主專案**: [README.md](../README.md)
-- **後端時間序列化**: `/backend/app/models/room.py:78-83`
+- **後端時間序列化**: `/backend/app/models/room.py`（`serialize_datetime` field_serializer）
 - **前端時間工具**: `/frontend/src/lib/utils/datetime.ts`
 - **WebSocket 管理**: `/frontend/src/lib/websocket/`

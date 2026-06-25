@@ -15,7 +15,7 @@
 
 **系統名稱**: 即時多人聊天室系統
 
-**系統描述**: 基於 FastAPI + MongoDB + SvelteKit 的即時通訊平台，支援多房間、檔案分享、即時通知等功能。
+**系統描述**: 基於 FastAPI + MongoDB + SvelteKit 的即時通訊平台，支援多房間、檔案分享、即時通知、AI 助理（@bot / summary，選用）等功能。
 
 **技術架構**: 三層架構 + 依賴注入 + 記憶體WebSocket廣播架構
 
@@ -39,6 +39,7 @@ graph TB
         MongoDB[(MongoDB<br/>文件資料庫)]
         Redis[(Redis<br/>快取層)]
         FileStorage[本地檔案系統<br/>uploads 目錄]
+        LLMProvider[AI 供應商 API<br/>NVIDIA NIM / Google Gemini<br/>選用]
     end
 
     User -->|使用| ChatSystem
@@ -46,12 +47,14 @@ graph TB
     ChatSystem -->|讀寫| MongoDB
     ChatSystem -->|快取| Redis
     ChatSystem -->|儲存| FileStorage
+    ChatSystem -->|"@bot / summary 呼叫（選用"）| LLMProvider
 
     style ChatSystem fill:#f9f,stroke:#333
     style User fill:#bbf,stroke:#333
     style MongoDB fill:#9f9,stroke:#333
     style Redis fill:#9f9,stroke:#333
     style FileStorage fill:#ff9,stroke:#333
+    style LLMProvider fill:#ffd,stroke:#333
 ```
 
 ### 關係說明
@@ -62,6 +65,7 @@ graph TB
 | **MongoDB** | 持久化儲存 | TCP/IP | 用戶資料、訊息記錄、房間資料 |
 | **Redis** | 快取層 | TCP/IP | 快取資料、速率限制 |
 | **檔案儲存** | 本地檔案儲存 | 檔案系統 | 圖片、文件、媒體檔案 |
+| **AI 供應商**（選用） | @bot 問答 / 對話摘要 | HTTPS | 送出近期對話內容，回傳生成文字 |
 
 ---
 
@@ -83,6 +87,7 @@ graph TB
     end
 
     User[使用者瀏覽器<br/>Chrome/Safari/Firefox]
+    LLMProvider[AI 供應商 API<br/>NVIDIA NIM / Gemini<br/>選用]
 
     User -->|HTTPS:5173| Frontend
     Frontend -->|REST API:8000| Backend
@@ -91,6 +96,7 @@ graph TB
     Backend -->|TCP:27017| MongoDB
     Backend -->|TCP:6379| Redis
     Backend -->|檔案系統| FileStorage
+    Backend -->|HTTPS（選用）| LLMProvider
 
     Backend -->|記憶體廣播| ConnectionManager[內建連線管理器]
 
@@ -99,6 +105,7 @@ graph TB
     style MongoDB fill:#F0E68C
     style Redis fill:#F0E68C
     style FileStorage fill:#F0E68C
+    style LLMProvider fill:#FFE4B5
 ```
 
 ### 容器技術規格
@@ -128,6 +135,7 @@ graph TB
         NotificationRouter[通知路由<br/>/api/notifications<br/>GET /notifications, DELETE /notifications]
         InvitationRouter["邀請路由<br/>/api/invitations<br/>POST /rooms/{room_id}/invitations, POST /validate"]
         WsTicketRouter[WS Ticket 路由<br/>/api/ws<br/>POST /ticket]
+        AIRouter[AI 狀態路由<br/>/api/ai<br/>GET /status]
     end
 
     subgraph "中介層 (Middleware & Auth)"
@@ -149,6 +157,7 @@ graph TB
     NotificationRouter --> AuthDependency
     InvitationRouter --> AuthDependency
     WsTicketRouter --> AuthDependency
+    AIRouter --> AuthDependency
 
     CORSMiddleware -.->|全域| AllRoutes[所有路由]
     RateLimiter -.->|全域| AllRoutes
@@ -159,6 +168,8 @@ graph TB
     style FileRouter fill:#FFB6C1
     style NotificationRouter fill:#FFB6C1
     style InvitationRouter fill:#FFB6C1
+    style WsTicketRouter fill:#FFB6C1
+    style AIRouter fill:#FFB6C1
 ```
 
 #### 業務層組件
@@ -172,6 +183,7 @@ graph TB
         NotificationService[通知服務<br/>NotificationService<br/>系統通知]
         InvitationService[邀請服務<br/>InvitationService<br/>邀請碼與加入申請管理]
         FileService[檔案服務<br/>FileService<br/>檔案上傳與存取管理]
+        AIService[AI 助理服務<br/>AIService<br/>LLM 呼叫封裝（無狀態）]
     end
 
     subgraph "服務依賴關係"
@@ -198,6 +210,7 @@ graph TB
         JWTHandler[JWT處理<br/>JWTHandler<br/>Token生成驗證]
         UserCache[使用者快取<br/>user_cache.py<br/>Redis fail-open 快取 TTL 5min]
         WsTicket[WS Ticket<br/>ws_ticket.py<br/>Redis 一次性 ticket TTL 30s]
+        BotIdentity[Bot 身分<br/>core/bot.py<br/>種子化 + 觸發判斷]
     end
 
     UserService --> PasswordUtils
@@ -210,6 +223,7 @@ graph TB
     style NotificationService fill:#98FB98
     style InvitationService fill:#98FB98
     style FileService fill:#98FB98
+    style AIService fill:#98FB98
 ```
 
 #### 資料層組件
@@ -289,6 +303,8 @@ graph TB
             TypingHandler[輸入狀態處理<br/>handle_typing_indicator<br/>輸入狀態同步]
             GetUsersHandler[用戶列表處理<br/>handle_get_users<br/>取得房間在線用戶]
             NotifReadHandler[通知已讀處理<br/>handle_notification_read<br/>標記通知已讀]
+            BotHandler[AI 觸發處理<br/>handle_bot_mention<br/>@bot 限流→回覆→廣播]
+            SummaryHandler[摘要處理<br/>handle_summary_command<br/>/summary 近期對話摘要]
         end
 
         subgraph "即時通訊層"
@@ -308,6 +324,10 @@ graph TB
     MessageHandler --> GetUsersHandler
     MessageHandler --> NotifReadHandler
 
+    ChatHandler -->|偵測 @bot| BotHandler
+    ChatHandler -->|偵測 /summary| SummaryHandler
+    BotHandler --> MemoryBroadcast
+    SummaryHandler --> MemoryBroadcast
     ChatHandler --> MemoryBroadcast
     TypingHandler --> MemoryBroadcast
     GetUsersHandler --> RoomUsers
@@ -346,6 +366,7 @@ graph TB
             MessageStatusStore[訊息狀態追蹤<br/>messageStatus.svelte.ts<br/>已讀/未讀狀態]
             TypingStore[輸入指示器<br/>typingIndicator.svelte.ts<br/>打字狀態管理]
             ErrorHandlerStore[錯誤處理狀態<br/>errorHandler.svelte.ts<br/>全域錯誤管理]
+            AIStatusStore[AI 狀態<br/>aiStatus.svelte.ts<br/>AI 助理上線狀態]
         end
 
         subgraph "API層"
@@ -427,6 +448,12 @@ graph TB
             UserIdNormalizer[用戶ID正規化<br/>userIdNormalizer.ts<br/>ID格式統一]
             ClipboardUtils[剪貼簿工具<br/>clipboard.ts<br/>複製到剪貼簿]
             ErrorUtils[錯誤工具<br/>error.ts<br/>錯誤處理輔助]
+            FileUploadHandler[檔案上傳處理<br/>fileUploadHandler.ts<br/>上傳流程封裝]
+            MarkAsRead[已讀標記<br/>markAsRead.ts<br/>訊息已讀處理]
+        end
+
+        subgraph "常數層"
+            BotCommands["指令常數<br/>botCommands.ts<br/>@bot / summary 指令清單"]
         end
     end
 
@@ -459,17 +486,19 @@ graph TB
 
 #### FastAPI Depends 工廠函數模式
 
-使用 FastAPI 原生 `Depends` 機制，透過工廠函數建立 Service 實例。HTTP Router 使用 `Depends` 自動注入，WebSocket 直接 `await` 呼叫工廠函數。Service 層不直接 import `connection_manager`，而是由 DI 工廠透過建構子注入，實現 Service 與 WebSocket 的解耦。
+使用 FastAPI 原生 `Depends` 機制，透過工廠函數建立 Service 實例。HTTP Router 使用 `Depends` 自動注入，WebSocket 直接 `await` 呼叫工廠函數。Service 層不直接 import `connection_manager`，而是由 DI 工廠透過建構子注入，實現 Service 與 WebSocket 的解耦。除 Service 外，亦提供 `create_room_repository()` 工廠供 `require_room_membership` 等 auth dependency 直接注入 Repository（非 Service 場景）。
 
 ```mermaid
 classDiagram
     class FastAPIIntegration {
+        +create_room_repository() RoomRepository
         +create_user_service() UserService
         +create_room_service() RoomService
         +create_message_service() MessageService
         +create_notification_service() NotificationService
         +create_invitation_service() InvitationService
         +create_file_service() FileService
+        +create_ai_service() AIService
         +get_health_check_info() dict
     }
 
@@ -720,7 +749,7 @@ Per-Room 架構的影響比預期小，因為：
 
 ### ADR-003: 訊息管線可靠投遞（seq / ack / 冪等）
 
-**狀態**: Phase 0+1 已實作（2026-06）
+**狀態**: Phase 0+1+2 已實作（2026-06）
 **決策**: 為訊息引入 per-room 單調遞增序號（seq）作為核心 primitive，搭配真 ack 協議與冪等去重
 
 #### 背景問題
@@ -787,10 +816,51 @@ db["counters"].find_one_and_update(
 - 斷線時所有 pending ack 立即標記 failed，重連後自動重試——因為有冪等保底，「實際已存但 ack 丟失」的重送不會產生重複
 - 樂觀 UI：發送當下以 `client_id` 為鍵插入 pending 訊息，ack/廣播到達時原地確認取代
 
+#### 決策 4：Phase 2 — 兌現 seq 的價值（游標分頁 + 精確 gap 補發）
+
+Phase 0+1 把 seq 建立起來後，Phase 2 用它取代兩個原本依賴 `skip/limit` 與「盲發最近 50 條」的脆弱機制：
+
+- **游標分頁**：訊息列表查詢支援 `before_seq`，以 `seq < before_seq` 為游標取代 `skip/limit` 偏移。偏移分頁在訊息增刪後會錯位（同一筆被翻兩次或被跳過），游標分頁不受影響。舊資料無 seq 時 fallback 回 `skip`，向後相容。
+- **斷線 gap 精確補發**：WS 重連時客戶端帶上本地最大 `last_seq`（並驗證該 seq 屬於同一房間才帶），伺服器只補發 `seq > last_seq` 的訊息，透過 `message_sync` 事件送回——精確、不重不漏，取代原本「重連盲發最近 50 條」的會漏也會重行為。
+- **gap 上限保護**：`SYNC_MAX_GAP = 200`。gap 超過上限時改為 `full_reload`（回傳最新訊息並標記 `full_reload=true`），客戶端清空本地後以該批重載，避免一次推送過多訊息。gap 為 0 時不送任何訊息。
+- **一次性遷移腳本**：`scripts/backfill_message_seq.py` 為既有無 seq 的訊息補號並校正 `counters`（冪等，可重複執行）。
+
+```
+重連 → 帶 last_seq=N
+  ├─ gap = 0          → 無需補發
+  ├─ 0 < gap ≤ 200    → message_sync 補發 seq > N 的訊息（精確）
+  └─ gap > 200        → message_sync(full_reload=true)，客戶端清空重載
+```
+
 #### 後續階段
 
-- Phase 2（待做）：`before_seq` 游標分頁；重連帶 `last_seq` 精確補 gap（超過閾值 fallback 全量重載）
 - Phase 3（待做）：訊息級已讀 — 每人每房 `last_read_seq` 指標（寫入量 O(成員數)，對比 per-message `read_by` 陣列的 O(成員數×訊息數)）
+
+### ADR-004: AI 聊天助理（@bot）
+
+**狀態**: 已實作（2026-06）
+**決策**: 內建 AI 助理，使用 Pydantic AI 封裝 LLM；bot 為真實使用者身分，LLM 商業邏輯收斂於 Service 層
+
+#### 決策 1：bot 是真實 MongoDB 使用者，而非合成 sender
+
+Bot 擁有固定 `user_id`，啟動時冪等種子化（隨機密碼，永不可登入）。如此 bot 訊息可走**正規訊息流**（`create_message` → 取 seq → 持久化 → 廣播），前端無需特例即可正常渲染 bot 的頭像／暱稱，bot 回覆也能被 ADR-003 的 gap 補發機制涵蓋。代價是多一個種子使用者，但換得整條訊息管線對 bot 與真人一致。
+
+#### 決策 2：LLM 呼叫收斂於 Service 層
+
+`AIService` 封裝所有 LLM 互動，WebSocket handler 只負責「判斷觸發 → 呼叫 service → 廣播結果」，不寫商業邏輯。符合三層架構，也讓 AI 邏輯可獨立測試（Pydantic AI 的 agent 可被覆寫，測試不必打真實 API）。
+
+#### 決策 3：AI 為選用，未配置即 fail-soft
+
+agent **惰性建立**，未配置 API key 時拋 `AppError` 而非真的打 API；前端對應顯示「尚未配置」。AI 不可用不影響聊天室任何其他功能，與本專案「Redis 掛掉不影響核心功能」的 fail-open 哲學一致。
+
+#### 決策 4：streaming 兩階段 — 預覽不持久化，只有落地進管線
+
+`@bot` 回覆採 streaming，但**只有最終訊息進入訊息管線**：
+
+- **階段一（瞬態預覽）**：streaming 過程以 `bot_typing` 事件廣播文字增量，產生「打字中」體驗，但**不走 seq、不持久化**。
+- **階段二（正規落地）**：streaming 結束後以 bot 身分走正規 `create_message`，取得 seq、持久化、可被 gap 補發；前端用它替換預覽氣泡。落地時並以 `reply_to` 指回觸發的提問，前端於 bot 回覆顯示引用區塊。
+
+這樣切分的理由：streaming 增量若每段都持久化會污染訊息管線（大量碎片、seq 暴增、gap 補發要重播打字過程）。把「體驗」與「真相」分離——預覽是 ephemeral 的 UI 糖，落地才是唯一事實來源。失敗時發 `bot_error` 讓前端收掉預覽，不會卡在「打字中」。
 
 ---
 
