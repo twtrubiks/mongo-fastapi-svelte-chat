@@ -34,6 +34,11 @@ from app.websocket.manager import connection_manager
 
 logger = logging.getLogger(__name__)
 
+# 同房 bot streaming 並發鎖：預覽 id 僅含 roomId（bot-stream-${roomId}），同房
+# 並發會讓兩次回覆累積進同一預覽、首次落地又誤收他人預覽；故一房一次只允許一個
+# @bot streaming（單實例 in-memory，符合目前 per-room WS／單後端實例架構）
+_bot_streaming_rooms: set[str] = set()
+
 
 def _format_message_payload(msg: MessageResponse, avatar: str | None) -> dict:
     """將 MessageResponse 格式化為前端 Message 型別的 WS payload"""
@@ -441,55 +446,66 @@ async def handle_bot_mention(user_id: str, room_id: str, question: str):
         await _send_bot_error(user_id, room_id, "請在 @bot 後面輸入你的問題")
         return
 
-    # --- 階段一：streaming 瞬態預覽（廣播給全房間，含觸發者）---
-    bot_user = {"id": bot_user_id, "username": BOT_USERNAME, "avatar": None}
-    buffer = ""
+    # --- 並發保護：同房一次只允許一個 bot streaming ---
+    # 預覽 id 僅含 roomId，並發會讓兩次回覆累積進同一預覽、首次落地又誤收他人預覽
+    if room_id in _bot_streaming_rooms:
+        await _send_bot_error(user_id, room_id, "@bot 正在回覆中，請稍候再問")
+        return
+    _bot_streaming_rooms.add(room_id)
     try:
-        ai_service = await create_ai_service()
-        async for delta in ai_service.stream_reply(question):
-            if not delta:
-                continue
-            buffer += delta
-            await connection_manager.broadcast_to_room(
-                room_id,
-                {
-                    "type": "bot_typing",
-                    "room_id": room_id,
-                    "user": bot_user,
-                    "content": delta,
-                    "timestamp": datetime.now(UTC).isoformat(),
-                },
+        # --- 階段一：streaming 瞬態預覽（廣播給全房間，含觸發者）---
+        bot_user = {"id": bot_user_id, "username": BOT_USERNAME, "avatar": None}
+        buffer = ""
+        try:
+            ai_service = await create_ai_service()
+            async for delta in ai_service.stream_reply(question):
+                if not delta:
+                    continue
+                buffer += delta
+                await connection_manager.broadcast_to_room(
+                    room_id,
+                    {
+                        "type": "bot_typing",
+                        "room_id": room_id,
+                        "user": bot_user,
+                        "content": delta,
+                        "timestamp": datetime.now(UTC).isoformat(),
+                    },
+                )
+        except AppError as e:
+            # 可預期錯誤（如未配置 NVIDIA_API_KEY）：收掉預覽並回報原因
+            await _broadcast_bot_error(room_id, str(e))
+            return
+        except Exception as e:  # intentional catch-all: 外部服務逾時/斷線/429 收尾
+            logger.error(f"Bot streaming failed: {e}")
+            await _broadcast_bot_error(room_id, "AI 助理回覆中斷，請稍後再試")
+            return
+
+        answer = buffer.strip()[:MAX_CONTENT_LENGTH]
+        if not answer:
+            await _broadcast_bot_error(room_id, "AI 助理沒有產生回覆，請稍後再試")
+            return
+
+        # --- 階段二：正規落地（產生 seq、持久化）→ 前端用它替換預覽 ---
+        try:
+            message_service = await create_message_service()
+            bot_message = await message_service.create_message(
+                bot_user_id,
+                MessageCreate(
+                    room_id=room_id, content=answer, message_type=MessageType.TEXT
+                ),
+                skip_membership_check=True,
             )
-    except AppError as e:
-        # 可預期錯誤（如未配置 NVIDIA_API_KEY）：收掉預覽並回報原因
-        await _broadcast_bot_error(room_id, str(e))
-        return
-    except Exception as e:  # intentional catch-all: 外部服務逾時/斷線/429 收尾
-        logger.error(f"Bot streaming failed: {e}")
-        await _broadcast_bot_error(room_id, "AI 助理回覆中斷，請稍後再試")
-        return
-
-    answer = buffer.strip()[:MAX_CONTENT_LENGTH]
-    if not answer:
-        await _broadcast_bot_error(room_id, "AI 助理沒有產生回覆，請稍後再試")
-        return
-
-    # --- 階段二：正規落地（產生 seq、持久化）→ 前端用它替換預覽 ---
-    try:
-        message_service = await create_message_service()
-        bot_message = await message_service.create_message(
-            bot_user_id,
-            MessageCreate(
-                room_id=room_id, content=answer, message_type=MessageType.TEXT
-            ),
-            skip_membership_check=True,
-        )
-        payload = _format_message_payload(bot_message, None)
-        await connection_manager.broadcast_message(room_id, payload, None)
-        logger.info(f"Bot streamed reply in room {room_id} (triggered by {user_id})")
-    except Exception as e:  # intentional catch-all: 落地失敗收掉預覽
-        logger.error(f"Bot landing failed: {e}")
-        await _broadcast_bot_error(room_id, "AI 助理回覆儲存失敗，請稍後再試")
+            payload = _format_message_payload(bot_message, None)
+            await connection_manager.broadcast_message(room_id, payload, None)
+            logger.info(
+                f"Bot streamed reply in room {room_id} (triggered by {user_id})"
+            )
+        except Exception as e:  # intentional catch-all: 落地失敗收掉預覽
+            logger.error(f"Bot landing failed: {e}")
+            await _broadcast_bot_error(room_id, "AI 助理回覆儲存失敗，請稍後再試")
+    finally:
+        _bot_streaming_rooms.discard(room_id)
 
 
 # /summary 取用的近期訊息數

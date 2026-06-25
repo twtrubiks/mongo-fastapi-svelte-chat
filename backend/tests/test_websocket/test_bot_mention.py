@@ -223,6 +223,82 @@ class TestHandleBotMention:
             last = mock_cm.broadcast_to_room.call_args_list[-1].args[1]
             assert last["type"] == "bot_error"
 
+    async def test_concurrent_same_room_blocked(self, allowed_limiter):
+        """同房已有 streaming 進行中 → 第二次 @bot 被擋：回報觸發者、不打 API、不落地"""
+        mock_ai_service = Mock()
+        mock_ai_service.stream_reply = Mock(return_value=_async_gen(["你", "好"]))
+        mock_msg_service = Mock()
+        mock_msg_service.create_message = AsyncMock()
+
+        with (
+            patch("app.websocket.handlers.get_bot_user_id", return_value="bot123"),
+            patch("app.websocket.handlers.get_redis", new=AsyncMock()),
+            patch(
+                "app.websocket.handlers.SlidingWindowRateLimiter",
+                return_value=allowed_limiter,
+            ),
+            patch(
+                "app.websocket.handlers.create_ai_service",
+                new=AsyncMock(return_value=mock_ai_service),
+            ),
+            patch(
+                "app.websocket.handlers.create_message_service",
+                new=AsyncMock(return_value=mock_msg_service),
+            ),
+            # 預先把 room1 標記為 streaming 中（模擬另一個進行中的 @bot）
+            patch("app.websocket.handlers._bot_streaming_rooms", {"room1"}),
+            patch("app.websocket.handlers.connection_manager") as mock_cm,
+        ):
+            mock_cm.broadcast_to_room = AsyncMock()
+            mock_cm.broadcast_message = AsyncMock()
+            mock_cm.send_personal_message = AsyncMock()
+            await handle_bot_mention("user2", "room1", "另一個問題")
+
+            # 不打 API、不 streaming、不落地
+            mock_ai_service.stream_reply.assert_not_called()
+            mock_cm.broadcast_to_room.assert_not_called()
+            mock_msg_service.create_message.assert_not_called()
+            mock_cm.broadcast_message.assert_not_called()
+
+            # 對觸發者回報「正在回覆中」
+            mock_cm.send_personal_message.assert_awaited_once()
+            sent = mock_cm.send_personal_message.call_args.args[2]
+            assert sent["type"] == "error"
+            assert "正在回覆中" in sent["message"]
+
+    async def test_lock_released_after_completion(self, allowed_limiter):
+        """streaming 完成後釋放並發鎖（finally），房間不會永久卡死"""
+        from app.websocket.handlers import _bot_streaming_rooms
+
+        mock_ai_service = Mock()
+        mock_ai_service.stream_reply = Mock(return_value=_async_gen(["你", "好"]))
+        mock_msg_service = Mock()
+        mock_msg_service.create_message = AsyncMock(return_value=_bot_message_stub())
+
+        with (
+            patch("app.websocket.handlers.get_bot_user_id", return_value="bot123"),
+            patch("app.websocket.handlers.get_redis", new=AsyncMock()),
+            patch(
+                "app.websocket.handlers.SlidingWindowRateLimiter",
+                return_value=allowed_limiter,
+            ),
+            patch(
+                "app.websocket.handlers.create_ai_service",
+                new=AsyncMock(return_value=mock_ai_service),
+            ),
+            patch(
+                "app.websocket.handlers.create_message_service",
+                new=AsyncMock(return_value=mock_msg_service),
+            ),
+            patch("app.websocket.handlers.connection_manager") as mock_cm,
+        ):
+            mock_cm.broadcast_to_room = AsyncMock()
+            mock_cm.broadcast_message = AsyncMock()
+            mock_cm.send_personal_message = AsyncMock()
+            await handle_bot_mention("user1", "room_lock_test", "你好")
+
+            assert "room_lock_test" not in _bot_streaming_rooms
+
 
 class TestIsSummaryCommand:
     """is_summary_command 指令判斷"""
