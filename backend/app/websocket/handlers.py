@@ -473,7 +473,7 @@ async def handle_bot_mention(user_id: str, room_id: str, question: str):
                     },
                 )
         except AppError as e:
-            # 可預期錯誤（如未配置 NVIDIA_API_KEY）：收掉預覽並回報原因
+            # 可預期錯誤（如未配置 AI 供應商 API key）：收掉預覽並回報原因
             await _broadcast_bot_error(room_id, str(e))
             return
         except Exception as e:  # intentional catch-all: 外部服務逾時/斷線/429 收尾
@@ -572,7 +572,7 @@ async def handle_summary_command(user_id: str, room_id: str):
         logger.info(f"Summary generated for room {room_id} (triggered by {user_id})")
 
     except AppError as e:
-        # 可預期錯誤（如未配置 NVIDIA_API_KEY）
+        # 可預期錯誤（如未配置 AI 供應商 API key）
         await _send_bot_error(user_id, room_id, str(e))
     except Exception as e:  # intentional catch-all: 摘要失敗不影響聊天
         logger.error(f"Error handling summary command: {e}")
