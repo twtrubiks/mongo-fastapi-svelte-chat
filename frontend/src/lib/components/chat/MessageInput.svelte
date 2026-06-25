@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tick } from 'svelte';
   import { Button } from '$lib/components/ui';
   import FileUpload from '$lib/components/ui/FileUpload.svelte';
   import { debounce, isSupportedFileType, isFileSizeValid, getMaxFileSize, getAcceptString } from '$lib/utils';
@@ -18,11 +19,30 @@
     allowedFileTypes = undefined
   } = $props();
   
+  // ── 指令／提及自動完成 ─────────────────────────────
+  // 輸入框開頭打 "/" 或 "@" 時跳出的提示；對應後端 app/core/bot.py 的觸發判斷，
+  // 新增指令時同步維護此清單。
+  interface InputSuggestion {
+    insert: string; // 選定後填入輸入框的文字
+    label: string; // 顯示主文字
+    description: string; // 顯示說明
+  }
+  // "@" 觸發：提及 AI 助理（insert 帶尾空白，游標停在後面接著打問題）
+  const MENTION_SUGGESTIONS: InputSuggestion[] = [
+    { insert: '@bot ', label: '@bot', description: '向 AI 助理提問' }
+  ];
+  // "/" 觸發：斜線指令（/summary 為完整指令，選定後可直接送出）
+  const COMMAND_SUGGESTIONS: InputSuggestion[] = [
+    { insert: '/summary', label: '/summary', description: '摘要近期對話' }
+  ];
+
   let message = $state('');
   let textArea: HTMLTextAreaElement = $state(null!);
   let fileInput: HTMLInputElement = $state(null!);
   let fileUploadComponent: FileUpload | null = $state(null);
   let isComposing = $state(false);
+  let activeIndex = $state(0); // 提示清單目前選取項
+  let dismissedFor = $state<string | null>(null); // 被 Esc／失焦關閉時的輸入值，避免同字串重複彈出
   let isDragging = $state(false);
   let dragCounter = $state(0);
   let showFileUpload = $state(false);
@@ -40,6 +60,32 @@
   });
   
   
+  // 依輸入內容計算要顯示的提示清單；先 NFKC 正規化以涵蓋全形＠／
+  let suggestions = $derived.by<InputSuggestion[]>(() => {
+    const normalized = message.normalize('NFKC');
+    const mentionMatch = /^@(\S*)$/.exec(normalized);
+    if (mentionMatch) {
+      const q = (mentionMatch[1] ?? '').toLowerCase();
+      return MENTION_SUGGESTIONS.filter((s) => s.label.toLowerCase().includes(q));
+    }
+    const commandMatch = /^\/(\S*)$/.exec(normalized);
+    if (commandMatch) {
+      const q = (commandMatch[1] ?? '').toLowerCase();
+      return COMMAND_SUGGESTIONS.filter((s) => s.label.toLowerCase().includes(q));
+    }
+    return [];
+  });
+
+  let showSuggestions = $derived(
+    !disabled && suggestions.length > 0 && message !== dismissedFor
+  );
+
+  // 提示清單變動時重置選取項，避免索引越界
+  $effect(() => {
+    suggestions.length;
+    activeIndex = 0;
+  });
+
   // 調整文字區域高度
   function adjustTextAreaHeight() {
     if (!textArea) return;
@@ -138,8 +184,51 @@
     }
   }
   
+  // 選定提示：填入輸入框並把游標移到末端
+  function applySuggestion(suggestion: InputSuggestion) {
+    message = suggestion.insert;
+    dismissedFor = suggestion.insert; // 防止 /summary 這類完整指令被選定後再次彈出
+    tick().then(() => {
+      if (!textArea) return;
+      textArea.focus();
+      const end = message.length;
+      textArea.setSelectionRange(end, end);
+      adjustTextAreaHeight();
+    });
+  }
+
+  // 關閉提示（Esc／失焦）
+  function dismissSuggestions() {
+    dismissedFor = message;
+  }
+
   // 處理按鍵事件
   function handleKeyDown(event: KeyboardEvent) {
+    // 提示開啟時優先處理導航鍵（中文輸入法組字中不攔截）
+    if (showSuggestions && !isComposing) {
+      if (event.key === 'ArrowDown') {
+        event.preventDefault();
+        activeIndex = (activeIndex + 1) % suggestions.length;
+        return;
+      }
+      if (event.key === 'ArrowUp') {
+        event.preventDefault();
+        activeIndex = (activeIndex - 1 + suggestions.length) % suggestions.length;
+        return;
+      }
+      if (event.key === 'Enter' || event.key === 'Tab') {
+        event.preventDefault();
+        const chosen = suggestions[activeIndex];
+        if (chosen) applySuggestion(chosen);
+        return;
+      }
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        dismissSuggestions();
+        return;
+      }
+    }
+
     if (event.key === 'Enter' && !event.shiftKey && !isComposing) {
       event.preventDefault();
       sendMessage();
@@ -365,6 +454,7 @@
           rows="1"
           oninput={handleInput}
           onkeydown={handleKeyDown}
+          onblur={dismissSuggestions}
           oncompositionstart={() => isComposing = true}
           oncompositionend={() => isComposing = false}
         ></textarea>
@@ -378,6 +468,28 @@
               <span class="drag-text">拖拽檔案到此處上傳</span>
             </div>
           </div>
+        {/if}
+
+        {#if showSuggestions}
+          <ul class="command-suggestions" role="listbox" aria-label="輸入提示">
+            {#each suggestions as suggestion, i (suggestion.label)}
+              <li role="option" aria-selected={i === activeIndex}>
+                <button
+                  type="button"
+                  class="suggestion-item"
+                  class:active={i === activeIndex}
+                  onmousedown={(e) => {
+                    e.preventDefault();
+                    applySuggestion(suggestion);
+                  }}
+                  onmouseenter={() => (activeIndex = i)}
+                >
+                  <span class="suggestion-label">{suggestion.label}</span>
+                  <span class="suggestion-desc">{suggestion.description}</span>
+                </button>
+              </li>
+            {/each}
+          </ul>
         {/if}
       </div>
       
@@ -573,6 +685,32 @@
   
   .drag-text {
     @apply text-sm font-medium text-primary;
+  }
+
+  .command-suggestions {
+    @apply absolute left-0 right-0 bottom-full z-50 list-none;
+    @apply bg-base-100 border border-base-300 rounded-lg shadow-lg;
+    margin: 0 0 0.5rem 0; /* 與輸入框留間距，並覆蓋 ul 預設 margin */
+    padding: 0;
+    max-height: 200px;
+    overflow-y: auto;
+  }
+
+  .suggestion-item {
+    @apply w-full flex items-baseline gap-2 px-3 py-2 text-left transition-colors;
+  }
+
+  .suggestion-item:hover,
+  .suggestion-item.active {
+    @apply bg-base-200;
+  }
+
+  .suggestion-label {
+    @apply font-medium text-base-content;
+  }
+
+  .suggestion-desc {
+    @apply text-xs text-base-content opacity-60;
   }
   
   .input-actions {

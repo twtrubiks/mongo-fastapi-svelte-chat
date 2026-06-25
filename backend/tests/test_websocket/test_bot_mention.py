@@ -24,6 +24,8 @@ class TestIsBotTrigger:
             ("@BOT  在嗎", "在嗎"),  # 大小寫不敏感 + 多空白
             ("@bot", ""),  # 只 @bot 沒問題
             ("  @bot   多空白  ", "多空白"),
+            ("＠bot 你好", "你好"),  # 全形＠（中文輸入法）也觸發
+            ("＠ｂｏｔ 在嗎", "在嗎"),  # 全形＠＋全形字母
             ("@bother me", None),  # 不應誤判
             ("你好 @bot", None),  # 非開頭不觸發
             ("hello world", None),
@@ -230,6 +232,8 @@ class TestIsSummaryCommand:
         [
             ("/summary", True),
             ("  /SUMMARY  ", True),  # 大小寫不敏感 + 前後空白
+            ("／summary", True),  # 全形／（中文輸入法）也觸發
+            ("／ＳＵＭＭＡＲＹ", True),  # 全形斜線＋全形字母
             ("/summarytext", False),  # 完整比對，不前綴誤判
             ("/summary 最近", False),  # 不接受參數（完整比對）
             ("@bot hi", False),

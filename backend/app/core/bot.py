@@ -7,6 +7,7 @@ Bot 是一個真實的 MongoDB 使用者（擁有固定 user_id），讓 bot 訊
 
 import logging
 import secrets
+import unicodedata
 
 from pymongo.asynchronous.database import AsyncDatabase
 from pymongo.errors import DuplicateKeyError
@@ -78,19 +79,25 @@ def is_bot_trigger(content: str) -> str | None:
     """判斷訊息是否呼叫 bot。
 
     僅當 @bot 後接空白或為字串結尾才算觸發（避免「@bother」之類誤判）。
+    先做 NFKC 正規化，讓中文輸入法常打出的全形「＠bot」也能觸發；
+    全形→半形為 1:1 對應，故前綴長度與原字串索引對齊，問題內容仍取原文。
 
     Returns:
         str | None: 觸發時回傳去除前綴後的問題（可能為空字串），否則 None
     """
     stripped = content.strip()
-    lowered = stripped.lower()
-    if lowered == BOT_TRIGGER:
+    normalized = unicodedata.normalize("NFKC", stripped).lower()
+    if normalized == BOT_TRIGGER:
         return ""
-    if lowered.startswith(BOT_TRIGGER) and stripped[len(BOT_TRIGGER)].isspace():
+    if normalized.startswith(BOT_TRIGGER) and normalized[len(BOT_TRIGGER)].isspace():
         return stripped[len(BOT_TRIGGER) :].strip()
     return None
 
 
 def is_summary_command(content: str) -> bool:
-    """判斷訊息是否為 /summary 指令（大小寫不敏感，允許前後空白）。"""
-    return content.strip().lower() == SUMMARY_TRIGGER
+    """判斷訊息是否為 /summary 指令（大小寫不敏感，允許前後空白）。
+
+    先做 NFKC 正規化，讓全形「／summary」等中文輸入法輸入也能觸發。
+    """
+    normalized = unicodedata.normalize("NFKC", content.strip()).lower()
+    return normalized == SUMMARY_TRIGGER
