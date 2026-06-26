@@ -2,7 +2,7 @@
   import { onMount, tick } from 'svelte';
   import { messageStore, currentUser } from '$lib/stores';
   import { groupMessagesByDate } from '$lib/utils';
-  import { Loading } from '$lib/components/ui';
+  import { Loading, Avatar } from '$lib/components/ui';
   import MessageItem from './MessageItem.svelte';
   import type { Message } from '$lib/types';
   import type { TypingUser } from '$lib/stores/typingIndicator.svelte';
@@ -36,7 +36,19 @@
   let previousMessageCount = $state(0);
   let userScrolling = $state(false);
   let previousRoomId = $state('');  // 追蹤房間切換
-  
+  let latestPreviewMessage = $state<Message | null>(null);  // 不在底部時收到的最新他人訊息（預覽卡用）
+  let unreadCount = $state(0);  // 不在底部期間累積的他人新訊息數
+
+  // 預覽卡顯示內容：依訊息類型轉換、過長截斷
+  let previewText = $derived.by(() => {
+    const m = latestPreviewMessage;
+    if (!m) return '';
+    if (m.message_type === 'image') return '[圖片]';
+    if (m.message_type === 'file') return '[檔案]';
+    const text = m.content ?? '';
+    return text.length > 30 ? `${text.slice(0, 30)}…` : text;
+  });
+
   // 按日期分組訊息 - 過濾掉沒有 created_at 的訊息
   let groupedMessages = $derived.by(() => {
     const validMessages = messages.filter(msg => {
@@ -141,6 +153,12 @@
     
     // 更新按鈕顯示狀態
     showScrollToBottom = !isAtBottom && messages.length > 0;
+
+    // 回到底部後清除未讀預覽與計數
+    if (isAtBottom) {
+      unreadCount = 0;
+      latestPreviewMessage = null;
+    }
   }
   
   // 滾動到底部
@@ -155,7 +173,9 @@
     // 立即設置狀態
     isAtBottom = true;
     showScrollToBottom = false;
-    
+    unreadCount = 0;
+    latestPreviewMessage = null;
+
     // 滾動後再次確認狀態
     setTimeout(() => {
       isAtBottom = true;
@@ -273,8 +293,12 @@
             // 滾動後立即檢查位置
             setTimeout(checkScrollPosition, 100);
           });
+        } else {
+          // 他人訊息且使用者不在底部：記錄預覽卡內容並累積未讀數
+          latestPreviewMessage = latestMessage ?? null;
+          unreadCount += currentMessageCount - previousMessageCount;
         }
-        
+
         // 更新訊息計數
         previousMessageCount = currentMessageCount;
       }
@@ -426,7 +450,35 @@
     {/if}
   {/if}
 
-  {#if showScrollToBottom}
+  {#if showScrollToBottom && latestPreviewMessage}
+    {@const preview = latestPreviewMessage}
+    <!-- 期間收到他人新訊息：顯示預覽卡，點擊跳至最新 -->
+    <button
+      type="button"
+      class="absolute bottom-6 left-1/2 -translate-x-1/2 z-20 flex items-center gap-2 max-w-[85%] py-1.5 pl-1.5 pr-3 rounded-full bg-base-100 border border-base-300 shadow-lg hover:bg-base-200 transition-colors"
+      onclick={() => scrollToBottom(true)}
+      aria-label="跳至最新訊息"
+    >
+      <Avatar
+        user={{ username: preview.username ?? '', avatar: preview.user?.avatar ?? preview.avatar ?? '' }}
+        size="sm"
+      />
+      <span class="flex flex-col items-start min-w-0 leading-tight">
+        <span class="text-xs font-semibold text-base-content truncate max-w-[50vw] md:max-w-[16rem]">
+          {preview.username ?? '對方'}
+        </span>
+        <span class="text-xs text-base-content/60 truncate max-w-[50vw] md:max-w-[16rem]">
+          {previewText}
+        </span>
+      </span>
+      {#if unreadCount > 1}
+        <span class="badge badge-primary badge-sm shrink-0">{unreadCount}</span>
+      {/if}
+      <svg class="w-4 h-4 text-primary shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 14l-7 7m0 0l-7-7m7 7V3" />
+      </svg>
+    </button>
+  {:else if showScrollToBottom}
     <button
       class="btn btn-circle btn-primary btn-sm absolute bottom-6 right-6 shadow-lg z-20"
       onclick={() => scrollToBottom(true)}
