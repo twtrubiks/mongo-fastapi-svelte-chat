@@ -301,11 +301,26 @@
     }
   });
 
+  // 監聽容器大小變化，resize 時更新按鈕狀態
+  // scroll 事件已改由 template 的 onscroll 綁定，不受 loading 條件渲染時序影響
+  $effect(() => {
+    if (!messageContainer) return;
+
+    const resizeObserver = new ResizeObserver(() => {
+      checkScrollPosition();
+    });
+    resizeObserver.observe(messageContainer);
+
+    return () => {
+      resizeObserver.disconnect();
+    };
+  });
+
   onMount(() => {
     // 初始化訊息計數和房間ID
     previousMessageCount = messages.length;
     previousRoomId = roomId;
-    
+
     // 初始滾動到底部並檢查狀態（除非有特殊定位需求）
     if (messages.length > 0 && !skipAutoScroll) {
       scrollToBottom(false);
@@ -322,31 +337,10 @@
         checkScrollPosition();
       }, 100);
     }
-    
-    // 監聽滾動事件
-    if (messageContainer) {
-      messageContainer.addEventListener('scroll', handleScroll);
-      
-      // 使用 ResizeObserver 監聽容器大小變化
-      const resizeObserver = new ResizeObserver(() => {
-        checkScrollPosition();
-      });
-      resizeObserver.observe(messageContainer);
-      
-      return () => {
-        messageContainer.removeEventListener('scroll', handleScroll);
-        resizeObserver.disconnect();
-        // 清理滾動計時器
-        clearTimeout(scrollTimeout);
-      };
-    }
-    
+
+    // 清理滾動計時器
     return () => {
-      if (messageContainer) {
-        messageContainer.removeEventListener('scroll', handleScroll);
-        // 清理滾動計時器
-        clearTimeout(scrollTimeout);
-      }
+      clearTimeout(scrollTimeout);
     };
   });
 </script>
@@ -364,6 +358,7 @@
       bind:this={messageContainer}
       class="message-list"
       class:has-messages={messages.length > 0}
+      onscroll={handleScroll}
     >
       {#if loading && hasMore}
         <div class="flex justify-center py-4">
