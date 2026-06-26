@@ -734,6 +734,7 @@
             loadingMore={roomStore.loadingMoreMembers}
             onUserClick={handleUserClick}
             onLoadMore={() => currentRoom && roomStore.loadMoreMembers(currentRoom.id)}
+            onInsertCommand={(text) => messageInputComponent?.insertText(text)}
           />
         </div>
       {/if}
@@ -839,6 +840,7 @@
     onClose={() => showMembersModal = false}
     onUserClick={handleUserClick}
     onLoadMore={() => currentRoom && roomStore.loadMoreMembers(currentRoom.id)}
+    onInsertCommand={(text) => mobileMessageInputComponent?.insertText(text)}
   />
 {/if}
 

@@ -5,6 +5,7 @@
   import { debounce, isSupportedFileType, isFileSizeValid, getMaxFileSize, getAcceptString } from '$lib/utils';
   import { messageStatusStore } from '$lib/stores/messageStatus.svelte';
   import { messageRetryManager } from '$lib/utils/messageRetry';
+  import { MENTION_SUGGESTIONS, COMMAND_SUGGESTIONS, type BotCommand } from '$lib/constants/botCommands';
   // Svelte 5 callback props - 使用正確的語法
   let { 
     onSend = undefined,
@@ -20,21 +21,8 @@
   } = $props();
   
   // ── 指令／提及自動完成 ─────────────────────────────
-  // 輸入框開頭打 "/" 或 "@" 時跳出的提示；對應後端 app/core/bot.py 的觸發判斷，
-  // 新增指令時同步維護此清單。
-  interface InputSuggestion {
-    insert: string; // 選定後填入輸入框的文字
-    label: string; // 顯示主文字
-    description: string; // 顯示說明
-  }
-  // "@" 觸發：提及 AI 助理（insert 帶尾空白，游標停在後面接著打問題）
-  const MENTION_SUGGESTIONS: InputSuggestion[] = [
-    { insert: '@bot ', label: '@bot', description: '向 AI 助理提問' }
-  ];
-  // "/" 觸發：斜線指令（/summary 為完整指令，選定後可直接送出）
-  const COMMAND_SUGGESTIONS: InputSuggestion[] = [
-    { insert: '/summary', label: '/summary', description: '摘要近期對話' }
-  ];
+  // 輸入框開頭打 "/" 或 "@" 時跳出的提示。清單移至 $lib/constants/botCommands.ts，
+  // 與右側「AI 助理」用法小卡共用單一事實來源。
 
   let message = $state('');
   let textArea: HTMLTextAreaElement = $state(null!);
@@ -61,7 +49,7 @@
   
   
   // 依輸入內容計算要顯示的提示清單；先 NFKC 正規化以涵蓋全形＠／
-  let suggestions = $derived.by<InputSuggestion[]>(() => {
+  let suggestions = $derived.by<BotCommand[]>(() => {
     const normalized = message.normalize('NFKC');
     const mentionMatch = /^@(\S*)$/.exec(normalized);
     if (mentionMatch) {
@@ -185,7 +173,7 @@
   }
   
   // 選定提示：填入輸入框並把游標移到末端
-  function applySuggestion(suggestion: InputSuggestion) {
+  function applySuggestion(suggestion: BotCommand) {
     message = suggestion.insert;
     dismissedFor = suggestion.insert; // 防止 /summary 這類完整指令被選定後再次彈出
     tick().then(() => {
@@ -422,6 +410,19 @@
     }
   }
   
+  // 由外部（AI 助理用法小卡）填入指令文字：設定內容、聚焦、游標移到末端，等使用者補字
+  export function insertText(text: string) {
+    message = text;
+    dismissedFor = text; // 避免填入完整指令後立刻又彈出自動完成
+    tick().then(() => {
+      if (!textArea) return;
+      textArea.focus();
+      const end = message.length;
+      textArea.setSelectionRange(end, end);
+      adjustTextAreaHeight();
+    });
+  }
+
   // 公開聚焦方法
   export function focus() {
     textArea?.focus();

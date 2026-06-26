@@ -12,6 +12,7 @@
     onClose: () => void;
     onUserClick: (event: { user: User }) => void;
     onLoadMore: () => void;
+    onInsertCommand: (text: string) => void;
   }
 
   let {
@@ -24,6 +25,7 @@
     onClose,
     onUserClick,
     onLoadMore,
+    onInsertCommand,
   }: Props = $props();
 </script>
 
@@ -48,6 +50,7 @@
           {loadingMore}
           {onUserClick}
           {onLoadMore}
+          {onInsertCommand}
         />
       </div>
     </div>

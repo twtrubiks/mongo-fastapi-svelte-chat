@@ -2,6 +2,7 @@
   import { Avatar, Loading } from '$lib/components/ui';
   import { formatDateTime } from '$lib/utils';
   import { aiStatus, loadAIStatus } from '$lib/stores/aiStatus.svelte';
+  import { BOT_COMMANDS } from '$lib/constants/botCommands';
   import type { User } from '$lib/types';
   
   interface Props {
@@ -13,6 +14,7 @@
     loadingMore?: boolean;
     onUserClick?: (event: { user: User }) => void;
     onLoadMore?: () => void;
+    onInsertCommand?: (text: string) => void;
   }
 
   let {
@@ -23,7 +25,8 @@
     hasMore = false,
     loadingMore = false,
     onUserClick,
-    onLoadMore
+    onLoadMore,
+    onInsertCommand
   }: Props = $props();
 
   // AI 助理狀態（登入後查一次；元件掛載時觸發，store 內部去重）
@@ -31,6 +34,15 @@
     loadAIStatus();
   });
   let ai = $derived(aiStatus());
+
+  // 用法小卡開關：點右側「AI 助理」項目時彈出，提醒 @bot / /summary 用法
+  let showAIHelp = $state(false);
+
+  // 點選小卡裡的指令 → 填入輸入框等使用者補字，並關閉小卡
+  function handlePickCommand(insert: string) {
+    onInsertCommand?.(insert);
+    showAIHelp = false;
+  }
 
   // 按狀態分組用戶 - 使用 $derived，確保 users 是陣列
   let onlineUsers = $derived(Array.isArray(users) ? users.filter(user => user.is_active) : []);
@@ -48,6 +60,8 @@
     }
   }
 </script>
+
+<svelte:window onkeydown={(e) => { if (showAIHelp && e.key === 'Escape') showAIHelp = false; }} />
 
 <div class="user-list" class:compact>
   <div class="user-list-header">
@@ -76,15 +90,60 @@
             <span class="section-title">AI 助理</span>
           </div>
           <div class="user-items">
-            <div class="user-item ai-item" class:offline={!ai.enabled}>
-              <div class="user-avatar ai-avatar">🤖</div>
+            <div class="ai-item-wrapper">
+              <button
+                type="button"
+                class="user-item ai-item"
+                class:offline={!ai.enabled}
+                class:active={showAIHelp}
+                onclick={() => (showAIHelp = !showAIHelp)}
+                aria-haspopup="dialog"
+                aria-expanded={showAIHelp}
+                title="點我看 AI 助理用法"
+              >
+                <div class="user-avatar ai-avatar">🤖</div>
 
-              {#if !compact}
-                <div class="user-info">
-                  <div class="user-name">
-                    <span class="user-name-text">{ai.botUsername}</span>
+                {#if !compact}
+                  <div class="user-info">
+                    <div class="user-name">
+                      <span class="user-name-text">{ai.botUsername}</span>
+                    </div>
+                    <div class="user-status">{ai.enabled ? '在線' : '未啟用'}</div>
                   </div>
-                  <div class="user-status">{ai.enabled ? '在線' : '未啟用'}</div>
+                  <span class="ai-hint" aria-hidden="true">💡</span>
+                {/if}
+              </button>
+
+              {#if showAIHelp}
+                <!-- 點外部關閉小卡 -->
+                <button
+                  type="button"
+                  class="ai-help-backdrop"
+                  aria-label="關閉用法說明"
+                  onclick={() => (showAIHelp = false)}
+                ></button>
+
+                <div class="ai-help-card" role="dialog" aria-label="AI 助理用法">
+                  <div class="ai-help-title">🤖 AI 助理 · 用法</div>
+                  {#if ai.enabled}
+                    <ul class="ai-help-list">
+                      {#each BOT_COMMANDS as cmd (cmd.label)}
+                        <li>
+                          <button
+                            type="button"
+                            class="ai-help-item"
+                            onclick={() => handlePickCommand(cmd.insert)}
+                          >
+                            <span class="ai-help-label">{cmd.label}</span>
+                            <span class="ai-help-desc">{cmd.description}</span>
+                          </button>
+                        </li>
+                      {/each}
+                    </ul>
+                    <div class="ai-help-foot">點一下即填入輸入框</div>
+                  {:else}
+                    <div class="ai-help-disabled">AI 助理目前未啟用</div>
+                  {/if}
                 </div>
               {/if}
             </div>
@@ -250,6 +309,56 @@
 
   .ai-item.offline .user-status::before {
     content: "⚪";
+  }
+
+  /* AI 助理用法小卡 */
+  .ai-item-wrapper {
+    @apply relative;
+  }
+
+  .ai-hint {
+    @apply ml-2 text-base opacity-70 flex-shrink-0;
+  }
+
+  .ai-item.active {
+    @apply ring-2 ring-primary/30;
+  }
+
+  .ai-help-backdrop {
+    @apply fixed inset-0 z-40 cursor-default;
+  }
+
+  .ai-help-card {
+    @apply absolute left-0 right-0 top-full z-50 mt-2 p-2;
+    @apply bg-base-100 border border-base-300 rounded-lg shadow-lg;
+  }
+
+  .ai-help-title {
+    @apply px-2 py-1 text-xs font-bold text-base-content opacity-70;
+  }
+
+  .ai-help-list {
+    @apply list-none p-0 m-0 space-y-1;
+  }
+
+  .ai-help-item {
+    @apply w-full flex flex-col items-start gap-0.5 px-2 py-2 rounded-md text-left transition-colors hover:bg-base-200;
+  }
+
+  .ai-help-label {
+    @apply font-semibold text-sm text-base-content;
+  }
+
+  .ai-help-desc {
+    @apply text-xs text-base-content opacity-60;
+  }
+
+  .ai-help-foot {
+    @apply px-2 pt-2 mt-1 text-[11px] text-base-content opacity-50 border-t border-base-200;
+  }
+
+  .ai-help-disabled {
+    @apply px-2 py-3 text-sm text-base-content opacity-60 text-center;
   }
   
   .user-list.compact .section-header {
