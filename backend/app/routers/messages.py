@@ -9,6 +9,7 @@ from app.models.message import (
     MessageResponse,
     MessageSearchQuery,
     MessageUpdate,
+    MessageWithReply,
 )
 from app.services.message_service import MessageService
 
@@ -37,7 +38,7 @@ async def create_message(
     return created_message
 
 
-@router.get("/room/{room_id}", response_model=list[MessageResponse])
+@router.get("/room/{room_id}", response_model=list[MessageWithReply])
 async def get_room_messages(
     room_id: str,
     skip: int = Query(0, ge=0),
@@ -55,7 +56,7 @@ async def get_room_messages(
     return messages
 
 
-@router.get("/{message_id}", response_model=MessageResponse)
+@router.get("/{message_id}", response_model=MessageWithReply)
 async def get_message(
     message_id: str,
     _current_user: dict = Depends(get_current_active_user),
@@ -69,7 +70,7 @@ async def get_message(
         message_service: 訊息服務實例
 
     Returns:
-        MessageResponse: 訊息資料
+        MessageWithReply: 訊息資料（含 reply_to_message 引用預覽）
     """
     return await message_service.get_message_by_id(message_id)
 

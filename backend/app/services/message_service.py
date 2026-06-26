@@ -205,9 +205,9 @@ class MessageService:
         message_type: MessageType | None = None,
         user_id: str | None = None,
         before_seq: int | None = None,
-    ) -> list[MessageResponse]:
+    ) -> list[MessageWithReply]:
         """
-        獲取房間訊息列表
+        獲取房間訊息列表（含 reply_to_message 引用預覽）
 
         Args:
             room_id: 房間 ID
@@ -228,7 +228,8 @@ class MessageService:
             user_id=user_id,
             before_seq=before_seq,
         )
-        return await self._format_with_avatars(messages)
+        responses = await self._format_with_avatars(messages)
+        return await self._attach_reply_previews(responses)
 
     async def get_room_messages_for_context(
         self,
@@ -251,7 +252,7 @@ class MessageService:
 
     async def sync_messages_since(
         self, room_id: str, last_seq: int, max_gap: int = SYNC_MAX_GAP
-    ) -> tuple[list[MessageResponse], bool]:
+    ) -> tuple[list[MessageWithReply], bool]:
         """
         斷線重連補發：回傳序號大於 last_seq 的訊息
 
@@ -279,7 +280,8 @@ class MessageService:
         messages = await self.message_repo.get_after_seq(
             room_id, last_seq, limit=max_gap
         )
-        return await self._format_with_avatars(messages), False
+        responses = await self._format_with_avatars(messages)
+        return await self._attach_reply_previews(responses), False
 
     async def _format_with_avatars(
         self, messages: list[MessageInDB]
@@ -303,6 +305,26 @@ class MessageService:
             formatted_messages.append(MessageResponse(**msg_dict))
 
         return formatted_messages
+
+    async def _attach_reply_previews(
+        self, responses: list[MessageResponse]
+    ) -> list[MessageWithReply]:
+        """為訊息列表批次補上 reply_to_message 引用預覽（被回覆訊息的內容/作者）。
+
+        目前只有 @bot 回覆帶 reply_to，故多數列表 reply_ids 為空、不額外查 DB；
+        有引用時一次 $in 批次撈回，避免逐筆查詢的 N+1。
+        """
+        reply_ids = [r.reply_to for r in responses if r.reply_to]
+        previews = (
+            await self.message_repo.get_reply_previews(reply_ids) if reply_ids else {}
+        )
+        return [
+            MessageWithReply(
+                **r.model_dump(),
+                reply_to_message=previews.get(r.reply_to) if r.reply_to else None,
+            )
+            for r in responses
+        ]
 
     async def update_message(
         self, message_id: str, user_id: str, update_data: MessageUpdate

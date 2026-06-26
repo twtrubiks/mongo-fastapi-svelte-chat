@@ -6,7 +6,7 @@ from fastapi import APIRouter, Body, Depends, Query, status
 
 from app.auth.dependencies import get_current_active_user, require_room_membership
 from app.core.fastapi_integration import MessageServiceDep, RoomServiceDep
-from app.models.message import MessageCreate, MessageResponse
+from app.models.message import MessageCreate, MessageResponse, MessageWithReply
 from app.models.room import (
     RoomCreate,
     RoomJoinRequest,
@@ -196,7 +196,7 @@ async def get_room_members(
     return members
 
 
-@router.get("/{room_id}/messages", response_model=list[MessageResponse])
+@router.get("/{room_id}/messages", response_model=list[MessageWithReply])
 async def get_room_messages(
     room_id: str,
     skip: int = Query(0, ge=0),

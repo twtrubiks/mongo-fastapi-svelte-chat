@@ -220,6 +220,13 @@
             easing: quartOut
           }}
         >
+          {#if message.reply_to_message}
+            <!-- 引用區塊：此訊息回覆的對象（目前用於 @bot 回覆指回提問者） -->
+            <div class="message-reply-quote">
+              <span class="reply-quote-author">{message.reply_to_message.username}</span>
+              <span class="reply-quote-content">{message.reply_to_message.content}</span>
+            </div>
+          {/if}
           {#if isImageMessage}
             <!-- 圖片訊息 -->
             <div 
@@ -475,7 +482,23 @@
   .message-text {
     @apply text-sm leading-relaxed font-medium;
   }
-  
+
+  /* 引用區塊：此訊息回覆的對象（@bot 回覆指回提問者） */
+  .message-reply-quote {
+    @apply flex items-baseline gap-1.5 mb-2 pl-2 py-0.5 text-xs;
+    border-left: 2px solid currentColor;
+    opacity: 0.7;
+    max-width: 100%;
+  }
+
+  .reply-quote-author {
+    @apply font-semibold flex-shrink-0;
+  }
+
+  .reply-quote-content {
+    @apply truncate min-w-0;
+  }
+
   .message-time-own {
     @apply text-xs text-white mt-2 text-right bg-black/40 px-2 py-1 rounded-full inline-block font-semibold;
   }

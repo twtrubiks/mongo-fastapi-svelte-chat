@@ -87,6 +87,12 @@ export interface Message {
     created_at?: string;
   };
   metadata?: Record<string, unknown>;
+  reply_to?: string;  // 被回覆訊息 ID（目前用於 @bot 回覆指回提問者）
+  reply_to_message?: {  // 被回覆訊息預覽（後端組裝，供引用區塊渲染）
+    id: string;
+    content: string;
+    username: string;
+  };
 }
 
 export interface Notification {

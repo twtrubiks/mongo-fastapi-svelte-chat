@@ -58,6 +58,16 @@ def _bot_message_stub():
     )
 
 
+def _bot_reply_stub():
+    """bot 落地後 get_message_by_id 回傳：含 reply_to_message 引用預覽（指回提問者）"""
+    msg = _bot_message_stub()
+    msg.reply_to = "trigger_msg_1"
+    msg.reply_to_message = Mock(
+        id="trigger_msg_1", content="@bot 你好", username="user1"
+    )
+    return msg
+
+
 async def _async_gen(items):
     """把序列包成 async generator（模擬 stream_reply 逐段 yield）"""
     for item in items:
@@ -99,7 +109,7 @@ class TestHandleBotMention:
             patch("app.websocket.handlers.connection_manager") as mock_cm,
         ):
             mock_cm.send_personal_message = AsyncMock()
-            await handle_bot_mention("user1", "room1", "你好")
+            await handle_bot_mention("user1", "room1", "你好", "trigger_msg_1")
             mock_ai.assert_not_called()
 
     async def test_self_trigger_is_noop(self):
@@ -108,7 +118,7 @@ class TestHandleBotMention:
             patch("app.websocket.handlers.get_bot_user_id", return_value="bot123"),
             patch("app.websocket.handlers.create_ai_service") as mock_ai,
         ):
-            await handle_bot_mention("bot123", "room1", "你好")
+            await handle_bot_mention("bot123", "room1", "你好", "trigger_msg_1")
             mock_ai.assert_not_called()
 
     async def test_rate_limited(self):
@@ -125,7 +135,7 @@ class TestHandleBotMention:
             patch("app.websocket.handlers.connection_manager") as mock_cm,
         ):
             mock_cm.send_personal_message = AsyncMock()
-            await handle_bot_mention("user1", "room1", "你好")
+            await handle_bot_mention("user1", "room1", "你好", "trigger_msg_1")
 
             mock_ai.assert_not_called()
             mock_cm.send_personal_message.assert_awaited_once()
@@ -146,7 +156,7 @@ class TestHandleBotMention:
             patch("app.websocket.handlers.connection_manager") as mock_cm,
         ):
             mock_cm.send_personal_message = AsyncMock()
-            await handle_bot_mention("user1", "room1", "")
+            await handle_bot_mention("user1", "room1", "", "trigger_msg_1")
 
             mock_ai.assert_not_called()
             sent = mock_cm.send_personal_message.call_args.args[2]
@@ -159,6 +169,7 @@ class TestHandleBotMention:
         mock_msg_service = Mock()
         mock_msg_service.create_message = AsyncMock(return_value=_bot_message_stub())
         mock_msg_service.get_room_messages_for_context = AsyncMock(return_value=[])
+        mock_msg_service.get_message_by_id = AsyncMock(return_value=_bot_reply_stub())
 
         with (
             patch("app.websocket.handlers.get_bot_user_id", return_value="bot123"),
@@ -180,7 +191,7 @@ class TestHandleBotMention:
             mock_cm.broadcast_to_room = AsyncMock()
             mock_cm.broadcast_message = AsyncMock()
             mock_cm.send_personal_message = AsyncMock()
-            await handle_bot_mention("user1", "room1", "你好")
+            await handle_bot_mention("user1", "room1", "你好", "trigger_msg_1")
 
             # 以去除前綴後的問題開啟 streaming；無歷史往返時 history 為空字串
             mock_ai_service.stream_reply.assert_called_once_with("你好", "")
@@ -198,9 +209,71 @@ class TestHandleBotMention:
             assert call.args[0] == "bot123"
             assert call.kwargs["skip_membership_check"] is True
             assert call.args[1].content == "你好"
+            # reply_to 指回觸發此次回覆的使用者訊息（DB 關聯，不影響畫面）
+            assert call.args[1].reply_to == "trigger_msg_1"
 
-            # 廣播最終訊息一次
+            # 廣播最終訊息一次，且 payload 帶 reply_to_message 引用（指回提問者）
             mock_cm.broadcast_message.assert_awaited_once()
+            broadcast_payload = mock_cm.broadcast_message.call_args.args[1]
+            assert broadcast_payload["reply_to_message"]["username"] == "user1"
+            assert broadcast_payload["reply_to_message"]["content"] == "@bot 你好"
+
+    async def test_reply_preview_fetch_failure_still_broadcasts(self, allowed_limiter):
+        """訊息已落地、補引用預覽失敗 → 降級用原訊息廣播（不帶引用），不誤報「儲存失敗」"""
+        # create_message 回傳如實模擬 MessageResponse：無 reply_to_message 屬性
+        # （明確設 None，避免純 Mock 自動生出 child Mock 騙過 getattr 判斷）
+        landed = _bot_message_stub()
+        landed.reply_to = "trigger_msg_1"
+        landed.reply_to_message = None
+
+        mock_ai_service = Mock()
+        mock_ai_service.stream_reply = Mock(return_value=_async_gen(["你", "好"]))
+        mock_msg_service = Mock()
+        mock_msg_service.create_message = AsyncMock(return_value=landed)
+        mock_msg_service.get_room_messages_for_context = AsyncMock(return_value=[])
+        # 補引用版本失敗（剛落地卻查不到／DB 異常）→ 不該擋廣播、不該報儲存失敗
+        mock_msg_service.get_message_by_id = AsyncMock(
+            side_effect=RuntimeError("db down")
+        )
+
+        with (
+            patch("app.websocket.handlers.get_bot_user_id", return_value="bot123"),
+            patch("app.websocket.handlers.get_redis", new=AsyncMock()),
+            patch(
+                "app.websocket.handlers.SlidingWindowRateLimiter",
+                return_value=allowed_limiter,
+            ),
+            patch(
+                "app.websocket.handlers.create_ai_service",
+                new=AsyncMock(return_value=mock_ai_service),
+            ),
+            patch(
+                "app.websocket.handlers.create_message_service",
+                new=AsyncMock(return_value=mock_msg_service),
+            ),
+            patch("app.websocket.handlers.connection_manager") as mock_cm,
+        ):
+            mock_cm.broadcast_to_room = AsyncMock()
+            mock_cm.broadcast_message = AsyncMock()
+            mock_cm.send_personal_message = AsyncMock()
+            await handle_bot_mention("user1", "room1", "你好", "trigger_msg_1")
+
+            # 訊息已落地、補引用嘗試過但失敗：仍廣播最終訊息一次（不卡住）
+            mock_msg_service.create_message.assert_awaited_once()
+            mock_msg_service.get_message_by_id.assert_awaited_once()
+            mock_cm.broadcast_message.assert_awaited_once()
+
+            # 降級廣播：用原訊息、payload 不帶引用區塊
+            broadcast_payload = mock_cm.broadcast_message.call_args.args[1]
+            assert "reply_to_message" not in broadcast_payload
+
+            # 不可誤報「儲存失敗」：沒有任何 bot_error 廣播
+            error_types = [
+                c.args[1].get("type")
+                for c in mock_cm.broadcast_to_room.call_args_list
+                if c.args[1].get("type") == "bot_error"
+            ]
+            assert error_types == []
 
     async def test_streaming_failure_broadcasts_bot_error(self, allowed_limiter):
         """streaming 中途失敗 → 廣播 bot_error 收掉預覽、不落地"""
@@ -231,7 +304,7 @@ class TestHandleBotMention:
         ):
             mock_cm.broadcast_to_room = AsyncMock()
             mock_cm.broadcast_message = AsyncMock()
-            await handle_bot_mention("user1", "room1", "你好")
+            await handle_bot_mention("user1", "room1", "你好", "trigger_msg_1")
 
             # 失敗不落地、不廣播最終訊息
             mock_msg_service.create_message.assert_not_called()
@@ -271,7 +344,7 @@ class TestHandleBotMention:
             mock_cm.broadcast_to_room = AsyncMock()
             mock_cm.broadcast_message = AsyncMock()
             mock_cm.send_personal_message = AsyncMock()
-            await handle_bot_mention("user2", "room1", "另一個問題")
+            await handle_bot_mention("user2", "room1", "另一個問題", "trigger_msg_1")
 
             # 不打 API、不 streaming、不落地
             mock_ai_service.stream_reply.assert_not_called()
@@ -294,6 +367,7 @@ class TestHandleBotMention:
         mock_msg_service = Mock()
         mock_msg_service.create_message = AsyncMock(return_value=_bot_message_stub())
         mock_msg_service.get_room_messages_for_context = AsyncMock(return_value=[])
+        mock_msg_service.get_message_by_id = AsyncMock(return_value=_bot_reply_stub())
 
         with (
             patch("app.websocket.handlers.get_bot_user_id", return_value="bot123"),
@@ -315,7 +389,7 @@ class TestHandleBotMention:
             mock_cm.broadcast_to_room = AsyncMock()
             mock_cm.broadcast_message = AsyncMock()
             mock_cm.send_personal_message = AsyncMock()
-            await handle_bot_mention("user1", "room_lock_test", "你好")
+            await handle_bot_mention("user1", "room_lock_test", "你好", "trigger_msg_1")
 
             assert "room_lock_test" not in _bot_streaming_rooms
 
@@ -331,6 +405,7 @@ class TestHandleBotMention:
                 _hist_msg("AI 助理", "Docker 是容器化技術", user_id="bot123"),
             ]
         )
+        mock_msg_service.get_message_by_id = AsyncMock(return_value=_bot_reply_stub())
 
         with (
             patch("app.websocket.handlers.get_bot_user_id", return_value="bot123"),
@@ -352,7 +427,9 @@ class TestHandleBotMention:
             mock_cm.broadcast_to_room = AsyncMock()
             mock_cm.broadcast_message = AsyncMock()
             mock_cm.send_personal_message = AsyncMock()
-            await handle_bot_mention("user1", "room1", "那它跟 VM 差在哪?")
+            await handle_bot_mention(
+                "user1", "room1", "那它跟 VM 差在哪?", "trigger_msg_1"
+            )
 
             # 撈到的 @bot 往返被組成歷史傳入 stream_reply 的第二參數
             mock_ai_service.stream_reply.assert_called_once()

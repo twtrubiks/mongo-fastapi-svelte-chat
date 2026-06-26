@@ -106,6 +106,35 @@ class MessageRepository(BaseRepository[MessageInDB]):
             **message_response.model_dump(), reply_to_message=reply_to_message
         )
 
+    async def get_reply_previews(
+        self, reply_ids: list[str]
+    ) -> dict[str, ReplyToMessage]:
+        """批次撈被回覆訊息的預覽，回 {message_id: ReplyToMessage}（避免 N+1）
+
+        供訊息列表組裝 reply_to_message：一次 $in 查回所有被回覆訊息，
+        呼叫端據各訊息的 reply_to 對應。無效或不存在的 id 自動略過。
+        """
+        valid_ids = [rid for rid in set(reply_ids) if rid and ObjectId.is_valid(rid)]
+        if not valid_ids:
+            return {}
+
+        documents = await self.find_many(
+            {"_id": {"$in": [ObjectId(rid) for rid in valid_ids]}},
+            skip=0,
+            limit=len(valid_ids),
+        )
+
+        previews: dict[str, ReplyToMessage] = {}
+        for doc in documents:
+            msg = self._to_model(doc)
+            previews[str(msg.id)] = ReplyToMessage(
+                id=str(msg.id),
+                content=msg.content,
+                username=msg.username,
+                created_at=msg.created_at,
+            )
+        return previews
+
     async def create(self, message: MessageInDB) -> MessageInDB | None:
         """
         創建新訊息

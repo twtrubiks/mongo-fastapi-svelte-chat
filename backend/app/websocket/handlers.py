@@ -42,8 +42,12 @@ _bot_streaming_rooms: set[str] = set()
 
 
 def _format_message_payload(msg: MessageResponse, avatar: str | None) -> dict:
-    """將 MessageResponse 格式化為前端 Message 型別的 WS payload"""
-    return {
+    """將 MessageResponse 格式化為前端 Message 型別的 WS payload。
+
+    若 msg 帶 reply_to_message 引用預覽（MessageWithReply，目前用於 @bot 回覆），
+    一併輸出 reply_to / reply_to_message 供前端渲染引用區塊。
+    """
+    payload = {
         "id": msg.id,
         "room_id": msg.room_id,
         "user_id": msg.user_id,
@@ -63,6 +67,17 @@ def _format_message_payload(msg: MessageResponse, avatar: str | None) -> dict:
             "avatar": avatar,
         },
     }
+
+    reply_preview = getattr(msg, "reply_to_message", None)
+    if reply_preview is not None:
+        payload["reply_to"] = msg.reply_to
+        payload["reply_to_message"] = {
+            "id": reply_preview.id,
+            "content": reply_preview.content,
+            "username": reply_preview.username,
+        }
+
+    return payload
 
 
 async def handle_websocket_connection(websocket: WebSocket, room_id: str):
@@ -347,7 +362,9 @@ async def handle_chat_message(
         if msg_type == MessageType.TEXT:
             bot_question = is_bot_trigger(content)
             if bot_question is not None:
-                await handle_bot_mention(user_id, room_id, bot_question)
+                await handle_bot_mention(
+                    user_id, room_id, bot_question, created_message.id
+                )
             elif is_summary_command(content):
                 await handle_summary_command(user_id, room_id)
 
@@ -431,7 +448,9 @@ async def _load_bot_history(
         return ""
 
 
-async def handle_bot_mention(user_id: str, room_id: str, question: str):
+async def handle_bot_mention(
+    user_id: str, room_id: str, question: str, trigger_message_id: str
+):
     """
     處理 @bot 觸發（A1 streaming，兩階段）。
 
@@ -448,6 +467,7 @@ async def handle_bot_mention(user_id: str, room_id: str, question: str):
         user_id: 觸發者 ID
         room_id: 房間 ID
         question: 去除 @bot 前綴後的問題（可能為空字串）
+        trigger_message_id: 觸發此次回覆的使用者訊息 ID（bot 回覆以 reply_to 指回）
     """
     bot_user_id = get_bot_user_id()
     # 防迴圈保險：bot 尚未種子化或觸發者就是 bot 自身時不處理
@@ -514,10 +534,20 @@ async def handle_bot_mention(user_id: str, room_id: str, question: str):
             bot_message = await message_service.create_message(
                 bot_user_id,
                 MessageCreate(
-                    room_id=room_id, content=answer, message_type=MessageType.TEXT
+                    room_id=room_id,
+                    content=answer,
+                    message_type=MessageType.TEXT,
+                    reply_to=trigger_message_id,
                 ),
                 skip_membership_check=True,
             )
+            # 取含 reply 預覽的版本廣播，讓前端顯示「回覆某某的提問」引用。
+            # 訊息已落地，這步只為補引用：取預覽失敗時降級用原訊息廣播（不帶引用），
+            # 不可因此誤報「儲存失敗」。
+            try:
+                bot_message = await message_service.get_message_by_id(bot_message.id)
+            except Exception as e:  # intentional fail-open: 補引用失敗不擋廣播
+                logger.warning(f"Bot reply preview fetch failed: {e}")
             payload = _format_message_payload(bot_message, None)
             await connection_manager.broadcast_message(room_id, payload, None)
             logger.info(
