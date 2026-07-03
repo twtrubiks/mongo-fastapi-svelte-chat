@@ -27,6 +27,9 @@ class Settings(BaseSettings):
     RATE_LIMIT_REQUESTS_PER_MINUTE: int = 60
     RATE_LIMIT_REQUESTS_PER_HOUR: int = 1000
     RATE_LIMIT_BURST_SIZE: int = 10
+    # 可信反向代理 IP（逗號分隔）：只有來自這些 IP 的請求才採信 X-Forwarded-For
+    # 預設信任本機（SvelteKit BFF 與後端同機的開發拓樸）
+    TRUSTED_PROXIES: str = "127.0.0.1,::1"
 
     # AI 助理（@bot / summary）— 供應商切換：nvidia（NIM，OpenAI 相容端點）| gemini（Google 原生 SDK）
     AI_PROVIDER: str = "nvidia"

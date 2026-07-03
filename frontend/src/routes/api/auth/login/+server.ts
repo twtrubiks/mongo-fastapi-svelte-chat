@@ -7,7 +7,7 @@ import {
 import { setAuthCookies } from '$lib/bff-cookie';
 
 // 登入 API
-export const POST: RequestHandler = async ({ request, cookies }) => {
+export const POST: RequestHandler = async ({ request, cookies, getClientAddress }) => {
   try {
     // 獲取登入資料 - 處理不同的內容類型
     let username: string;
@@ -54,7 +54,9 @@ export const POST: RequestHandler = async ({ request, cookies }) => {
       data: backendFormData.toString(),
       headers: {
         'Content-Type': 'application/x-www-form-urlencoded'
-      }
+      },
+      // 轉發真實 client IP，讓後端 rate limiter 以真實來源分桶
+      clientIp: getClientAddress()
     }) as { access_token: string; refresh_token?: string; user: any; token_type: string; };
 
     if (loginResult.access_token) {

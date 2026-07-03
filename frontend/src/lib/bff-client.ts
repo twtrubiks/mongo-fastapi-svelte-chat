@@ -25,11 +25,13 @@ export class BFFBackendClient {
     return env['BACKEND_URL'] || 'http://localhost:8000';
   }
 
-  // 組合 per-request headers（含 token）
-  private buildHeaders(options: { headers?: Record<string, string>; token?: string }): Record<string, string> | undefined {
+  // 組合 per-request headers（含 token 與真實 client IP）
+  private buildHeaders(options: { headers?: Record<string, string>; token?: string; clientIp?: string }): Record<string, string> | undefined {
     const authHeader = options.token ? { Authorization: `Bearer ${options.token}` } : undefined;
-    if (!authHeader && !options.headers) return undefined;
-    return { ...authHeader, ...options.headers };
+    // 轉發瀏覽器真實 IP 給後端 rate limiter 分桶（後端只信任來自 BFF 的此標頭）
+    const ipHeader = options.clientIp ? { 'X-Forwarded-For': options.clientIp } : undefined;
+    if (!authHeader && !ipHeader && !options.headers) return undefined;
+    return { ...authHeader, ...ipHeader, ...options.headers };
   }
 
   // 統一的請求處理
@@ -38,6 +40,7 @@ export class BFFBackendClient {
     data?: unknown;
     headers?: Record<string, string>;
     token?: string;
+    clientIp?: string;
   } = {}): Promise<T> {
     try {
       const config: AxiosRequestConfig = {

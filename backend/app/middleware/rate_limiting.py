@@ -2,6 +2,7 @@
 
 import logging
 import time
+import uuid
 
 import redis.asyncio as redis
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -9,6 +10,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 from starlette.status import HTTP_429_TOO_MANY_REQUESTS
 
+from app.auth.jwt_handler import decode_access_token
 from app.config import Settings
 from app.database.redis_conn import get_redis
 
@@ -74,8 +76,10 @@ class SlidingWindowRateLimiter:
             reset_time = window_size - (now % window_size)
             return False, remaining, reset_time
 
-        # 記錄這次請求
-        await self.redis.zadd(key, {str(now): now})
+        # 記錄這次請求（member 加隨機後綴確保唯一，
+        # 否則同一秒內的多個請求會被 ZADD 摺疊成一筆，計數失真）
+        member = f"{now}:{uuid.uuid4().hex}"
+        await self.redis.zadd(key, {member: now})
         await self.redis.expire(key, window_size + 1)
 
         remaining = max_requests - current_requests - 1
@@ -94,6 +98,11 @@ class RateLimitingMiddleware(BaseHTTPMiddleware):
         self.redis_client = redis_client
         self.settings = settings or Settings()
         self.limiter = None
+
+        # 可信反向代理集合：只有這些來源的 X-Forwarded-For 才採信
+        self.trusted_proxies = {
+            ip.strip() for ip in self.settings.TRUSTED_PROXIES.split(",") if ip.strip()
+        }
 
         # 如果 Redis 客戶端已提供，立即初始化
         if redis_client:
@@ -160,18 +169,23 @@ class RateLimitingMiddleware(BaseHTTPMiddleware):
 
     def _get_client_identifier(self, request: Request) -> str:
         """獲取客戶端唯一識別符"""
-        # 優先使用認證使用者 ID
-        if hasattr(request.state, "user_id"):
-            return f"user:{request.state.user_id}"
+        # 優先使用認證使用者 ID：解析 Bearer token（僅驗簽章與過期，
+        # 不查 DB——限流分桶用途，偽造不了有效簽章即可）
+        auth_header = request.headers.get("Authorization", "")
+        if auth_header.startswith("Bearer "):
+            payload = decode_access_token(auth_header[7:])
+            if payload and payload.get("user_id"):
+                return f"user:{payload['user_id']}"
 
-        # 檢查 X-Forwarded-For 標頭（代理伺服器）
-        forwarded_for = request.headers.get("X-Forwarded-For")
-        if forwarded_for:
-            # 取第一個 IP（原始客戶端 IP）
-            client_ip = forwarded_for.split(",")[0].strip()
-        else:
-            # 使用直接連接的 IP
-            client_ip = request.client.host if request.client else "unknown"
+        client_ip = request.client.host if request.client else "unknown"
+
+        # X-Forwarded-For 只在請求來自可信 proxy（BFF）時採信，
+        # 且取最右端 IP——由可信 proxy 設定，最不可能被偽造；
+        # 直連請求帶的 XFF 一律忽略，避免偽造標頭繞過限流分桶
+        if client_ip in self.trusted_proxies:
+            forwarded_for = request.headers.get("X-Forwarded-For")
+            if forwarded_for:
+                return f"ip:{forwarded_for.split(',')[-1].strip()}"
 
         return f"ip:{client_ip}"
 
