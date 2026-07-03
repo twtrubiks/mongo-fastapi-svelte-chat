@@ -664,3 +664,84 @@ class TestBuildBotHistory:
             _hist_msg("AI 助理", "圖片", user_id="bot123", mtype=MessageType.IMAGE),
         ]
         assert build_bot_history(messages, "bot123") == ""
+
+
+class TestBotDispatchNonBlocking:
+    """@bot 觸發背景化：handle_chat_message 不等串流完成即返回
+
+    若回歸為同步 await，串流期間觸發者的 receive loop 收不到 pong，
+    前端心跳（20s 間隔、10s 超時）會強制斷線重連。
+    """
+
+    @pytest.mark.asyncio
+    async def test_handle_chat_message_returns_before_bot_finishes(self):
+        import asyncio
+
+        from app.websocket.handlers import _background_ai_tasks, handle_chat_message
+
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def fake_bot_mention(user_id, room_id, question, trigger_message_id):
+            started.set()
+            await release.wait()
+
+        created = Mock(
+            id="msg1",
+            room_id="room1",
+            user_id="user1",
+            content="@bot 你好",
+            message_type=MessageType.TEXT,
+            status="sent",
+            seq=1,
+            client_id=None,
+            created_at=datetime.now(UTC),
+            metadata=None,
+            username="tester",
+            reply_to_message=None,
+        )
+        message_service = Mock(create_message=AsyncMock(return_value=created))
+        room_service = Mock(
+            get_room_members=AsyncMock(return_value=[]),
+            get_room_by_id=AsyncMock(return_value=Mock()),
+        )
+
+        with (
+            patch("app.websocket.handlers.connection_manager") as mock_cm,
+            patch(
+                "app.websocket.handlers.create_message_service",
+                return_value=message_service,
+            ),
+            patch(
+                "app.websocket.handlers.create_room_service",
+                return_value=room_service,
+            ),
+            patch(
+                "app.websocket.handlers.create_notification_service",
+                return_value=Mock(),
+            ),
+            patch("app.websocket.handlers.handle_bot_mention", fake_bot_mention),
+        ):
+            mock_cm.broadcast_message = AsyncMock()
+            mock_cm.send_personal_message = AsyncMock()
+
+            # 若回歸為同步 await，這裡會卡在 release.wait() 直到 timeout
+            await asyncio.wait_for(
+                handle_chat_message(
+                    "user1",
+                    "room1",
+                    {"content": "@bot 你好", "message_type": "text"},
+                    {"id": "user1", "username": "tester", "avatar": None},
+                ),
+                timeout=2,
+            )
+
+            # handle_chat_message 已返回，bot 串流仍在背景等待中
+            await asyncio.wait_for(started.wait(), timeout=2)
+            assert not release.is_set()
+            pending = [t for t in _background_ai_tasks if not t.done()]
+            assert pending, "bot 任務應在背景執行中"
+
+            # 收尾：放行並等背景任務結束
+            release.set()
+            await asyncio.gather(*pending)

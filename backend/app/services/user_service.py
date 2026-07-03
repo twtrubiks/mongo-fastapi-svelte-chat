@@ -149,6 +149,7 @@ class UserService:
 
         # 準備更新資料，處理密碼加密
         update_dict = update_data.model_dump(exclude_unset=True)
+        bump_token_version = False
         if "password" in update_dict:
             # 將密碼轉換為雜湊密碼
             hashed_password = await get_password_hash(update_dict.pop("password"))
@@ -156,9 +157,13 @@ class UserService:
             update_dict["password"] = hashed_password
             # 重新創建 UserUpdate 物件
             update_data = UserUpdate(**update_dict)
+            # 密碼變更時遞增 token 版本，使既有 token 全部失效
+            bump_token_version = True
 
         # 更新使用者
-        updated_user = await self.user_repo.update(user_id, update_data)
+        updated_user = await self.user_repo.update(
+            user_id, update_data, bump_token_version=bump_token_version
+        )
         if not updated_user:
             raise NotFoundError("使用者不存在")
         logger.info(f"User updated: {user_id}")
@@ -189,7 +194,10 @@ class UserService:
 
         hashed_password = await get_password_hash(new_password)
         update_data = UserUpdate(password=hashed_password)
-        updated_user = await self.user_repo.update(user_id, update_data)
+        # 遞增 token 版本（與密碼同一次原子更新），使既有 access/refresh token 全部失效
+        updated_user = await self.user_repo.update(
+            user_id, update_data, bump_token_version=True
+        )
         if not updated_user:
             raise NotFoundError("使用者不存在")
         logger.info(f"Password changed for user: {user_id}")
@@ -242,16 +250,19 @@ class UserService:
         if not user.is_active:
             raise UnauthorizedError("使用者名稱或密碼錯誤")
 
-        # 創建 token
+        # 創建 token（帶 token_version，改密碼後舊 token 立即失效）
+        token_payload = {
+            "sub": user.username,
+            "user_id": str(user.id),
+            "token_version": user.token_version,
+        }
         access_token_expires = timedelta(minutes=settings.JWT_EXPIRE_MINUTES)
         access_token = create_access_token(
-            data={"sub": user.username, "user_id": str(user.id)},
+            data=token_payload,
             expires_delta=access_token_expires,
         )
 
-        refresh_token = create_refresh_token(
-            data={"sub": user.username, "user_id": str(user.id)}
-        )
+        refresh_token = create_refresh_token(data=token_payload)
 
         # 更新最後登入時間
         await self.user_repo.update_last_login(user.id)
@@ -290,15 +301,22 @@ class UserService:
         if not user or not user.is_active:
             raise UnauthorizedError("無效或過期的 Refresh Token")
 
+        # Token 版本比對：改密碼後的舊 refresh token 不可再換發
+        if payload.get("token_version", 0) != user.token_version:
+            raise UnauthorizedError("無效或過期的 Refresh Token")
+
         # 發行新的 token 組合（refresh token rotation）
+        token_payload = {
+            "sub": username,
+            "user_id": user_id,
+            "token_version": user.token_version,
+        }
         access_token_expires = timedelta(minutes=settings.JWT_EXPIRE_MINUTES)
         new_access_token = create_access_token(
-            data={"sub": username, "user_id": user_id},
+            data=token_payload,
             expires_delta=access_token_expires,
         )
-        new_refresh_token = create_refresh_token(
-            data={"sub": username, "user_id": user_id}
-        )
+        new_refresh_token = create_refresh_token(data=token_payload)
 
         logger.info(f"Token refreshed for user: {username}")
 

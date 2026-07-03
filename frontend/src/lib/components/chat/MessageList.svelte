@@ -34,6 +34,7 @@
   let showScrollToBottom = $state(false);
   let autoScroll = $state(true);
   let previousMessageCount = $state(0);
+  let previousLastMessageId = $state<string | null>(null);  // 區分尾端新訊息與往上載入的歷史（prepend）
   let userScrolling = $state(false);
   let previousRoomId = $state('');  // 追蹤房間切換
   let latestPreviewMessage = $state<Message | null>(null);  // 不在底部時收到的最新他人訊息（預覽卡用）
@@ -67,6 +68,7 @@
       // 房間切換時重置狀態
       previousRoomId = roomId;
       previousMessageCount = 0;
+      previousLastMessageId = null;
       userScrolling = false;
       isAtBottom = true;
       showScrollToBottom = false;  // 立即隱藏按鈕
@@ -106,6 +108,7 @@
         tick().then(() => {
           scrollToBottom(false);
           previousMessageCount = messages.length;
+          previousLastMessageId = messages[messages.length - 1]?.id ?? null;
           // 確保按鈕隱藏
           isAtBottom = true;
           showScrollToBottom = false;
@@ -124,6 +127,7 @@
       } else if (previousMessageCount === 0 && skipAutoScroll) {
         // 如果有特殊定位需求，只更新計數，不滾動
         previousMessageCount = messages.length;
+        previousLastMessageId = messages[messages.length - 1]?.id ?? null;
         setTimeout(() => {
           checkScrollPosition();
         }, 100);
@@ -279,28 +283,34 @@
       // 檢查是否有新訊息
       const currentMessageCount = messages.length;
       const hasNewMessage = currentMessageCount > previousMessageCount;
-      
+
       if (hasNewMessage) {
-        // 檢查最新訊息是否為當前用戶發送
         const latestMessage = messages[messages.length - 1];
+        // 數量變多但最後一則不變 = 往上載入歷史（prepend），
+        // 不觸發滾動與未讀預覽（否則看歷史時預覽卡會誤跳、未讀數灌水）
+        const isAppended = !!latestMessage && latestMessage.id !== previousLastMessageId;
+        // 檢查最新訊息是否為當前用戶發送
         const isCurrentUserMessage = latestMessage && user?.id === latestMessage.user_id;
-        
-        // 如果是當前用戶的訊息，總是滾動到底部
-        // 如果是其他人的訊息，只有在底部時才滾動
-        if (isCurrentUserMessage || isAtBottom) {
-          tick().then(() => {
-            scrollToBottom(false);
-            // 滾動後立即檢查位置
-            setTimeout(checkScrollPosition, 100);
-          });
-        } else {
-          // 他人訊息且使用者不在底部：記錄預覽卡內容並累積未讀數
-          latestPreviewMessage = latestMessage ?? null;
-          unreadCount += currentMessageCount - previousMessageCount;
+
+        if (isAppended) {
+          // 如果是當前用戶的訊息，總是滾動到底部
+          // 如果是其他人的訊息，只有在底部時才滾動
+          if (isCurrentUserMessage || isAtBottom) {
+            tick().then(() => {
+              scrollToBottom(false);
+              // 滾動後立即檢查位置
+              setTimeout(checkScrollPosition, 100);
+            });
+          } else {
+            // 他人訊息且使用者不在底部：記錄預覽卡內容並累積未讀數
+            latestPreviewMessage = latestMessage ?? null;
+            unreadCount += currentMessageCount - previousMessageCount;
+          }
         }
 
-        // 更新訊息計數
+        // 更新訊息計數與尾端訊息 id
         previousMessageCount = currentMessageCount;
+        previousLastMessageId = latestMessage?.id ?? previousLastMessageId;
       }
     }
     

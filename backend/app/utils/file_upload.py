@@ -80,6 +80,46 @@ def get_mime_type(ext: str) -> str:
     return _EXT_TO_MIME.get(ext, "application/octet-stream")
 
 
+# Magic number 簽章表：每個副檔名對應多組簽章，一組簽章為多個 (offset, bytes)
+# 全部吻合才算通過；任一組吻合即視為檔頭與副檔名相符。
+# .txt / .md 為純文字，無 magic number，不列入（不檢查）。
+_MAGIC_SIGNATURES: dict[str, list[list[tuple[int, bytes]]]] = {
+    ".jpg": [[(0, b"\xff\xd8\xff")]],
+    ".jpeg": [[(0, b"\xff\xd8\xff")]],
+    ".png": [[(0, b"\x89PNG\r\n\x1a\n")]],
+    ".gif": [[(0, b"GIF87a")], [(0, b"GIF89a")]],
+    ".webp": [[(0, b"RIFF"), (8, b"WEBP")]],
+    ".bmp": [[(0, b"BM")]],
+    ".pdf": [[(0, b"%PDF-")]],
+    ".doc": [[(0, b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1")]],
+    ".docx": [[(0, b"PK\x03\x04")]],
+    ".mp4": [[(4, b"ftyp")]],
+    ".mov": [[(4, b"ftyp")]],
+    ".m4a": [[(4, b"ftyp")]],
+    ".avi": [[(0, b"RIFF"), (8, b"AVI ")]],
+    ".mkv": [[(0, b"\x1aE\xdf\xa3")]],
+    ".webm": [[(0, b"\x1aE\xdf\xa3")]],
+    ".mp3": [[(0, b"ID3")], [(0, b"\xff\xfb")], [(0, b"\xff\xf3")], [(0, b"\xff\xf2")]],
+    ".wav": [[(0, b"RIFF"), (8, b"WAVE")]],
+    ".ogg": [[(0, b"OggS")]],
+    ".flac": [[(0, b"fLaC")]],
+}
+
+# 檢查 magic number 需要讀取的檔頭長度（最深的簽章位於 offset 8 + 4 bytes）
+_MAGIC_HEADER_SIZE = 16
+
+
+def _matches_magic(header: bytes, file_ext: str) -> bool:
+    """檢查檔頭是否與副檔名宣稱的格式相符（無已知簽章的類型不檢查）"""
+    signatures = _MAGIC_SIGNATURES.get(file_ext)
+    if signatures is None:
+        return True
+    return any(
+        all(header[offset : offset + len(magic)] == magic for offset, magic in sig)
+        for sig in signatures
+    )
+
+
 class FileUploadError(Exception):
     """檔案上傳錯誤"""
 
@@ -213,6 +253,13 @@ class FileUploadManager:
         try:
             # 驗證檔案
             file_type, validation_info = self.validate_file(file)
+
+            # Magic-byte 驗證：檔頭與副檔名宣稱的格式相符才允許儲存，
+            # 防止偽裝副檔名／content_type 繞過類型限制
+            header = await file.read(_MAGIC_HEADER_SIZE)
+            await file.seek(0)
+            if not _matches_magic(header, Path(file.filename).suffix.lower()):
+                raise FileUploadError("檔案內容與副檔名不符")
 
             # 生成檔案名稱
             if custom_filename:

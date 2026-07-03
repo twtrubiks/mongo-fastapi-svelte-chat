@@ -1,5 +1,6 @@
 """檔案服務層"""
 
+import asyncio
 import logging
 from pathlib import Path
 
@@ -51,10 +52,15 @@ class FileService:
             raise AppError("無效的檔案路徑")
         return resolved
 
-    def _try_generate_thumbnails(self, image_path: str) -> dict:
-        """嘗試生成縮圖（graceful degradation，失敗時回空 dict）"""
+    async def _try_generate_thumbnails(self, image_path: str) -> dict:
+        """嘗試生成縮圖（graceful degradation，失敗時回空 dict）
+
+        PIL 為同步 CPU-bound，丟 thread pool 執行，避免解碼期間阻塞 event loop。
+        """
         try:
-            return self._image_processor.create_multiple_thumbnails(image_path)
+            return await asyncio.to_thread(
+                self._image_processor.create_multiple_thumbnails, image_path
+            )
         except (
             OSError,
             ValueError,
@@ -63,10 +69,15 @@ class FileService:
             logger.warning(f"縮圖生成失敗: {e}")
             return {}
 
-    def _try_get_image_info(self, image_path: str) -> dict:
-        """嘗試獲取圖片資訊（graceful degradation，失敗時回空 dict）"""
+    async def _try_get_image_info(self, image_path: str) -> dict:
+        """嘗試獲取圖片資訊（graceful degradation，失敗時回空 dict）
+
+        PIL 為同步 CPU-bound，丟 thread pool 執行，避免解碼期間阻塞 event loop。
+        """
         try:
-            return self._image_processor.get_image_info(image_path)
+            return await asyncio.to_thread(
+                self._image_processor.get_image_info, image_path
+            )
         except (
             OSError,
             ValueError,
@@ -98,7 +109,9 @@ class FileService:
 
         # 圖片且啟用縮圖 → graceful degradation
         if file_info["file_type"] == "image" and settings.GENERATE_THUMBNAILS:
-            file_info["thumbnails"] = self._try_generate_thumbnails(file_info["path"])
+            file_info["thumbnails"] = await self._try_generate_thumbnails(
+                file_info["path"]
+            )
 
         self._attach_uploader(file_info, current_user)
         return {"message": "檔案上傳成功", "file": file_info}
@@ -110,8 +123,10 @@ class FileService:
         file_info = await self._save_file(file, allowed_types=["image"])
 
         if generate_thumbnails:
-            file_info["thumbnails"] = self._try_generate_thumbnails(file_info["path"])
-            file_info["image_info"] = self._try_get_image_info(file_info["path"])
+            file_info["thumbnails"] = await self._try_generate_thumbnails(
+                file_info["path"]
+            )
+            file_info["image_info"] = await self._try_get_image_info(file_info["path"])
 
         self._attach_uploader(file_info, current_user)
         return {"message": "圖片上傳成功", "file": file_info}

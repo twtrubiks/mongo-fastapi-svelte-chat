@@ -16,9 +16,16 @@ from app.utils.ws_ticket import validate_ws_ticket
 logger = logging.getLogger(__name__)
 
 
-async def _get_user_info(user_id: str) -> dict[str, Any] | None:
+async def _get_user_info(
+    user_id: str, expected_token_version: int | None = None
+) -> dict[str, Any] | None:
     """
     透過 user_id 查詢使用者資訊（與 HTTP auth 共用 cache-first 邏輯）
+
+    Args:
+        user_id: 使用者 ID
+        expected_token_version: JWT 認證時傳入 token 內的版本號做比對
+            （改密碼後舊 token 失效）；ticket 認證傳 None 跳過檢查
 
     Returns:
         WebSocket 所需的使用者資訊 dict，如果查無或未啟用則返回 None
@@ -31,6 +38,13 @@ async def _get_user_info(user_id: str) -> dict[str, Any] | None:
 
         if not user.get("is_active", True):
             logger.warning(f"User {user_id} is not active")
+            return None
+
+        if (
+            expected_token_version is not None
+            and user.get("token_version", 0) != expected_token_version
+        ):
+            logger.warning(f"User {user_id} token version mismatch")
             return None
 
         return {
@@ -74,7 +88,9 @@ async def authenticate_websocket(
             logger.warning("Missing user_id or username in JWT token")
             return None
 
-        return await _get_user_info(user_id)
+        return await _get_user_info(
+            user_id, expected_token_version=payload.get("token_version", 0)
+        )
 
     except Exception as e:  # intentional catch-all: 認證失敗回傳 None 拒絕連線
         logger.error(f"Error authenticating WebSocket connection: {e}")

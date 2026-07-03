@@ -48,7 +48,11 @@ async def get_current_user_token(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    return TokenData(username=username, user_id=user_id)
+    return TokenData(
+        username=username,
+        user_id=user_id,
+        token_version=payload.get("token_version", 0),
+    )
 
 
 async def get_current_user(token_data: TokenData = Depends(get_current_user_token)):
@@ -64,6 +68,13 @@ async def get_current_user(token_data: TokenData = Depends(get_current_user_toke
     if user is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="使用者不存在"
+        )
+    # Token 版本比對：修改密碼後版本 +1，舊 token 立即失效
+    if token_data.token_version != user.get("token_version", 0):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="認證已失效，請重新登入",
+            headers={"WWW-Authenticate": "Bearer"},
         )
     return user
 

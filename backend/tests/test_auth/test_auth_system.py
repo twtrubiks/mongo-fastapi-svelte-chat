@@ -284,6 +284,7 @@ class TestAuthSystem:
         mock_user.id = "507f1f77bcf86cd799439011"
         mock_user.username = "testuser"
         mock_user.is_active = True
+        mock_user.token_version = 0
         mock_user_repo.get_by_id.return_value = mock_user
 
         service = UserService.__new__(UserService)
@@ -314,6 +315,27 @@ class TestAuthSystem:
 
         with pytest.raises(UnauthorizedError):
             await service.refresh_access_token("invalid.token.here")
+
+    @pytest.mark.asyncio
+    async def test_refresh_access_token_stale_token_version(self):
+        """測試改密碼後（token_version 遞增）舊 refresh token 不可換發"""
+        user_data = {"sub": "testuser", "user_id": "507f1f77bcf86cd799439011"}
+        # 舊 token 無 token_version 欄位（視為 0）
+        refresh_token = create_refresh_token(data=user_data)
+
+        mock_user_repo = AsyncMock()
+        mock_user = Mock()
+        mock_user.id = "507f1f77bcf86cd799439011"
+        mock_user.username = "testuser"
+        mock_user.is_active = True
+        mock_user.token_version = 1  # 使用者已改過密碼
+        mock_user_repo.get_by_id.return_value = mock_user
+
+        service = UserService.__new__(UserService)
+        service.user_repo = mock_user_repo
+
+        with pytest.raises(UnauthorizedError):
+            await service.refresh_access_token(refresh_token)
 
     @pytest.mark.asyncio
     async def test_refresh_access_token_with_access_token(self):

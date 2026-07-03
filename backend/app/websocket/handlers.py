@@ -1,7 +1,9 @@
 """WebSocket 訊息處理器"""
 
+import asyncio
 import json
 import logging
+from collections.abc import Coroutine
 from datetime import UTC, datetime
 
 from fastapi import WebSocket, WebSocketDisconnect
@@ -39,6 +41,30 @@ logger = logging.getLogger(__name__)
 # 並發會讓兩次回覆累積進同一預覽、首次落地又誤收他人預覽；故一房一次只允許一個
 # @bot streaming（單實例 in-memory，符合目前 per-room WS／單後端實例架構）
 _bot_streaming_rooms: set[str] = set()
+
+# 背景 AI 任務的強引用集合（create_task 只保留弱引用，無強引用會被 GC 中斷）
+_background_ai_tasks: set[asyncio.Task] = set()
+
+
+def _spawn_ai_task(coro: Coroutine) -> asyncio.Task:
+    """把 AI 處理（@bot / /summary）丟到背景執行，不阻塞觸發者的 receive loop。
+
+    若在 receive loop 內同步 await AI 串流，期間觸發者送出的 ping 得不到 pong，
+    前端心跳（20s 間隔、10s pong 超時）會強制斷線重連，長回答時必現。
+    handle_bot_mention / handle_summary_command 內部已完整自我守護（限流、
+    錯誤廣播、finally 釋放鎖），此處僅補記錄未預期異常。
+    """
+    task = asyncio.create_task(coro)
+    _background_ai_tasks.add(task)
+    task.add_done_callback(_on_ai_task_done)
+    return task
+
+
+def _on_ai_task_done(task: asyncio.Task) -> None:
+    """背景 AI 任務收尾：移除強引用並記錄未預期異常"""
+    _background_ai_tasks.discard(task)
+    if not task.cancelled() and task.exception() is not None:
+        logger.error(f"AI background task failed: {task.exception()}")
 
 
 def _format_message_payload(msg: MessageResponse, avatar: str | None) -> dict:
@@ -359,14 +385,18 @@ async def handle_chat_message(
 
         # AI 觸發：使用者訊息已落地廣播後處理（僅 TEXT）
         # @bot → streaming 問答；/summary → 對話摘要
+        # 背景化執行：AI 串流最長可達數十秒，同步 await 會卡住觸發者的
+        # receive loop，前端心跳收不到 pong 會強制斷線
         if msg_type == MessageType.TEXT:
             bot_question = is_bot_trigger(content)
             if bot_question is not None:
-                await handle_bot_mention(
-                    user_id, room_id, bot_question, created_message.id
+                _spawn_ai_task(
+                    handle_bot_mention(
+                        user_id, room_id, bot_question, created_message.id
+                    )
                 )
             elif is_summary_command(content):
-                await handle_summary_command(user_id, room_id)
+                _spawn_ai_task(handle_summary_command(user_id, room_id))
 
         logger.info(f"Message saved and broadcasted: {user_id} -> {room_id}")
 

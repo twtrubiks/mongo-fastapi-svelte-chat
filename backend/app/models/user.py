@@ -37,6 +37,8 @@ class UserInDB(UserBase):
 
     id: str | None = Field(default=None, alias="_id")
     hashed_password: str
+    # Token 版本號：修改密碼時 +1，使既有 access/refresh token 全部失效
+    token_version: int = 0
     last_login_at: datetime | None = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
@@ -100,3 +102,5 @@ class TokenData(BaseModel):
 
     username: str | None = None
     user_id: str | None = None
+    # 舊 token 無此欄位，預設 0 向後相容
+    token_version: int = 0

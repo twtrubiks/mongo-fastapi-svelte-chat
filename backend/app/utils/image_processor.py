@@ -12,6 +12,20 @@ logger = logging.getLogger(__name__)
 # 縮圖尺寸配置
 THUMBNAIL_SIZES = {"small": (150, 150), "medium": (300, 300), "large": (600, 600)}
 
+# 解壓縮炸彈防護：像素數上限。高壓縮比的小檔案（如巨型 PNG）解壓後可撐爆記憶體，
+# 解碼前先以 header 尺寸主動檢查；同時設定 Pillow 全域上限作為第二道防線
+# （像素數超過 MAX_IMAGE_PIXELS 兩倍時 Pillow 會拋 DecompressionBombError）
+MAX_IMAGE_PIXELS = 50_000_000  # 5 千萬像素（約 8660x5773）
+Image.MAX_IMAGE_PIXELS = MAX_IMAGE_PIXELS
+
+
+def _ensure_pixel_limit(img: Image.Image) -> None:
+    """解碼前檢查像素數（Image.open 僅讀 header，此時尚未解碼像素資料）"""
+    if img.width * img.height > MAX_IMAGE_PIXELS:
+        raise ImageProcessorError(
+            f"圖片像素數超過上限（{img.width}x{img.height}，上限 {MAX_IMAGE_PIXELS} 像素）"
+        )
+
 
 class ImageProcessorError(Exception):
     """圖片處理錯誤"""
@@ -45,6 +59,8 @@ class ImageProcessor:
         """
         try:
             with Image.open(image_path) as img:
+                # 解壓縮炸彈防護：解碼前先檢查像素數
+                _ensure_pixel_limit(img)
                 # 處理 EXIF 方向資訊
                 img = ImageOps.exif_transpose(img)
                 # 轉換為 RGB 模式（如果不是的話）
@@ -67,6 +83,8 @@ class ImageProcessor:
         """
         try:
             with Image.open(image_path) as img:
+                # 解壓縮炸彈防護：解碼前先檢查像素數
+                _ensure_pixel_limit(img)
                 # 獲取基本的 EXIF 資訊（避免複雜對象）
                 exif_dict = {}
                 try:

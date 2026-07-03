@@ -65,13 +65,21 @@ class UserRepository(BaseRepository[UserInDB]):
             return self._to_model(document)
         return None
 
-    async def update(self, user_id: str, user_update: UserUpdate) -> UserInDB | None:
+    async def update(
+        self,
+        user_id: str,
+        user_update: UserUpdate,
+        *,
+        bump_token_version: bool = False,
+    ) -> UserInDB | None:
         """
         更新使用者
 
         Args:
             user_id: 使用者 ID
             user_update: 更新資料
+            bump_token_version: 是否同時遞增 token 版本（密碼變更時由 Service 指定，
+                與 $set 合併為單次原子更新）
 
         Returns:
             Optional[UserInDB]: 更新後的使用者物件，如果失敗則返回 None
@@ -97,10 +105,11 @@ class UserRepository(BaseRepository[UserInDB]):
             # 沒有需要更新的資料
             return await self.get_by_id(user_id)
 
-        # 執行更新
-        success = await self.update_one(
-            {"_id": ObjectId(user_id)}, {"$set": update_data}
-        )
+        # 執行更新（token 版本遞增與欄位更新合併為單次原子操作）
+        update_ops: dict = {"$set": update_data}
+        if bump_token_version:
+            update_ops["$inc"] = {"token_version": 1}
+        success = await self.update_one({"_id": ObjectId(user_id)}, update_ops)
 
         if success:
             return await self.get_by_id(user_id)
