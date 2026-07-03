@@ -318,6 +318,12 @@
           onError(errorData);
         }
         showFileUpload = false;
+      } else {
+        // 防禦：非成功也無 error 的結果（不應發生），仍關面板並提示
+        if (onError) {
+          onError({ message: '上傳失敗' });
+        }
+        showFileUpload = false;
       }
     } else {
       showFileUpload = false;

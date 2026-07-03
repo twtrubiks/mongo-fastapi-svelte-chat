@@ -210,7 +210,12 @@
         
         try {
           const result = await bffApiClient.files.upload(file, fileType);
-          uploadResults.push({ file, result });
+          if (result.success) {
+            uploadResults.push({ file, result });
+          } else {
+            // BFF 信封錯誤不 throw（回 {success:false, error}），歸入 error slot 讓消費者統一處理
+            uploadResults.push({ file, error: result.error });
+          }
         } catch (error) {
           uploadResults.push({ file, error });
         }
