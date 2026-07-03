@@ -23,18 +23,21 @@
     onHide = undefined
   }: Props = $props();
 
-  let timeoutId: number | null = $state(null);
+  // 非 $state：僅 effect 內部使用，宣告為 $state 會造成 effect 讀寫同一 state 的無限循環
+  let timeoutId: number | null = null;
 
-  // 當 show 為 true 時，設置自動隱藏
+  // 當 show 為 true 時，設置自動隱藏；cleanup 於重跑或 unmount 時清除計時器
   $effect(() => {
-    if (show && autoHide) {
+    if (!show || !autoHide) return undefined;
+    timeoutId = window.setTimeout(() => {
+      hide();
+    }, duration);
+    return () => {
       if (timeoutId) {
         clearTimeout(timeoutId);
+        timeoutId = null;
       }
-      timeoutId = window.setTimeout(() => {
-        hide();
-      }, duration);
-    }
+    };
   });
 
   function hide() {
@@ -49,13 +52,6 @@
   function handleAction() {
     if (action?.handler) {
       action.handler();
-    }
-  }
-
-  // 清理計時器
-  function onDestroy() {
-    if (timeoutId) {
-      clearTimeout(timeoutId);
     }
   }
 </script>
