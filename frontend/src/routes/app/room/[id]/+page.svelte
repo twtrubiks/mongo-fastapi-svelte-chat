@@ -23,7 +23,7 @@
   import { bffApiClient } from '$lib/bff-api-client';
   import { createMarkAsReadTracker } from '$lib/utils/markAsRead';
   import { processFileUpload } from '$lib/utils/fileUploadHandler';
-  import type { Room, RoomSummary, Message, User } from '$lib/types';
+  import type { Room, RoomSummary, Message, User, WSErrorMessage } from '$lib/types';
   
   let currentRoom: Room | null = $state(null);
   let showMobileMenu = $state(false);
@@ -433,56 +433,6 @@
     }
   }
   
-  // WebSocket 錯誤處理
-  function setupWebSocketErrorHandling() {
-    const ws = wsManager.getInstance();
-    
-    // 監聽連接狀態
-    ws.on('disconnected', (data) => {
-      const { code, reason } = data;
-      if (code !== 1000) { // 非正常關閉
-        errorStore.showConnectionError({
-          label: '重新連接',
-          handler: () => {
-            ws.manualReconnect().catch((error) => {
-              console.error('Manual reconnect failed:', error);
-            });
-          }
-        });
-      }
-    });
-    
-    // 監聽重連失敗
-    ws.on('reconnect_failed', (data) => {
-      const { attempts } = data;
-      errorStore.showReconnectFailed(attempts, {
-        label: '重試',
-        handler: () => {
-          ws.manualReconnect().catch((error) => {
-            console.error('Manual reconnect failed:', error);
-          });
-        }
-      });
-    });
-    
-    // 監聽訊息錯誤
-    ws.on('message_error', (data) => {
-      if (data.temp_id) {
-        // 不顯示錯誤 toast，讓 MessageInput 組件處理重試 UI
-      } else {
-        // 沒有 temp_id 的通用錯誤（如 @bot 限流、空問題、載入失敗）：顯示後端訊息
-        errorStore.showError(data.message || '操作失敗，請稍後再試');
-      }
-    });
-    
-    // 監聽網路狀態
-    ws.on('offline', () => {
-      errorStore.showNetworkError();
-    });
-    
-    // 網路狀態變化監聽已移至組件層級的 $effect
-  }
-  
   // 記錄上次載入的房間 ID，避免重複載入
   let lastLoadedRoomId: string | null = null;
   
@@ -493,7 +443,6 @@
       if (lastLoadedRoomId !== roomId) {
         lastLoadedRoomId = roomId;
         loadRoom(roomId);
-        setupWebSocketErrorHandling();
       }
     }
   });
@@ -611,10 +560,52 @@
       }
     };
 
+    // WebSocket 錯誤處理（具名 handler，於 cleanup 對應 off，避免切房重複註冊）
+    const handleDisconnectedError = (data: { code: number; reason: string }) => {
+      if (data.code !== 1000) { // 非正常關閉
+        errorStore.showConnectionError({
+          label: '重新連接',
+          handler: () => {
+            ws.manualReconnect().catch((error) => {
+              console.error('Manual reconnect failed:', error);
+            });
+          }
+        });
+      }
+    };
+
+    const handleReconnectFailed = (data: { attempts: number; lastError: unknown }) => {
+      errorStore.showReconnectFailed(data.attempts, {
+        label: '重試',
+        handler: () => {
+          ws.manualReconnect().catch((error) => {
+            console.error('Manual reconnect failed:', error);
+          });
+        }
+      });
+    };
+
+    const handleMessageError = (data: WSErrorMessage) => {
+      if (data.temp_id) {
+        // 不顯示錯誤 toast，讓 MessageInput 組件處理重試 UI
+      } else {
+        // 沒有 temp_id 的通用錯誤（如 @bot 限流、空問題、載入失敗）：顯示後端訊息
+        errorStore.showError(data.message || '操作失敗，請稍後再試');
+      }
+    };
+
+    const handleOffline = () => {
+      errorStore.showNetworkError();
+    };
+
     ws.on('connected', handleConnected);
     ws.on('disconnected', handleDisconnected);
     ws.on('room_deleted', handleRoomDeleted);
     ws.on('room_updated', handleRoomUpdated);
+    ws.on('disconnected', handleDisconnectedError);
+    ws.on('reconnect_failed', handleReconnectFailed);
+    ws.on('message_error', handleMessageError);
+    ws.on('offline', handleOffline);
 
     // 檢查當前連接狀態
     if (ws.isConnected()) {
@@ -649,6 +640,10 @@
       ws.off('disconnected', handleDisconnected);
       ws.off('room_deleted', handleRoomDeleted);
       ws.off('room_updated', handleRoomUpdated);
+      ws.off('disconnected', handleDisconnectedError);
+      ws.off('reconnect_failed', handleReconnectFailed);
+      ws.off('message_error', handleMessageError);
+      ws.off('offline', handleOffline);
       wsManager.getInstance().disconnect();
       typingIndicatorStore.clearAll();
       isWebSocketConnected = false;

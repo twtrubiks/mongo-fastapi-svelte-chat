@@ -151,6 +151,7 @@
 - [ ] N+1 查詢 — 迴圈中呼叫 `repo.get_by_id()` 而非批次查詢 → **major**
 - [ ] 缺少分頁 — 查詢大量資料未使用 `skip/limit` → **major**
 - [ ] 前端重複請求 — `onMount` 或 `$effect` 中無防護的 API 呼叫 → **major**
+- [ ] 全域事件註冊未解除 — 對模組級單例（如 `wsManager`）`on()` 註冊事件時使用匿名 handler，或未在元件 cleanup 中對應 `off()`，路由切換時 handler 重複疊加（症狀為同一事件重複觸發，非同時疊 N 個 UI） → **major**
 
 ---
 
