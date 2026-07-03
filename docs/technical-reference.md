@@ -709,6 +709,15 @@ disconnect（房間 A） → 排程 _execute_room_leave（5s）
 
 > **注意**: 全域離線 debounce（3s）觸發時，會一併清理該使用者所有 pending room-leave tasks，避免殘留。
 
+#### 3. 成員資格撤銷（force_disconnect）
+
+成員資格只在 WS 連線建立當下驗證一次（`verify_room_membership`），之後不重驗。因此撤銷成員資格的業務操作必須主動斷開既有連線，否則離開者已開的分頁會繼續收到房間所有新訊息廣播（對私密房間是機密性缺口）：
+
+- **`leave_room`**（Service 層）：廣播 `user_left(removed=true)` 後呼叫 `force_disconnect(user_id, room_id)`，關閉離開者在該房的 WS 連線
+- **`delete_room`**（Service 層）：廣播 `room_deleted` 後呼叫 `force_disconnect_room(room_id)`，關閉該房所有連線
+
+與 `disconnect()`（暫時斷線）的差異：`force_disconnect` **立即**從 `room_users` 移除（不走 rejoin debounce——撤銷是確定事件），並以 close code **4003** 主動關閉 socket。前端的 `noReconnectCodes` 已含 4003，收到後不會嘗試重連。
+
 ### 客戶端連線管理（一次性 Ticket 機制）
 
 #### 為什麼 WebSocket 繞過 BFF 直連後端

@@ -107,6 +107,7 @@
 - [ ] WebSocket middleware 越權 — WebSocket auth middleware 包含 Service 層才該有的業務邏輯（如自動加入房間、策略判定），而非單純的成員資格驗證 → **critical**
 - [ ] 授權判斷使用遺留欄位 — 權限檢查依賴已被新欄位取代的舊欄位（如用 `is_public` 而非 `join_policy` + `room_type`），語意不一致可被繞過 → **major**
 - [ ] 驗證函式帶副作用 — 名為「驗證」的函式（verify / check）內含寫入操作（insert / update / join），呼叫者無法從簽名得知副作用存在 → **major**
+- [ ] 授權撤銷未及於長連線 — 撤銷成員資格的操作（離開房間、踢出成員、刪除房間）只改 DB 狀態，未同步斷開該使用者既有的 WS 連線（成員資格只在連線當下驗證一次），已連線者可繼續收到房間廣播 → **critical**
 
 ---
 

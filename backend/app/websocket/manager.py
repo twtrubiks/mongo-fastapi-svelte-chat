@@ -195,6 +195,65 @@ class ConnectionManager:
 
             logger.info(f"User {user_id} disconnected from room {room_id}")
 
+    async def force_disconnect(
+        self, user_id: str, room_id: str, reason: str = "已離開房間"
+    ):
+        """
+        強制斷開使用者在指定房間的 WS 連線（成員資格撤銷，非暫時斷線）
+
+        與 disconnect() 的差異：
+        - 立即從 room_users 移除（不走 rejoin debounce）——撤銷是確定事件，
+          否則離開者會殘留在廣播名單與在線列表中繼續收到房間訊息
+        - 主動關閉 socket（close code 4003，前端視為禁止訪問、不重連）
+
+        用於離開房間／刪除房間等需要撤銷讀取權的場景。
+
+        Args:
+            user_id: 使用者 ID
+            room_id: 房間 ID
+            reason: 關閉原因（帶入 WS close frame）
+        """
+        websocket = None
+        async with self._lock:
+            user_rooms = self.active_connections.get(user_id)
+            if user_rooms:
+                websocket = user_rooms.pop(room_id, None)
+                # 使用者沒有其他房間連線時，比照 disconnect() 排程 debounce 離線
+                if not user_rooms:
+                    del self.active_connections[user_id]
+                    self._schedule_offline(user_id)
+
+            # 立即清理 room_users 與 pending room-leave task
+            room_key = (user_id, room_id)
+            pending_task = self._pending_room_leave.pop(room_key, None)
+            if pending_task and not pending_task.done():
+                pending_task.cancel()
+            if room_id in self.room_users:
+                self.room_users[room_id].discard(user_id)
+                if not self.room_users[room_id]:
+                    del self.room_users[room_id]
+
+        # 鎖外關閉 socket（close 可能阻塞或拋錯，不可持鎖執行）
+        if websocket is not None:
+            try:
+                await websocket.close(code=4003, reason=reason)
+            except Exception:  # intentional: 連線可能已由對端關閉
+                pass
+            logger.info(f"Force disconnected user {user_id} from room {room_id}")
+
+    async def force_disconnect_room(self, room_id: str, reason: str = "房間已刪除"):
+        """
+        強制斷開房間內所有 WS 連線（房間刪除時撤銷所有讀取權）
+
+        Args:
+            room_id: 房間 ID
+            reason: 關閉原因（帶入 WS close frame）
+        """
+        async with self._lock:
+            user_ids = list(self.room_users.get(room_id, set()))
+        for user_id in user_ids:
+            await self.force_disconnect(user_id, room_id, reason=reason)
+
     async def _broadcast_user_left(self, room_id: str, user_info: dict):
         """廣播 user_left 事件給房間內剩餘使用者"""
         await self.broadcast_to_room(

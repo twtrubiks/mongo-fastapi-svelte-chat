@@ -582,6 +582,127 @@ class TestConnectionManager:
         assert user_joined_received, "連線不同房間應正常廣播 user_joined"
 
     @pytest.mark.asyncio
+    async def test_force_disconnect_revokes_room_broadcast(self, connection_manager):
+        """測試強制斷線後不再收到房間廣播（離開房間撤銷讀取權）"""
+        room_id = "room123"
+
+        # 連接兩個使用者
+        ws1 = Mock(spec=WebSocket)
+        ws1.accept = AsyncMock()
+        ws1.send_text = AsyncMock()
+        ws1.close = AsyncMock()
+        await connection_manager.connect(
+            ws1, "user1", room_id, {"id": "user1", "username": "User1"}
+        )
+
+        ws2 = Mock(spec=WebSocket)
+        ws2.accept = AsyncMock()
+        ws2.send_text = AsyncMock()
+        await connection_manager.connect(
+            ws2, "user2", room_id, {"id": "user2", "username": "User2"}
+        )
+
+        # 強制斷開 user1
+        await connection_manager.force_disconnect("user1", room_id)
+
+        # 驗證 socket 以 4003 關閉（前端不重連）
+        ws1.close.assert_called_once()
+        assert ws1.close.call_args.kwargs["code"] == 4003
+
+        # 驗證狀態立即清理（不走 debounce）
+        assert "user1" not in connection_manager.active_connections
+        assert "user1" not in connection_manager.room_users.get(room_id, set())
+        assert ("user1", room_id) not in connection_manager._pending_room_leave
+
+        # 廣播不再送達 user1，user2 正常收到
+        ws1.send_text.reset_mock()
+        ws2.send_text.reset_mock()
+        await connection_manager.broadcast_to_room(
+            room_id, {"type": "message", "content": "secret"}
+        )
+        ws1.send_text.assert_not_called()
+        ws2.send_text.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_force_disconnect_keeps_other_rooms(self, connection_manager):
+        """測試強制斷線只影響指定房間，其他房間連線不受影響"""
+        user_id = "user1"
+        user_info = {"id": user_id, "username": "User1"}
+
+        ws_a = Mock(spec=WebSocket)
+        ws_a.accept = AsyncMock()
+        ws_a.send_text = AsyncMock()
+        ws_a.close = AsyncMock()
+        await connection_manager.connect(ws_a, user_id, "room_a", user_info)
+
+        ws_b = Mock(spec=WebSocket)
+        ws_b.accept = AsyncMock()
+        ws_b.send_text = AsyncMock()
+        await connection_manager.connect(ws_b, user_id, "room_b", user_info)
+
+        # 強制斷開 room_a
+        await connection_manager.force_disconnect(user_id, "room_a")
+
+        # room_a 連線已撤銷，room_b 連線保留
+        assert "room_a" not in connection_manager.active_connections[user_id]
+        assert connection_manager.active_connections[user_id]["room_b"] is ws_b
+        assert user_id in connection_manager.room_users["room_b"]
+        # 使用者仍在線（有其他房間連線），不應排程離線
+        assert user_id not in connection_manager._pending_offline
+
+        ws_b.send_text.reset_mock()
+        await connection_manager.broadcast_to_room(
+            "room_b", {"type": "message", "content": "hi"}
+        )
+        ws_b.send_text.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_force_disconnect_room_closes_all_connections(
+        self, connection_manager
+    ):
+        """測試房間層級強制斷線關閉房內所有連線（房間刪除場景）"""
+        room_id = "room123"
+
+        websockets = []
+        for i in range(3):
+            ws = Mock(spec=WebSocket)
+            ws.accept = AsyncMock()
+            ws.send_text = AsyncMock()
+            ws.close = AsyncMock()
+            await connection_manager.connect(
+                ws, f"user{i}", room_id, {"id": f"user{i}", "username": f"User{i}"}
+            )
+            websockets.append(ws)
+
+        await connection_manager.force_disconnect_room(room_id)
+
+        # 所有連線關閉、房間狀態清空
+        for ws in websockets:
+            ws.close.assert_called_once()
+        assert room_id not in connection_manager.room_users
+        for i in range(3):
+            assert f"user{i}" not in connection_manager.active_connections
+
+    @pytest.mark.asyncio
+    async def test_force_disconnect_close_failure_still_cleans_state(
+        self, connection_manager
+    ):
+        """測試 socket 關閉失敗時狀態仍被清理（廣播名單不得殘留）"""
+        room_id = "room123"
+        ws = Mock(spec=WebSocket)
+        ws.accept = AsyncMock()
+        ws.send_text = AsyncMock()
+        ws.close = AsyncMock(side_effect=Exception("already closed"))
+        await connection_manager.connect(
+            ws, "user1", room_id, {"id": "user1", "username": "User1"}
+        )
+
+        # close 拋錯不應外洩，狀態仍需清理
+        await connection_manager.force_disconnect("user1", room_id)
+        assert "user1" not in connection_manager.active_connections
+        assert "user1" not in connection_manager.room_users.get(room_id, set())
+
+    @pytest.mark.asyncio
     async def test_room_leave_debounce_cleans_up_room_users(self, connection_manager):
         """測試 debounce 到期後正確清理 room_users"""
         room_id = "room123"

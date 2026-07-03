@@ -372,6 +372,10 @@ class RoomService:
         except Exception as e:  # intentional fail-open: 廣播失敗不中斷主流程
             logger.error(f"發送房間刪除通知時發生錯誤: {e}")
 
+        # 撤銷該房所有 WS 連線（房間已不存在，連線不應殘留在廣播名單中）
+        if self._connection_manager:
+            await self._connection_manager.force_disconnect_room(room_id)
+
     async def join_room(
         self, room_id: str, user_id: str, join_request: RoomJoinRequest | None = None
     ) -> str:
@@ -541,6 +545,9 @@ class RoomService:
                     "removed": True,
                 },
             )
+            # 撤銷離開者在該房的 WS 讀取權：成員資格只在 WS 連線當下驗證一次，
+            # 不主動斷線的話，離開者已開的分頁會繼續收到房間所有新訊息廣播
+            await self._connection_manager.force_disconnect(user_id, room_id)
 
         await self._notify_room_change(room_id)
 

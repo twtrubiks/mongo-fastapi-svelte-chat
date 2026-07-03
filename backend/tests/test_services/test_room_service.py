@@ -422,6 +422,25 @@ class TestRoomService:
         room_repo.remove_member.assert_called_once_with(sample_room.id, user_id)
 
     @pytest.mark.asyncio
+    async def test_leave_room_force_disconnects_ws(
+        self, room_service, mock_repositories, mock_connection_manager, sample_room
+    ):
+        """測試離開房間時撤銷該使用者在該房的 WS 連線（讀取權撤銷）"""
+        room_repo, user_repo, message_repo = mock_repositories
+
+        user_id = str(ObjectId())
+        sample_room.members = [sample_room.owner_id, user_id]
+        room_repo.get_by_id.return_value = sample_room
+        room_repo.remove_member.return_value = True
+
+        await room_service.leave_room(sample_room.id, user_id)
+
+        # 離開後必須強制斷開 WS，否則已開分頁會繼續收到房間廣播
+        mock_connection_manager.force_disconnect.assert_called_once_with(
+            user_id, sample_room.id
+        )
+
+    @pytest.mark.asyncio
     async def test_leave_room_as_owner(
         self, room_service, mock_repositories, sample_room
     ):
@@ -461,6 +480,11 @@ class TestRoomService:
 
         # 驗證 WebSocket 通知被發送
         assert mock_connection_manager.send_event.called
+
+        # 驗證撤銷該房所有 WS 連線（連線不應殘留在廣播名單中）
+        mock_connection_manager.force_disconnect_room.assert_called_once_with(
+            sample_room.id
+        )
 
     @pytest.mark.asyncio
     async def test_delete_room_not_owner(
