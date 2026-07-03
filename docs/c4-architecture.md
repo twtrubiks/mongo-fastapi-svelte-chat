@@ -133,7 +133,7 @@ graph TB
         MessageRouter[訊息路由<br/>/api/messages<br/>GET /messages, POST /messages]
         FileRouter["檔案路由<br/>/api/files<br/>POST /upload, GET /{file_type}/{filename}"]
         NotificationRouter[通知路由<br/>/api/notifications<br/>GET /notifications, DELETE /notifications]
-        InvitationRouter["邀請路由<br/>/api/invitations<br/>POST /rooms/{room_id}/invitations, POST /validate"]
+        InvitationRouter["邀請碼驗證路由<br/>/api/invitations<br/>POST /validate"]
         WsTicketRouter[WS Ticket 路由<br/>/api/ws<br/>POST /ticket]
         AIRouter[AI 狀態路由<br/>/api/ai<br/>GET /status]
     end
@@ -155,7 +155,6 @@ graph TB
     MessageRouter --> RoomAuthDependency
     FileRouter --> AuthDependency
     NotificationRouter --> AuthDependency
-    InvitationRouter --> AuthDependency
     WsTicketRouter --> AuthDependency
     AIRouter --> AuthDependency
 
@@ -181,7 +180,6 @@ graph TB
         RoomService[房間服務<br/>RoomService<br/>房間創建/管理]
         MessageService[訊息服務<br/>MessageService<br/>訊息處理]
         NotificationService[通知服務<br/>NotificationService<br/>系統通知]
-        InvitationService[邀請服務<br/>InvitationService<br/>邀請碼與加入申請管理]
         FileService[檔案服務<br/>FileService<br/>檔案上傳與存取管理]
         AIService[AI 助理服務<br/>AIService<br/>LLM 呼叫封裝（無狀態）]
     end
@@ -195,10 +193,6 @@ graph TB
         MessageService --> RoomRepo
         MessageService --> UserRepo
         NotificationService --> NotificationRepo[NotificationRepository]
-        InvitationService --> InvitationRepo[InvitationRepository]
-        InvitationService --> JoinRequestRepo[JoinRequestRepository]
-        InvitationService --> RoomRepo
-        InvitationService --> UserRepo
         FileService --> FileUploadUtils2[FileUploadManager]
         FileService --> ImageProcessor2[ImageProcessor]
     end
@@ -221,7 +215,6 @@ graph TB
     style RoomService fill:#98FB98
     style MessageService fill:#98FB98
     style NotificationService fill:#98FB98
-    style InvitationService fill:#98FB98
     style FileService fill:#98FB98
     style AIService fill:#98FB98
 ```
@@ -236,16 +229,12 @@ graph TB
         RoomRepository[房間倉儲<br/>RoomRepository<br/>房間資料CRUD]
         MessageRepository[訊息倉儲<br/>MessageRepository<br/>訊息資料CRUD]
         NotificationRepository[通知倉儲<br/>NotificationRepository<br/>通知資料CRUD]
-        InvitationRepository[邀請倉儲<br/>InvitationRepository<br/>邀請資料CRUD]
-        JoinRequestRepository[加入申請倉儲<br/>JoinRequestRepository<br/>加入申請資料CRUD]
     end
 
     UserRepository -->|繼承| BaseRepository
     RoomRepository -->|繼承| BaseRepository
     MessageRepository -->|繼承| BaseRepository
     NotificationRepository -->|繼承| BaseRepository
-    InvitationRepository -->|繼承| BaseRepository
-    JoinRequestRepository -->|繼承| BaseRepository
 
     subgraph "資料存取層"
         MongoDBManager[MongoDB管理器<br/>MongoDBManager<br/>資料庫連線管理]
@@ -258,7 +247,6 @@ graph TB
         RoomModel[房間模型<br/>RoomInDB / RoomSummary / RoomResponse]
         MessageModel[訊息模型<br/>Message]
         NotificationModel[通知模型<br/>Notification]
-        InvitationModel[邀請模型<br/>Invitation]
     end
 
     subgraph "工具模組"
@@ -273,16 +261,12 @@ graph TB
     RoomRepository --> RoomModel
     MessageRepository --> MessageModel
     NotificationRepository --> NotificationModel
-    InvitationRepository --> InvitationModel
-    JoinRequestRepository --> InvitationModel
 
     style BaseRepository fill:#87CEFA
     style UserRepository fill:#87CEFA
     style RoomRepository fill:#87CEFA
     style MessageRepository fill:#87CEFA
     style NotificationRepository fill:#87CEFA
-    style InvitationRepository fill:#87CEFA
-    style JoinRequestRepository fill:#87CEFA
 ```
 
 ### 3.2 WebSocket 伺服器組件架構
@@ -496,7 +480,6 @@ classDiagram
         +create_room_service() RoomService
         +create_message_service() MessageService
         +create_notification_service() NotificationService
-        +create_invitation_service() InvitationService
         +create_file_service() FileService
         +create_ai_service() AIService
         +get_health_check_info() dict
@@ -522,7 +505,7 @@ classDiagram
         +get_by_ids(user_ids) list~UserInDB~
         +get_by_username(username) UserInDB
         +get_by_email(email) UserInDB
-        +update(user_id, user_update) UserInDB
+        +update(user_id, user_update, bump_token_version) UserInDB
         +delete(user_id) bool
         +update_last_login(user_id) bool
     }

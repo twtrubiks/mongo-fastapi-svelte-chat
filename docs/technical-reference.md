@@ -323,7 +323,6 @@ await ensure_indexes(db)  # 啟動時自動建立索引
 | `rooms` | `members` | multikey | 查詢「我的房間」列表（陣列欄位） |
 | `rooms` | `{ is_public, created_at desc }` | 複合索引 | 探索頁面公開房間查詢 + 排序 |
 | `notifications` | `{ user_id, created_at desc }` | 複合索引 | 通知列表 + 未讀計數 |
-| `room_invitations` | `invite_code` | unique | 防止重複邀請碼，加速邀請驗證 |
 
 ### 索引選擇原則
 
@@ -475,6 +474,7 @@ Token 刷新完全由 BFF 層（SvelteKit server-side）透過 `bffAuthRequest` 
 - **前端零 token 存取**：前端不持有任何 JWT token，localStorage / JS cookie / page data 均不存放 token
 - **Token 類型隔離**：Access Token 和 Refresh Token 互不通用（JWT 中以 `type: "refresh"` 區分）
 - **Refresh Token Rotation**：每次刷新都會發行新的 Refresh Token，舊的自動失效
+- **Token 版本撤銷**：使用者文件帶 `token_version`，修改密碼時與密碼**同一次原子更新**遞增（`$set` + `$inc`）；HTTP 認證、WebSocket JWT fallback、refresh 換發三個入口皆比對 token 內版本號與資料庫版本，不符即 401——改密碼後所有既有 access/refresh token 立即失效（舊 token 無此欄位視為 0，向後相容）
 - **HttpOnly Cookie**：雙 token 均存於 HttpOnly cookie，JavaScript 無法存取，防止 XSS 竊取
 - **WebSocket Ticket**：WebSocket 連線不在 URL 傳遞 JWT，改用 Redis 一次性 ticket（TTL 30 秒）
 
@@ -486,6 +486,29 @@ Token 刷新完全由 BFF 層（SvelteKit server-side）透過 `bffAuthRequest` 
 | `POST /api/auth/refresh` | 用 refresh_token 換發新 token（BFF server-side 呼叫） |
 | `POST /api/auth/logout` | 登出，清除所有 cookie |
 | `POST /api/ws/ticket` | 取得一次性 WebSocket 連線 ticket（需認證） |
+
+## 請求限流（Rate Limiting）
+
+HTTP 請求由 `RateLimitingMiddleware`（`app/middleware/rate_limiting.py`）以 **Redis 滑動視窗**演算法限流，依路徑套用不同配置（登入、註冊、檔案上傳、一般 API 各有獨立額度），生產與 DEBUG 模式採不同數值。Redis 不可用時 **fail-open**（放行請求，不因限流基礎設施故障而拒絕服務）。
+
+> **註**：此中介軟體僅涵蓋 HTTP 請求；WebSocket 連線（`/ws`）不經過 `BaseHTTPMiddleware`，其配置實際不生效。`@bot` / `/summary` 的 AI 限流是另一套獨立機制（見「🤖 AI 聊天助理 › 觸發與限流」）。
+
+### 分桶識別（client identifier）
+
+限流以「每客戶端」為單位計數，識別優先序：
+
+1. **已認證使用者** → `user:{user_id}`：解析 `Authorization: Bearer` 內的 JWT，僅驗簽章與過期、**不查 DB**（分桶用途，偽造不出有效簽章即可）
+2. **未認證** → `ip:{client_ip}`
+
+### 可信代理與 `X-Forwarded-For`
+
+前端 BFF（SvelteKit server）代所有瀏覽器請求呼叫後端，因此後端看到的 `request.client.host` 是 BFF 的 IP，真實來源在 `X-Forwarded-For`。若無條件採信此標頭，攻擊者可偽造它讓每個請求落入不同分桶、繞過限流。
+
+因此中介軟體只在**請求來源 IP 屬於可信代理集合**時才採信 `X-Forwarded-For`，並取其**最右端** IP（由可信代理寫入，最不易偽造）；直連請求所帶的 `X-Forwarded-For` 一律忽略。
+
+| 環境變數 | 預設值 | 說明 |
+|---|---|---|
+| `TRUSTED_PROXIES` | `127.0.0.1,::1` | 可信反向代理 IP（逗號分隔）。預設信任本機（BFF 與後端同機的開發拓樸）。**BFF 或反向代理與後端分機部署時，必須改為其實際 IP**，否則真實 `X-Forwarded-For` 不被採信、所有請求會共用 BFF 單一 IP 的分桶 |
 
 ## 前端 BFF 架構設計
 
@@ -798,7 +821,7 @@ class WebSocketManager {
 
 ### 觸發與限流
 
-`handle_chat_message` 在訊息落地後偵測是否為 AI 觸發（僅 `TEXT` 訊息），命中則交由對應 handler。這段「管線與防護」與回覆生成方式無關，無論回覆是否 streaming 都一致：
+`handle_chat_message` 在訊息落地後偵測是否為 AI 觸發（僅 `TEXT` 訊息），命中則以背景 task 執行對應 handler。這段「管線與防護」與回覆生成方式無關，無論回覆是否 streaming 都一致：
 
 | 機制 | 說明 |
 |------|------|
@@ -807,6 +830,7 @@ class WebSocketManager {
 | **空問題提示** | `@bot` 後無內容時回提示且不打 API |
 | **`skip_membership_check`** | bot 是系統發訊者、非房間成員，`create_message` 以此參數（預設 `False`，現有呼叫零影響）跳過成員資格檢查；也因此正常訊息的通知迴圈不會掃到 bot |
 | **刻意不發通知** | bot 訊息走正規落地（產生 seq、持久化、廣播）但**不觸發通知**，避免每次回話全房間收到通知轟炸 |
+| **背景執行** | AI 串流最長可達數十秒，若在觸發者的 receive loop 內同步 await，期間 ping 得不到 pong，前端心跳（20s 間隔、10s pong 超時）會強制斷線。`_spawn_ai_task` 以 `asyncio.create_task` 丟背景執行（集合保強引用防 GC），receive loop 不被阻塞 |
 | **完整自我守護** | handler 內任何失敗只回報觸發者（或收掉預覽），不影響使用者的原始訊息與聊天室運作 |
 
 > bot 回覆透過正規 `create_message` 落地，因此會取得 seq、可持久化、可被 ADR-003 的斷線 gap 補發涵蓋——與真人訊息走同一條管線。

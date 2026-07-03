@@ -386,7 +386,7 @@ pytest tests/ -v --cov=app --cov-report=html
 | 檔案 | `/api/files` | 上傳、縮圖、多媒體存取 |
 | 通知 | `/api/notifications` | 通知列表、已讀、統計、清除全部 |
 | AI 助理 | `/api/ai` | AI 助理上線狀態（`@bot` / `/summary` 本身由 WebSocket 觸發） |
-| 邀請和申請 | `/api/invitations` | 邀請碼、加入申請、審核 |
+| 邀請碼 | `/api/invitations` | 邀請碼驗證（加入前預覽房間資訊） |
 | WS Ticket | `/api/ws` | 一次性 WebSocket 連線 ticket（Redis TTL 30s）（`ws_ticket.py`） |
 | WebSocket | `WS /ws/{room_id}` | 房間即時通訊（ticket 認證） |
 
@@ -400,6 +400,7 @@ pytest tests/ -v --cov=app --cov-report=html
 4. **完整中間件系統**: 錯誤處理、速率限制、安全標頭保護
 5. **WebSocket 管理**: 連線 debounce、心跳檢測、房間隔離機制、一次性 ticket 認證
 6. **AI 聊天助理**: LLM 呼叫收斂於 Service 層（`AIService` 無狀態），`@bot` streaming 兩階段（瞬態預覽 + 正規落地）、NVIDIA / Gemini 雙供應商可切換、整房共享多輪記憶；AI 為選用功能，未配置即 fail-soft（設計取捨見 ADR-004）
+7. **上傳與認證安全**: 檔案上傳 magic-byte 檔頭驗證（偽裝副檔名拒收）、圖片解壓縮炸彈防護（像素上限雙層防線）；改密碼即透過 `token_version` 撤銷所有既有 token
 
 ### 前端架構特色
 
