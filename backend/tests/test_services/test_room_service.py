@@ -3,7 +3,7 @@
 使用 Mock 優先的方式測試所有功能
 """
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, Mock
 
 import bcrypt
@@ -580,6 +580,56 @@ class TestRoomService:
         with pytest.raises(AppError) as exc_info:
             await room_service.join_room(sample_room.id, user_id, join_request)
         assert "邀請碼無效" in str(exc_info.value)
+
+    @pytest.mark.asyncio
+    async def test_validate_invite_code(
+        self, room_service, mock_repositories, sample_room
+    ):
+        """測試驗證邀請碼回傳房間資訊"""
+        room_repo, user_repo, message_repo = mock_repositories
+
+        sample_room.join_policy = JoinPolicy.INVITE
+        sample_room.invite_code = "test-invite-code"
+        room_repo.get_by_invite_code.return_value = sample_room
+        owner = Mock()
+        owner.username = "testowner"
+        user_repo.get_by_id.return_value = owner
+
+        result = await room_service.validate_invite_code("test-invite-code")
+
+        assert result == {
+            "room_id": sample_room.id,
+            "room_name": sample_room.name,
+            "inviter_name": "testowner",
+        }
+
+    @pytest.mark.asyncio
+    async def test_validate_invite_code_not_found(
+        self, room_service, mock_repositories
+    ):
+        """測試無效邀請碼拋出 NotFoundError"""
+        room_repo, user_repo, message_repo = mock_repositories
+        room_repo.get_by_invite_code.return_value = None
+
+        with pytest.raises(NotFoundError) as exc_info:
+            await room_service.validate_invite_code("bad-code")
+        assert "邀請碼無效" in str(exc_info.value)
+
+    @pytest.mark.asyncio
+    async def test_validate_invite_code_expired(
+        self, room_service, mock_repositories, sample_room
+    ):
+        """測試過期邀請碼拋出 AppError"""
+        room_repo, user_repo, message_repo = mock_repositories
+
+        sample_room.join_policy = JoinPolicy.INVITE
+        sample_room.invite_code = "test-invite-code"
+        sample_room.invite_code_expires_at = datetime.now(UTC) - timedelta(hours=1)
+        room_repo.get_by_invite_code.return_value = sample_room
+
+        with pytest.raises(AppError) as exc_info:
+            await room_service.validate_invite_code("test-invite-code")
+        assert "已過期" in str(exc_info.value)
 
     @pytest.mark.asyncio
     async def test_delete_room_with_websocket_notification(

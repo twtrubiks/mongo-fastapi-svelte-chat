@@ -6,15 +6,12 @@ from fastapi import Depends
 
 from app.database.mongodb import get_database
 from app.database.redis_conn import get_redis
-from app.repositories.invitation_repository import InvitationRepository
-from app.repositories.join_request_repository import JoinRequestRepository
 from app.repositories.message_repository import MessageRepository
 from app.repositories.notification_repository import NotificationRepository
 from app.repositories.room_repository import RoomRepository
 from app.repositories.user_repository import UserRepository
 from app.services.ai_service import AIService
 from app.services.file_service import FileService
-from app.services.invitation_service import InvitationService
 from app.services.message_service import MessageService
 from app.services.notification_service import NotificationService
 from app.services.room_service import RoomService
@@ -76,16 +73,6 @@ async def create_notification_service() -> NotificationService:
     )
 
 
-async def create_invitation_service() -> InvitationService:
-    db = await get_database()
-    return InvitationService(
-        InvitationRepository(db),
-        JoinRequestRepository(db),
-        RoomRepository(db),
-        UserRepository(db),
-    )
-
-
 async def create_file_service() -> FileService:
     from app.utils.file_upload import get_file_upload_manager
     from app.utils.image_processor import get_image_processor
@@ -107,7 +94,6 @@ UserServiceDep = Depends(create_user_service)
 RoomServiceDep = Depends(create_room_service)
 MessageServiceDep = Depends(create_message_service)
 NotificationServiceDep = Depends(create_notification_service)
-InvitationServiceDep = Depends(create_invitation_service)
 FileServiceDep = Depends(create_file_service)
 # @bot / summary 觸發發生在 WebSocket，由 handler 直接 await create_ai_service()；
 # AIServiceDep 供 HTTP 端點注入（目前用於 GET /api/ai/status 上線狀態查詢）。

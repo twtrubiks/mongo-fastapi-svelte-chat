@@ -24,20 +24,3 @@ class MemberRole(StrEnum):
     OWNER = "owner"  # 房主 - 完全控制權
     ADMIN = "admin"  # 管理員 - 成員管理權
     MEMBER = "member"  # 成員 - 基本使用權
-
-
-class InvitationStatus(StrEnum):
-    """邀請狀態"""
-
-    PENDING = "pending"  # 待處理
-    ACCEPTED = "accepted"  # 已接受
-    REJECTED = "rejected"  # 已拒絕
-    EXPIRED = "expired"  # 已過期
-
-
-class JoinRequestStatus(StrEnum):
-    """加入申請狀態"""
-
-    PENDING = "pending"  # 待審核
-    APPROVED = "approved"  # 已批准
-    REJECTED = "rejected"  # 已拒絕

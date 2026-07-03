@@ -8,19 +8,16 @@ import pytest
 from fastapi.params import Depends as DependsClass
 
 from app.core.fastapi_integration import (
-    InvitationServiceDep,
     MessageServiceDep,
     NotificationServiceDep,
     RoomServiceDep,
     UserServiceDep,
-    create_invitation_service,
     create_message_service,
     create_notification_service,
     create_room_service,
     create_user_service,
     get_health_check_info,
 )
-from app.services.invitation_service import InvitationService
 from app.services.message_service import MessageService
 from app.services.notification_service import NotificationService
 from app.services.room_service import RoomService
@@ -62,14 +59,6 @@ class TestServiceFactories:
             service = await create_notification_service()
             assert isinstance(service, NotificationService)
 
-    @pytest.mark.asyncio
-    async def test_create_invitation_service(self):
-        """測試建立 InvitationService"""
-        mock_db = AsyncMock()
-        with patch("app.core.fastapi_integration.get_database", return_value=mock_db):
-            service = await create_invitation_service()
-            assert isinstance(service, InvitationService)
-
 
 class TestDependsAliases:
     """測試 FastAPI Depends 別名"""
@@ -85,9 +74,6 @@ class TestDependsAliases:
 
     def test_notification_service_dep(self):
         assert isinstance(NotificationServiceDep, DependsClass)
-
-    def test_invitation_service_dep(self):
-        assert isinstance(InvitationServiceDep, DependsClass)
 
 
 class TestHealthCheck:

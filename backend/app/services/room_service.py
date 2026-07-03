@@ -461,6 +461,40 @@ class RoomService:
 
         return "成功加入房間"
 
+    async def validate_invite_code(self, invite_code: str) -> dict:
+        """
+        驗證房間邀請碼並回傳房間資訊（供加入前預覽）
+
+        Args:
+            invite_code: 邀請碼
+
+        Returns:
+            dict: room_id、room_name、inviter_name
+
+        Raises:
+            NotFoundError: 邀請碼無效時
+            AppError: 邀請碼已過期時
+        """
+        room = await self.room_repo.get_by_invite_code(invite_code)
+        if not room:
+            raise NotFoundError("邀請碼無效或已過期")
+
+        # 過期檢查與 join_room 保持一致
+        if room.invite_code_expires_at and room.invite_code_expires_at < datetime.now(
+            UTC
+        ):
+            raise AppError("邀請碼已過期")
+
+        owner = await self.user_repo.get_by_id(room.owner_id)
+        if not owner:
+            raise NotFoundError("邀請碼無效或已過期")
+
+        return {
+            "room_id": room.id,
+            "room_name": room.name,
+            "inviter_name": owner.username,
+        }
+
     async def leave_room(self, room_id: str, user_id: str) -> str:
         """
         離開房間

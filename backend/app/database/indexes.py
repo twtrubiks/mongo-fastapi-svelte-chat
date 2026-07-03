@@ -56,9 +56,4 @@ async def ensure_indexes(db: AsyncDatabase) -> None:
         [("user_id", ASCENDING), ("created_at", DESCENDING)]
     )
 
-    # ── room_invitations ──
-    invitations = db["room_invitations"]
-    # 唯一索引：防止重複邀請碼
-    await invitations.create_index([("invite_code", ASCENDING)], unique=True)
-
     logger.info("MongoDB 索引建立完成")

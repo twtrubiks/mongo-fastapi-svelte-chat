@@ -27,9 +27,6 @@ class TestEnsureIndexes:
         mock_notifications = Mock()
         mock_notifications.create_index = AsyncMock()
 
-        mock_invitations = Mock()
-        mock_invitations.create_index = AsyncMock()
-
         mock_db = Mock()
         mock_db.__getitem__ = Mock(
             side_effect=lambda name: {
@@ -37,7 +34,6 @@ class TestEnsureIndexes:
                 "messages": mock_messages,
                 "rooms": mock_rooms,
                 "notifications": mock_notifications,
-                "room_invitations": mock_invitations,
             }[name]
         )
 
@@ -51,8 +47,6 @@ class TestEnsureIndexes:
         assert mock_rooms.create_index.call_count == 4
         # notifications：user_id + created_at 複合索引
         assert mock_notifications.create_index.call_count == 1
-        # room_invitations：invite_code unique
-        assert mock_invitations.create_index.call_count == 1
 
     async def test_users_unique_indexes(self):
         """測試 users collection 的唯一索引"""
@@ -145,23 +139,3 @@ class TestEnsureIndexes:
             if any("seq" in str(arg) for arg in c.args)
         ]
         assert len(seq_calls) == 1
-
-    async def test_invitations_unique_index(self):
-        """測試 room_invitations collection 的唯一索引"""
-        mock_invitations = Mock()
-        mock_invitations.create_index = AsyncMock()
-        mock_other = Mock()
-        mock_other.create_index = AsyncMock()
-
-        mock_db = Mock()
-        mock_db.__getitem__ = Mock(
-            side_effect=lambda name: (
-                mock_invitations if name == "room_invitations" else mock_other
-            )
-        )
-
-        await ensure_indexes(mock_db)
-
-        # room_invitations 只有一個 invite_code unique index
-        assert mock_invitations.create_index.call_count == 1
-        assert mock_invitations.create_index.call_args.kwargs.get("unique") is True
