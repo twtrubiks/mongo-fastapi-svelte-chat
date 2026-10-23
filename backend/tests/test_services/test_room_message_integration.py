@@ -26,11 +26,15 @@ class TestRoomMessageIntegration:
         self, mock_room_repository, mock_user_repository, mock_message_repository
     ):
         """配置 RoomService 和相關依賴"""
+        # 補齊真實 ConnectionManager 的 dict 屬性（AsyncMock 的屬性存取會回傳 coroutine）
+        connection_manager = AsyncMock()
+        connection_manager.active_connections = {}
+        connection_manager.user_info = {}
         return RoomService(
             room_repository=mock_room_repository,
             user_repository=mock_user_repository,
             message_repository=mock_message_repository,
-            connection_manager=AsyncMock(),
+            connection_manager=connection_manager,
         )
 
     @pytest.fixture
