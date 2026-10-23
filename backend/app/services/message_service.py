@@ -91,6 +91,10 @@ class MessageService:
         # 驗證訊息內容（在 DB 查詢之前快速失敗）
         validated_content = self.validate_message_content(message_data.content)
 
+        # 系統訊息只能由伺服器產生：前端把它畫成無發送者的系統公告，且不可刪除
+        if message_data.message_type == MessageType.SYSTEM:
+            raise ForbiddenError("不可發送系統訊息")
+
         # 從 message_data 中獲取 room_id
         room_id = message_data.room_id
 

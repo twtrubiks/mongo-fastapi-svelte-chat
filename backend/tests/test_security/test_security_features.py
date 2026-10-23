@@ -3,12 +3,14 @@
 import base64
 import json
 from datetime import timedelta
+from unittest.mock import patch
 
 import jwt
 import pytest
 
 from app.auth.jwt_handler import create_access_token
 from app.config import settings
+from app.middleware.security_headers import SecurityHeadersMiddleware
 
 SENSITIVE_KEYS = {"password", "hashed_password"}
 
@@ -194,7 +196,15 @@ class TestSecurityFeatures:
         assert "Strict-Transport-Security" not in response.headers
 
     async def test_hsts_sent_behind_https_proxy(self, async_client):
-        response = await async_client.get("/", headers={"X-Forwarded-Proto": "https"})
+        # app 匯入時依 settings.DEBUG 決定是否啟用 HSTS，本機 .env 常設 DEBUG=true；
+        # 測試自行建立啟用 HSTS 的中介層，不依賴環境
+        hsts_middleware = SecurityHeadersMiddleware(
+            enable_hsts=True, hsts_max_age=31536000
+        )
+        with patch("app.main.security_middleware", hsts_middleware):
+            response = await async_client.get(
+                "/", headers={"X-Forwarded-Proto": "https"}
+            )
 
         assert response.headers["Strict-Transport-Security"].startswith(
             "max-age=31536000"

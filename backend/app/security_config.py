@@ -92,8 +92,10 @@ class SecurityConfig(BaseModel):
             }
         )
 
-        # HSTS 標頭 (僅在啟用時)
-        if self.enable_hsts:
+        # HSTS 標頭（開發模式不送）：main.py 已對 middleware 關掉 DEBUG 的 HSTS，
+        # 這裡的結果會成為 custom_headers，不同步判斷就會把 HSTS 加回去。
+        # 瀏覽器只採信經 HTTPS 收到的 HSTS，本機以 HTTPS 開發時才會把 localhost 鎖成只走 HTTPS
+        if self.enable_hsts and not self.development_mode:
             headers["Strict-Transport-Security"] = self.get_hsts_header()
 
         # CSP 標頭

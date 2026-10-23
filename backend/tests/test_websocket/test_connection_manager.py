@@ -1139,6 +1139,24 @@ class TestDebounceTimeline:
         await clock.advance_to(6)
         assert _room_user_ids(manager, "r1") == ["alice"]
 
+    async def test_restarted_room_timer_still_tracked(self, manager, clock):
+        """舊計時器被取消時不可移除新計時器的表項：5 秒內重入房仍算快速重連"""
+        alice_ws = await _join(manager, ALICE, "r1")
+        await _join(manager, BOB, "r2")
+        await _join(manager, BOB, "r1")
+        _received(alice_ws)
+
+        await manager.disconnect("bob", "r1")
+        await clock.advance_to(1)
+        await manager.disconnect("bob", "r1")
+        await clock.advance_to(1.5)
+        assert ("bob", "r1") in manager._pending_room_leave
+
+        await clock.advance_to(5.5)
+        await _join(manager, BOB, "r1")
+        assert _received(alice_ws) == []
+        assert ("bob", "r1") not in manager._pending_room_leave
+
     async def test_legacy_disconnect_after_force_disconnect_is_noop(
         self, manager, clock
     ):

@@ -123,6 +123,12 @@ class TestSecurityHeaders:
         assert "upgrade-insecure-requests" in csp
         assert "report-uri" not in csp
 
+    def test_development_mode_omits_hsts(self):
+        headers = SecurityConfig(development_mode=True).get_security_headers()
+
+        assert "Strict-Transport-Security" not in headers
+        assert headers["X-Frame-Options"] == "DENY"
+
     def test_development_csp_allows_docs_cdn(self):
         csp = SecurityConfig(development_mode=True).get_csp_header()
 

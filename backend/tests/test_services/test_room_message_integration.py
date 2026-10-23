@@ -26,11 +26,15 @@ class TestRoomMessageIntegration:
         self, mock_room_repository, mock_user_repository, mock_message_repository
     ):
         """配置 RoomService 和相關依賴"""
+        # 補齊真實 ConnectionManager 的 dict 屬性（AsyncMock 的屬性存取會回傳 coroutine）
+        connection_manager = AsyncMock()
+        connection_manager.active_connections = {}
+        connection_manager.user_info = {}
         return RoomService(
             room_repository=mock_room_repository,
             user_repository=mock_user_repository,
             message_repository=mock_message_repository,
-            connection_manager=AsyncMock(),
+            connection_manager=connection_manager,
         )
 
     @pytest.fixture
@@ -103,7 +107,7 @@ class TestRoomMessageIntegration:
             user_id=owner_id,
             username="room_owner",
             content="歡迎來到房間！",
-            message_type=MessageType.SYSTEM,
+            message_type=MessageType.TEXT,
             created_at=datetime.now(UTC),
             updated_at=datetime.now(UTC),
         )
@@ -125,7 +129,7 @@ class TestRoomMessageIntegration:
 
         # 2. 發送歡迎消息
         message_create = MessageCreate(
-            room_id=room_id, content="歡迎來到房間！", message_type=MessageType.SYSTEM
+            room_id=room_id, content="歡迎來到房間！", message_type=MessageType.TEXT
         )
 
         # Mock UserRepository 用於 MessageService
@@ -198,7 +202,7 @@ class TestRoomMessageIntegration:
             user_id=new_user_id,
             username="new_member",
             content="new_member 加入了房間",
-            message_type=MessageType.SYSTEM,
+            message_type=MessageType.TEXT,
             created_at=datetime.now(UTC),
             updated_at=datetime.now(UTC),
         )
@@ -219,7 +223,7 @@ class TestRoomMessageIntegration:
         message_create = MessageCreate(
             room_id=room_id,
             content="new_member 加入了房間",
-            message_type=MessageType.SYSTEM,
+            message_type=MessageType.TEXT,
         )
 
         # Mock UserRepository 用於 MessageService

@@ -372,7 +372,9 @@ class ConnectionManager:
             # 不廣播 user_left：使用者只是切換房間，仍在線上
             # 真正離線時由 _execute_offline 的 user_status_changed 通知所有房間
         finally:
-            self._pending_room_leave.pop(room_key, None)
+            # 被取消時同一個 key 可能已排入新的計時器，只移除自己的表項
+            if self._pending_room_leave.get(room_key) is asyncio.current_task():
+                del self._pending_room_leave[room_key]
 
     def get_global_online_user_ids(self) -> list[str]:
         """回傳所有全局在線的使用者 ID 列表"""
