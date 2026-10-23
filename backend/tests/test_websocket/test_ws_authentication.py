@@ -12,6 +12,7 @@ from starlette.datastructures import Headers, QueryParams
 
 from app.auth.jwt_handler import create_access_token, create_refresh_token
 from app.database.redis_conn import get_redis
+from app.utils.user_cache import set_cached_user
 from app.utils.ws_ticket import WS_TICKET_PREFIX, create_ws_ticket, validate_ws_ticket
 from app.websocket.auth import (
     authenticate_websocket,
@@ -223,6 +224,50 @@ class TestAuthenticateWebsocket:
             {"sub": "wsmember", "user_id": member["id"], "token_version": 1}
         )
         assert (await authenticate_websocket(fake_ws(), fresh))["id"] == member["id"]
+
+    async def test_token_without_version_claim_counts_as_version_zero(
+        self, async_client, ctx
+    ):
+        """token_version 上線前簽發的 token（無此 claim）視為版本 0：改密碼後即失效"""
+        member = ctx["member"]
+        legacy = create_access_token({"sub": "wsmember", "user_id": member["id"]})
+
+        assert (await authenticate_websocket(fake_ws(), legacy))["id"] == member["id"]
+
+        changed = await async_client.put(
+            "/api/auth/change-password",
+            json={"current_password": member["password"], "new_password": "newpass123"},
+            headers=member["headers"],
+        )
+        assert changed.status_code == 200
+        assert await authenticate_websocket(fake_ws(), legacy) is None
+
+    async def test_cache_entry_without_flags_counts_as_active_version_zero(self, ctx):
+        """快取若是欄位上線前寫入的（缺 is_active / token_version），視為啟用中、版本 0"""
+        member = ctx["member"]
+        legacy_entry = {
+            "_id": member["id"],
+            "username": "wsmember",
+            "email": "wsmember@example.com",
+            "full_name": "Wsmember",
+            "avatar": None,
+        }
+        await set_cached_user(member["id"], legacy_entry)
+
+        info = await authenticate_websocket(fake_ws(), member["token"])
+
+        assert info == {
+            "id": member["id"],
+            "username": "wsmember",
+            "email": "wsmember@example.com",
+            "full_name": "Wsmember",
+            "avatar": None,
+            "is_active": True,
+        }
+        newer = create_access_token(
+            {"sub": "wsmember", "user_id": member["id"], "token_version": 1}
+        )
+        assert await authenticate_websocket(fake_ws(), newer) is None
 
     async def test_ticket_auth_does_not_need_token_version(self, async_client, ctx):
         """ticket 由已通過 HTTP 認證的請求發放，不再比對 token_version"""
