@@ -1,6 +1,7 @@
-# 變異測試附錄：存活變異體與未覆蓋函數明細
+# 變異測試附錄（第一輪，修正前）：存活變異體與未覆蓋函數明細
 
 本文件為 [變異測試報告](mutation-testing-report.md) 的附錄，列出全部 994 個存活變異體的分類，以及從未被任何測試執行過的函數。
+修正與補測後的第二輪明細見 [mutation-testing-survivors-round2.md](mutation-testing-survivors-round2.md)。
 編號（`#id`）對應 `backend/scripts/mutation_test.py gen` 產生的變異體編號；程式碼變動時編號會改變，請以位置與變異內容為準。
 
 分類定義：

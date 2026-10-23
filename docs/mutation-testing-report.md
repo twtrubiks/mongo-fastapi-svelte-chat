@@ -1,15 +1,196 @@
 # 後端變異測試報告
 
-> 執行日期：2026-10-23　對象：`backend/app`（commit `2813ef5`，約 9.3k 行）　工具：[`backend/scripts/mutation_test.py`](../backend/scripts/mutation_test.py)
-> 明細附錄：[mutation-testing-survivors.md](mutation-testing-survivors.md)（994 個存活變異體逐一分類 + 從未被執行的函數清單）
+> 對象：`backend/app`（約 9.3k 行）　工具：[`backend/scripts/mutation_test.py`](../backend/scripts/mutation_test.py)
+> 第一輪（修正前）：2026-10-23，commit `2813ef5`　明細：[mutation-testing-survivors.md](mutation-testing-survivors.md)
+> 第二輪（修正後）：2026-10-23，commit `0bd7335`　明細：[mutation-testing-survivors-round2.md](mutation-testing-survivors-round2.md)
 
 變異測試（mutation testing）會刻意把程式碼改壞一點點（`==` 改 `!=`、刪掉一行呼叫、把 `"token_version"` 改成別的欄位名……），再跑測試。測試失敗代表這個「變異體」被**殺死（killed）**；測試仍然全綠代表它**存活（survived）**——也就是說，這段邏輯就算真的寫錯，現有測試也不會發現。行覆蓋率只回答「這行有沒有被執行」，變異測試回答的是「這行如果錯了，測試會不會叫」。
 
 前端（SvelteKit）目前沒有任何測試，不在本次範圍內。
 
+第〇節是依第一輪結果修正與補測後的重跑結果；第一～八節保留第一輪（修正前）的原始分析作為基準，各項目的處理狀態以第〇節為準。
+
 ---
 
-## 一、結論摘要
+## 〇、修正後重跑（第二輪）
+
+依第一輪的建議修正了 7 個問題、修正了 5 個有缺陷的測試、補上 P0 的測試，再以相同工具與方法重跑。
+
+### 前後對照
+
+| 指標 | 第一輪（修正前） | 第二輪（修正後） |
+|---|---:|---:|
+| 測試數 | 496 | 785 |
+| 全套測試時間 | 約 35 秒 | 約 18 秒 |
+| 行覆蓋率（`app/`） | 78% | 84% |
+| 變異體 | 3,252 | 3,227 |
+| killed | 1,356 | 1,975 |
+| survived | 994 | 686 |
+| 落在無覆蓋程式碼上 | 902 | 566 |
+| 從未被任何測試執行的函數 | 96 個（623 個變異體） | 59 個（404 個變異體） |
+| 存活：高風險 | 71 | **18** |
+| 存活：中風險 | 355 | 190 |
+| 存活：等價變異體 | 110 | 91 |
+| **Mutation score**（killed ÷ 排除等價後的總數） | 43% | **63%** |
+| **有覆蓋程式碼的 mutation score** | 61% | **77%** |
+
+不排除等價變異體的原始分數為 41.7% → 61.2%（有覆蓋：57.7% → 74.2%）。變異體總數略減，是因為修正時移除了部分程式碼（例如 MIME 回退表、`os.getenv` 讀取邏輯）。第二輪共 35.6 分鐘，0 個逾時、0 個執行錯誤，785 個測試逐一單獨執行皆通過。第二輪結束後另補了 1 個斷言（邀請碼驗證回應的 `valid` 欄位），逐一驗證殺死 2 個中風險變異體；上表為第二輪實測值，未計入這 2 個。
+
+第一輪缺口最集中的檔案：
+
+| 檔案 | 第一輪 score | 第二輪 score |
+|---|---:|---:|
+| `security_config.py` | 5% | 88% |
+| `websocket/auth.py` | 15% | 93% |
+| `middleware/rate_limiting.py` | 19% | 78% |
+| `routers/rooms.py` | 1% | 73% |
+| `models/room.py` | 34% | 93% |
+| `services/room_service.py` | 48% | 73% |
+| `database/indexes.py` | 62% | 100% |
+| `services/user_service.py` | 69% | 86% |
+| `utils/file_upload.py` | 24% | 60% |
+
+<details>
+<summary>第二輪：依架構分層與依檔案</summary>
+
+| 層 | 變異體 | killed | survived | 其中 high | 其中 medium | 無覆蓋 | score | 有覆蓋 score |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| auth | 64 | 53 | 9 | 0 | 0 | 2 | 87% | 90% |
+| routers | 212 | 122 | 30 | 0 | 2 | 60 | 58% | 80% |
+| services | 593 | 317 | 80 | 2 | 37 | 196 | 55% | 84% |
+| repositories | 518 | 352 | 77 | 0 | 17 | 89 | 71% | 86% |
+| websocket | 554 | 302 | 175 | 13 | 54 | 77 | 55% | 64% |
+| middleware | 381 | 283 | 93 | 0 | 3 | 5 | 75% | 76% |
+| models | 126 | 101 | 22 | 0 | 2 | 3 | 94% | 96% |
+| utils | 437 | 222 | 102 | 0 | 53 | 113 | 52% | 70% |
+| database | 75 | 53 | 18 | 2 | 2 | 4 | 74% | 78% |
+| core / config / main | 267 | 170 | 80 | 1 | 20 | 17 | 64% | 69% |
+| **合計** | **3,227** | **1,975** | **686** | **18** | **190** | **566** | **63%** | **77%** |
+
+| 檔案 | 變異體 | killed | survived | 其中 high | 其中 medium | 無覆蓋 | score | 有覆蓋 score |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| `services/file_service.py` | 65 | 0 | 0 | 0 | 0 | 65 | 0% | — |
+| `websocket/routes.py` | 6 | 0 | 0 | 0 | 0 | 6 | 0% | — |
+| `routers/notifications.py` | 43 | 1 | 0 | 0 | 0 | 42 | 2% | 100% |
+| `routers/files.py` | 16 | 1 | 0 | 0 | 0 | 15 | 6% | 100% |
+| `utils/image_processor.py` | 116 | 8 | 20 | 0 | 10 | 88 | 7% | 29% |
+| `services/notification_service.py` | 100 | 13 | 1 | 0 | 1 | 86 | 13% | 93% |
+| `database/redis_conn.py` | 15 | 3 | 10 | 2 | 2 | 2 | 21% | 25% |
+| `routers/ai.py` | 3 | 1 | 0 | 0 | 0 | 2 | 33% | 100% |
+| `main.py` | 70 | 29 | 35 | 0 | 10 | 6 | 42% | 46% |
+| `config.py` | 45 | 19 | 26 | 1 | 3 | 0 | 43% | 43% |
+| `repositories/message_repository.py` | 156 | 75 | 27 | 0 | 8 | 54 | 49% | 75% |
+| `websocket/handlers.py` | 318 | 158 | 113 | 12 | 26 | 47 | 50% | 59% |
+| `websocket/manager.py` | 171 | 91 | 57 | 1 | 28 | 23 | 54% | 63% |
+| `database/mongodb.py` | 20 | 10 | 8 | 0 | 0 | 2 | 56% | 62% |
+| `routers/invitations.py` | 5 | 3 | 2 | 0 | 2 | 0 | 60% | 60% |
+| `utils/file_upload.py` | 241 | 142 | 78 | 0 | 43 | 21 | 60% | 66% |
+| `repositories/base.py` | 93 | 54 | 21 | 0 | 2 | 18 | 64% | 81% |
+| `core/bot.py` | 48 | 32 | 8 | 0 | 2 | 8 | 67% | 80% |
+| `middleware/error_handler.py` | 93 | 64 | 26 | 0 | 2 | 3 | 69% | 71% |
+| `services/message_service.py` | 107 | 71 | 19 | 2 | 8 | 17 | 69% | 83% |
+| `routers/messages.py` | 27 | 19 | 7 | 0 | 0 | 1 | 70% | 73% |
+| `services/ai_service.py` | 31 | 22 | 7 | 0 | 3 | 2 | 71% | 76% |
+| `routers/rooms.py` | 71 | 52 | 19 | 0 | 0 | 0 | 73% | 73% |
+| `services/room_service.py` | 208 | 141 | 50 | 0 | 25 | 17 | 73% | 81% |
+| `middleware/security_headers.py` | 51 | 38 | 12 | 0 | 0 | 1 | 76% | 78% |
+| `core/exceptions.py` | 13 | 10 | 3 | 0 | 1 | 0 | 77% | 77% |
+| `middleware/rate_limiting.py` | 237 | 181 | 55 | 0 | 1 | 1 | 78% | 78% |
+| `auth/dependencies.py` | 37 | 27 | 9 | 0 | 0 | 1 | 79% | 82% |
+| `repositories/notification_repository.py` | 89 | 69 | 15 | 0 | 5 | 5 | 82% | 87% |
+| `auth/password.py` | 7 | 6 | 0 | 0 | 0 | 1 | 86% | 100% |
+| `services/user_service.py` | 82 | 70 | 3 | 0 | 0 | 9 | 86% | 97% |
+| `repositories/room_repository.py` | 126 | 103 | 14 | 0 | 2 | 9 | 87% | 94% |
+| `core/fastapi_integration.py` | 41 | 36 | 3 | 0 | 3 | 2 | 88% | 92% |
+| `security_config.py` | 50 | 44 | 5 | 0 | 1 | 1 | 88% | 90% |
+| `models/notification.py` | 13 | 9 | 4 | 0 | 1 | 0 | 90% | 90% |
+| `models/user.py` | 24 | 18 | 6 | 0 | 0 | 0 | 90% | 90% |
+| `utils/json_encoder.py` | 42 | 38 | 0 | 0 | 0 | 4 | 90% | 100% |
+| `utils/ws_ticket.py` | 14 | 12 | 2 | 0 | 0 | 0 | 92% | 92% |
+| `models/room.py` | 49 | 38 | 8 | 0 | 0 | 3 | 93% | 100% |
+| `websocket/auth.py` | 59 | 53 | 5 | 0 | 0 | 1 | 93% | 95% |
+| `repositories/user_repository.py` | 54 | 51 | 0 | 0 | 0 | 3 | 94% | 100% |
+| `routers/auth.py` | 43 | 41 | 2 | 0 | 0 | 0 | 95% | 95% |
+| `models/message.py` | 32 | 28 | 4 | 0 | 1 | 0 | 97% | 97% |
+| `auth/jwt_handler.py` | 20 | 20 | 0 | 0 | 0 | 0 | 100% | 100% |
+| `database/indexes.py` | 40 | 40 | 0 | 0 | 0 | 0 | 100% | 100% |
+| `models/enums.py` | 8 | 8 | 0 | 0 | 0 | 0 | 100% | 100% |
+| `routers/ws_ticket.py` | 4 | 4 | 0 | 0 | 0 | 0 | 100% | 100% |
+| `utils/datetime_utils.py` | 7 | 7 | 0 | 0 | 0 | 0 | 100% | 100% |
+| `utils/user_cache.py` | 17 | 15 | 2 | 0 | 0 | 0 | 100% | 100% |
+
+</details>
+
+### 修正的問題
+
+7 個問題，每個都附回歸測試；有新測試的修正都已確認新測試在修正前的程式碼上會失敗。
+
+| commit | 問題 | 來源 |
+|---|---|---|
+| `9d28a63` | `PUT /api/auth/profile` 不驗證目前密碼就能改密碼。`UserUpdate` 移除 `password` 並拒絕未知欄位，密碼只能經 `change-password` 修改 | 第一輪第五節 #1 |
+| `89d94f0` | 上傳時副檔名不在白名單就改用客戶端宣稱的 MIME，`evil.html` 帶 `image/png` 會被當成圖片存下。改為只採信副檔名 | 第一輪第五節 #2 |
+| `75bc5af` | 寫在 `.env` 的 `SECURITY_*` 不生效。改由 `Settings` 讀取 | 第一輪第五節 #3 |
+| `9998862` | `GET /api/messages/{id}` 只要求登入，知道訊息 ID 就能讀私人房的訊息（IDOR）。改為僅限房間成員，私人房非成員回 404 | 補測時新發現 |
+| `a852bbf` | 限流設定依 dict 順序做前綴比對，圖片上傳 `/api/files/upload/image` 套用的是通用 `/api/` 限制而非上傳限制。改為最長前綴優先 | 補測時新發現 |
+| `1ce72ac` | 邀請碼過期檢查拿 DB 讀回的 naive 時間與 aware 時間比較，會拋 `TypeError`（500）。目前沒有程式寫入過期時間，屬潛伏問題 | 補測時新發現 |
+| `a657a56` | `ws_ticket` 使用 redis-py 已棄用的 `setex`，改用 `set(..., ex=)` | 補測時新發現 |
+
+### 補的測試
+
+| commit | 內容 |
+|---|---|
+| `60f89e2` | 修正第四節的 5 個有缺陷測試：弱密碼邊界、停用帳號 refresh 對照組、索引改用真實 DB 比對規格與唯一性、模型邊界與列舉契約、真實 app 的安全行為 |
+| `b1a55fc` | token 撤銷端到端：改密碼後舊 access / refresh token 401、只改資料不撤銷、刪帳後被拒，並斷言快取確實生效 |
+| `681d856` | rooms / messages HTTP 授權：成員限定端點、私人房可見性、邀請碼僅房主可見、各加入策略、房主權限、訊息讀寫授權；`add_member` 的原子人數條件 |
+| `a657a56` | WebSocket 認證鏈與一次性 ws ticket |
+| `a852bbf` | 限流 dispatch：生產設定、真實 Redis，實際打到 429；Redis 不可用時改為失敗而非 skip |
+| `75bc5af` | 安全配置的載入來源與生產 CSP / HSTS 內容 |
+| `f62e86f` | 測試中把 bcrypt cost 降到 rounds=4（雜湊格式與流程不變），全套測試由約 48 秒降到約 17 秒 |
+| `0bd7335` | 補強 3 處斷言：WS 頭像、人數上限確實寫入、路徑 `room_id` 優先於 body |
+
+### 第一輪缺口的處理狀態
+
+| 項目 | 狀態 | 說明 |
+|---|---|---|
+| P0-1 認證與授權入口 | ✅ 已補 | `require_room_membership`、`get_room_for_user`、WS 認證鏈、ws ticket、rooms / messages 路由皆已被測試執行並斷言 |
+| P0-2 token 撤銷鏈 | ✅ 已補 | 第一輪列出的 13 個相關存活者：12 個（或改寫後對應的變異體）已被殺死，#2226 所在程式碼已隨修正移除 |
+| P0-3 房間存取規則 | ✅ 已補 | `room_service.py` 高風險存活 8 → 0 |
+| P0-4 限流 | ✅ 已補（Redis 連線鏈除外） | `rate_limiting.py` 高風險存活 13 → 0；`redis_conn.py` 仍有 2 個 |
+| P0-5 檔案上傳 / 下載 | 🟡 部分 | 上傳管理器（白名單、magic 簽章、內容完整性、檔名唯一）已測；`file_service.py` 仍完全無覆蓋（含下載路徑穿越防護） |
+| P0-6 密碼長度政策 | ✅ 已補 | |
+| P1-1 序號、斷線補發、冪等 | ⬜ 未處理 | 剩 6 個高風險 |
+| P1-2 即時廣播與 WS 協定 | ⬜ 未處理 | 剩 7 個高風險 |
+| P1-3 唯一索引耦合 | ✅ 已補 | `indexes.py` 100% |
+| P2 API 契約與設定 | 🟡 部分 | 錯誤狀態碼、路由接線、Pydantic 邊界、列舉契約、生產安全標頭已測；生產 CORS / TrustedHost、`DEBUG` 預設值、通知、WS payload 尚未 |
+
+### 仍存活的 18 個高風險變異體
+
+編號為第二輪附錄的編號：
+
+- **訊息序號與斷線補發（6）**：重連的 `last_seq` 參數名稱（#2848）、補發呼叫（#2799）、沒帶 `last_seq` 時的條件（#2798）、gap 超過 200 時全量重載的 skip / limit（#1826、#1828）、即時廣播的 `seq` 欄位（#2790）
+- **WebSocket 協定與廣播（7）**：前端實際使用的 `type: "message"` 別名（#2852）、`client_id` 讀取（#2856、#2951）、ack 的送出與格式（#2757、#2950、#2956）、使用者離開後誤刪整個房間的廣播名單（#3187）
+- **@bot 濫用防護（2）**：`/summary` 判斷反轉（#2864）、@bot 限流視窗改成 0（#2961）
+- **Redis 連線鏈（2）**：`init_redis` 不連線（#271）、`connect` 條件反轉（#276）。conftest 仍吞掉 Redis 初始化錯誤
+- **安全預設（1）**：`Settings.DEBUG` 預設值（#89）
+
+### 待決定
+
+第一輪第五節 #4：把公開房改成私人時，`update_room` 不會產生邀請碼，也不會調整 `join_policy`。目前已加測試，固定「私人房 + DIRECT 一律拒絕直接加入（403）」這個安全面的行為；但「改成私人後沒有邀請碼、沒人能加入」要怎麼處理，需要產品決定：
+- (a) 改成私人時自動產生邀請碼，並改為邀請制
+- (b) 禁止公開 / 私人互換
+- (c) 維持現狀
+
+### 建議的下一批
+
+1. **WebSocket handler 層測試**：`last_seq` 補發的三種情況、`type` 別名、ack 與廣播 payload、離開後的廣播名單。預計可處理 13 個高風險。
+2. **`message_repository` 對真實 MongoDB 的測試**：`next_room_seq` 連號不重號、同一 `client_id` 只存一筆。
+3. **Redis 連線測試**：不吞錯；@bot 限流與 `/summary` 分派。
+4. **補覆蓋**：`file_service` 整合測試（含下載路徑穿越）、通知路由與服務。
+5. **設定預設值**：`Settings()` 在未設 `DEBUG` 時為 `False`；生產環境的 CORS / TrustedHost 分支。
+
+---
+
+## 一、第一輪結論摘要（修正前）
 
 | 指標 | 數值 |
 |---|---:|
@@ -251,25 +432,25 @@ routers 的「有覆蓋 score 100%」只代表少數被執行到的行（`/api/a
 
 變異測試同時揭露了幾個「看起來有測、其實沒測」的測試：
 
-| 測試 | 問題 |
-|---|---|
-| `tests/test_api/test_auth_api.py::test_register_with_weak_password` | 斷言 `status_code in [201, 400, 422]`，不可能失敗 |
-| `tests/test_auth/test_auth_system.py::test_refresh_access_token_inactive_user` | `Mock()` 使用者沒有設 `token_version`，即使停用帳號檢查被拿掉，後面的版本比對也會拋同一個例外——測試因錯誤的原因通過 |
-| `tests/test_security/test_security_features.py`（10 個測試） | 沒有 import 任何 `app` 模組，測的是測試檔內自己寫的邏輯 |
-| `tests/test_models/test_data_validation.py` | 在檔案內自行定義模型，沒有測 `app.models` |
-| `tests/test_database/test_indexes.py` | 只數 `create_index` 呼叫次數，不檢查索引鍵 |
+| 測試 | 問題 | 第二輪 |
+|---|---|---|
+| `tests/test_api/test_auth_api.py::test_register_with_weak_password` | 斷言 `status_code in [201, 400, 422]`，不可能失敗 | ✅ `60f89e2` |
+| `tests/test_auth/test_auth_system.py::test_refresh_access_token_inactive_user` | `Mock()` 使用者沒有設 `token_version`，即使停用帳號檢查被拿掉，後面的版本比對也會拋同一個例外——測試因錯誤的原因通過 | ✅ `60f89e2` |
+| `tests/test_security/test_security_features.py`（10 個測試） | 沒有 import 任何 `app` 模組，測的是測試檔內自己寫的邏輯 | ✅ `60f89e2` |
+| `tests/test_models/test_data_validation.py` | 在檔案內自行定義模型，沒有測 `app.models` | ✅ `60f89e2` |
+| `tests/test_database/test_indexes.py` | 只數 `create_index` 呼叫次數，不檢查索引鍵 | ✅ `60f89e2` |
 
 另外有三個結構性因素讓大量變異體存活：
 
-1. **測試永遠在 `DEBUG=True` 下執行**，生產分支（限流表、CORS、TrustedHost、錯誤細節隱藏、HSTS）從未被執行。
-2. **conftest 吞掉 Redis 初始化錯誤、限流計數測試在 Redis 缺席時 skip**——Redis 整個沒連上時 CI 仍是綠的。
-3. **WS / service 測試多以 `call_count` 斷言**，沒有斷言送出去的 payload 內容。
+1. **測試永遠在 `DEBUG=True` 下執行**，生產分支（限流表、CORS、TrustedHost、錯誤細節隱藏、HSTS）從未被執行。第二輪：限流與安全標頭已改以生產設定測試；CORS / TrustedHost 尚未。
+2. **conftest 吞掉 Redis 初始化錯誤、限流計數測試在 Redis 缺席時 skip**——Redis 整個沒連上時 CI 仍是綠的。第二輪：限流測試已改為 Redis 不可用即失敗；conftest 仍吞錯。
+3. **WS / service 測試多以 `call_count` 斷言**，沒有斷言送出去的 payload 內容。第二輪：尚未處理。
 
 ---
 
 ## 五、判讀過程中發現的現存問題（非變異體）
 
-以下是目前程式碼本身的行為，已逐一對照原始碼確認，**本次未修改**，建議另案處理：
+以下是第一輪時程式碼本身的行為，已逐一對照原始碼確認。第二輪處理狀態：#1～#3 已修正（`9d28a63`、`89d94f0`、`75bc5af`），#4 待決定；補測時另外發現並修正的 4 個問題見第〇節。
 
 1. **`PUT /api/auth/profile` 可以不驗證目前密碼直接改密碼。** `UserUpdate` 含 `password` 欄位，`user_service.update_user` 會直接雜湊寫入；BFF（`frontend/src/routes/api/auth/profile/+server.ts`）原樣轉發 body。`/change-password` 要求的「目前密碼」因此可被繞過——拿到一個已登入的 session（共用電腦未登出、XSS）就能改掉密碼、接管帳號。建議 `UserUpdate` 移除 `password`，密碼一律走 `change_password`。
 2. **上傳的副檔名白名單可用客戶端宣稱的 MIME 繞過。** `FileUploadManager.get_file_type` 是 `_EXT_TO_TYPE.get(ext) or _MIME_TO_TYPE.get(client_mime)`，而 `_matches_magic` 對沒有簽章的副檔名直接回 `True`。`evil.html` 帶 `Content-Type: image/png` 會被當成圖片存成 `uploads/image/<ts>_<id>.html`。全站的 `X-Content-Type-Options: nosniff` 加上下載時回 `application/octet-stream`，讓瀏覽器不會把它當 HTML 執行，但白名單本身已失效。建議副檔名不在表中時直接拒絕。
@@ -282,18 +463,18 @@ routers 的「有覆蓋 score 100%」只代表少數被執行到的行（`/api/a
 
 ## 六、建議的補測順序
 
-依「一個測試能殺死多少高風險變異體」排序：
+依「一個測試能殺死多少高風險變異體」排序（狀態為第二輪）：
 
-1. **改密碼端到端測試**（P0-2）——一個 API 測試就能覆蓋 token 撤銷鏈十餘個變異體，並第一次執行 `change_password`。
-2. **rooms / messages 的 HTTP 測試**（P0-1、P2）——讓 `require_room_membership`、`get_room_for_user`、全部 router 本體、錯誤狀態碼第一次被執行。
-3. **WebSocket 認證與 ws ticket 測試**（P0-1）。
-4. **限流 dispatch 測試（`DEBUG=False`、真實 Redis、不 skip）**（P0-4）——殺死 13 個高風險變異體與生產限流表。
-5. **修正第四節的 5 個缺陷測試**——改動小，直接殺死密碼長度、停用帳號 refresh、索引鍵等變異體。
-6. **房間服務的角色 / 策略斷言**（P0-3）與 **`message_repository` 真實 DB 測試**（P1-1）。
-7. **檔案服務整合測試**（P0-5）。
-8. **WS payload 快照與 Pydantic 邊界參數化**（P1-2、P2）。
+1. ✅ **改密碼端到端測試**（P0-2）——一個 API 測試就能覆蓋 token 撤銷鏈十餘個變異體，並第一次執行 `change_password`。
+2. ✅ **rooms / messages 的 HTTP 測試**（P0-1、P2）——讓 `require_room_membership`、`get_room_for_user`、全部 router 本體、錯誤狀態碼第一次被執行。
+3. ✅ **WebSocket 認證與 ws ticket 測試**（P0-1）。
+4. ✅ **限流 dispatch 測試（`DEBUG=False`、真實 Redis、不 skip）**（P0-4）——殺死 13 個高風險變異體與生產限流表。
+5. ✅ **修正第四節的 5 個缺陷測試**——改動小，直接殺死密碼長度、停用帳號 refresh、索引鍵等變異體。
+6. 🟡 **房間服務的角色 / 策略斷言**（P0-3，已完成）與 **`message_repository` 真實 DB 測試**（P1-1，未處理）。
+7. 🟡 **檔案服務整合測試**（P0-5）——上傳管理器已測，`file_service` 未處理。
+8. 🟡 **WS payload 快照與 Pydantic 邊界參數化**（P1-2、P2）——Pydantic 邊界已測，WS payload 未處理。
 
-補完後建議重跑本工具確認分數變化。
+第二輪的建議見第〇節「建議的下一批」。
 
 ---
 
@@ -317,10 +498,13 @@ mutmut 3 以 trampoline 包裝函數：會跳過帶 decorator 的函數（本專
 - 隨機抽 5 個存活者，以全新目錄、一般 `pytest` subprocess（不經 fork-server）重跑，結果 5/5 一致。
 - 整理後提交的工具重跑 40 個隨機變異體，測試選擇與判定結果 40/40 與正式執行一致。
 - 共 75 分鐘完成（4 核心）；0 個逾時、0 個執行錯誤。
+- 第二輪以提交的工具 `all` 指令完整重跑：785 個測試逐一單獨執行皆通過，35.6 分鐘，0 個逾時、0 個執行錯誤。
 
 ### 存活者判讀
 
 994 個存活者分成 4 個領域，由 4 個平行審查各自對照原始碼、測試與前端使用方逐一分類（高 / 中 / 低 / 等價），再由人工複核所有高風險項目。複核時調降 25 個：collection 名稱改寫（#1006、#1248）、Pydantic 模型間的限制不一致（#790 等 6 個）、magic 簽章表的鍵（17 個，有 `nosniff` 與正確 MIME 緩解）改列中風險。分類為主觀判斷，等價變異體尤其可能有誤判。
+
+第二輪的 686 個存活者中，程式碼未變的沿用第一輪分類（依檔案、函數、運算子與變異前後內容比對）；本輪才出現的（多為原本從未執行、這次才被執行到的程式碼）為人工判讀。
 
 ### 限制
 
@@ -337,7 +521,7 @@ mutmut 3 以 trampoline 包裝函數：會跳過帶 decorator 的函數（本專
 
 ```bash
 cd backend
-python scripts/mutation_test.py all --workers 4     # 全流程，4 核約 75 分鐘
+python scripts/mutation_test.py all --workers 4     # 全流程，4 核約 35 分鐘
 
 # 或分步執行（run 可中斷後續跑）
 python scripts/mutation_test.py gen
