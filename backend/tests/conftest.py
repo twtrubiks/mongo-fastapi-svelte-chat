@@ -5,6 +5,7 @@ import os
 from collections.abc import AsyncGenerator
 from unittest.mock import AsyncMock, Mock, patch
 
+import bcrypt
 import pytest
 from httpx import ASGITransport, AsyncClient
 
@@ -66,6 +67,22 @@ def test_user():
         "password": "testpass123",
         "full_name": "Test User",
     }
+
+
+@pytest.fixture(scope="session", autouse=True)
+def fast_password_hashing():
+    """測試時把 bcrypt cost 降到最低（rounds=4）
+
+    雜湊格式（$2b$）與 hashpw / checkpw 流程不變，只縮短每次雜湊的時間；
+    預設 cost 下每次雜湊約 0.3 秒，註冊 / 登入多的 API 測試會被拖得很慢。
+    """
+    original_gensalt = bcrypt.gensalt
+
+    def low_cost_gensalt(rounds: int = 4, prefix: bytes = b"2b") -> bytes:
+        return original_gensalt(rounds=4, prefix=prefix)
+
+    with patch("bcrypt.gensalt", low_cost_gensalt):
+        yield
 
 
 @pytest.fixture(scope="session", autouse=True)
