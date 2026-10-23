@@ -64,17 +64,23 @@ class SlidingWindowRateLimiter:
         current_requests = results[1]
         burst_requests = results[2] if burst_size else 0
 
-        # 檢查突發限制
+        # 檢查突發限制（突發視窗含剛好 60 秒前的請求，紀錄要到 61 秒後才滑出）
         if burst_size and burst_requests >= burst_size:
-            remaining = 0
-            reset_time = 60 - (now % 60)
-            return False, remaining, reset_time
+            blocking = await self.redis.zrangebyscore(
+                key,
+                burst_window_start,
+                now,
+                start=burst_requests - burst_size,
+                num=1,
+                withscores=True,
+            )
+            return False, 0, self._retry_after(blocking, 61, now)
 
-        # 檢查常規限制
+        # 檢查常規限制（視窗外的紀錄已在上面清掉，index 0 即視窗內最舊一筆）
         if current_requests >= max_requests:
-            remaining = 0
-            reset_time = window_size - (now % window_size)
-            return False, remaining, reset_time
+            index = current_requests - max_requests
+            blocking = await self.redis.zrange(key, index, index, withscores=True)
+            return False, 0, self._retry_after(blocking, window_size, now)
 
         # 記錄這次請求（member 加隨機後綴確保唯一，
         # 否則同一秒內的多個請求會被 ZADD 摺疊成一筆，計數失真）
@@ -86,6 +92,17 @@ class SlidingWindowRateLimiter:
         reset_time = window_size - (now % window_size)
 
         return True, remaining, reset_time
+
+    @staticmethod
+    def _retry_after(blocking: list[tuple[str, float]], span: int, now: int) -> int:
+        """擋住這次請求的那筆紀錄滑出視窗所需秒數
+
+        滑動視窗不對齊固定邊界：要等到計數降到上限以下（這筆紀錄過期）才會放行。
+        並發下紀錄可能剛被清掉，此時退回整個視窗長度。
+        """
+        if not blocking:
+            return span
+        return max(1, int(blocking[0][1]) + span - now)
 
 
 class RateLimitingMiddleware(BaseHTTPMiddleware):

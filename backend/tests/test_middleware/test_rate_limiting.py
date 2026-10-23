@@ -223,6 +223,40 @@ class TestSlidingWindowTiming:
 
         assert out_of_range == []
 
+    @pytest.mark.parametrize(
+        ("window_size", "max_requests", "burst_size", "expected"),
+        [(300, 100, 3, 41), (60, 3, None, 40)],
+        ids=["burst", "window"],
+    )
+    async def test_retry_after_is_when_request_would_be_allowed(
+        self, redis_client, window_size, max_requests, burst_size, expected
+    ):
+        """依回報秒數等待後重試即放行、早一秒仍被擋：滑動視窗以最舊紀錄過期為準，
+        不對齊固定的整分鐘邊界"""
+        limiter = SlidingWindowRateLimiter(redis_client, Settings())
+        key = f"rate_limit:test:{uuid.uuid4().hex}"
+        start = NOW + 40  # 不在整分鐘邊界上
+
+        async def attempt(at: int):
+            with freeze_time(at):
+                return await limiter.is_allowed(
+                    key, window_size, max_requests, burst_size=burst_size
+                )
+
+        try:
+            for offset in (0, 10, 20):
+                assert (await attempt(start + offset))[0] is True
+            blocked, _, retry_after = await attempt(start + 20)
+            too_early = await attempt(start + 20 + retry_after - 1)
+            on_time = await attempt(start + 20 + retry_after)
+        finally:
+            await redis_client.delete(key)
+
+        assert blocked is False
+        assert retry_after == expected
+        assert too_early[0] is False
+        assert on_time[0] is True
+
     async def test_key_expires_once_last_request_stops_counting(self, redis_client):
         """key 存活到最後一筆請求不再被計數為止後由 Redis 自動清除
 
@@ -289,7 +323,8 @@ class TestRateLimitingDispatch:
         assert blocked.json()["error"] == "Rate limit exceeded"
         assert blocked.json()["limit"] == 20
         assert blocked.json()["window"] == 300
-        assert 0 < int(blocked.headers["Retry-After"]) <= 60
+        # 突發視窗含剛好 60 秒前的請求，最舊一筆要 61 秒後才滑出
+        assert 0 < int(blocked.headers["Retry-After"]) <= 61
         assert blocked.headers["X-RateLimit-Remaining"] == "0"
 
     async def test_register_burst_limit(self):
