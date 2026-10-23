@@ -141,8 +141,10 @@ class TestWebSocketHandlersAdditional:
 
             await handle_websocket_connection(mock_websocket, "room123")
 
-            # 由於認證失敗，用戶 ID 為 None，不會調用 disconnect
-            # 只是驗證函數能正常處理異常而不崩潰
+            # 內部錯誤以 4000 關閉（與認證失敗的 4001 區分，前端不把它當成認證失敗）
+            mock_websocket.close.assert_awaited_once_with(
+                code=4000, reason="Internal server error"
+            )
 
     @pytest.mark.asyncio
     async def test_handle_message_chat_message(self, mock_user_info):
