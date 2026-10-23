@@ -363,7 +363,7 @@ pytest tests/ -v --cov=app --cov-report=html
 - **[技術參考](docs/technical-reference.md)** - 三層架構、BFF 架構、MongoDB 優化、SvelteKit、時區處理
 - **[C4 架構文檔](docs/c4-architecture.md)** - 系統架構的完整 C4 模型視圖（Context、Container、Component、Code）
 - **[Harness 自主迴環開發流程](docs/claude-code-harness-impl.md)** - 概念說明、指令參照、Worker/Reviewer 規範、安全防護
-- **[後端變異測試報告](docs/mutation-testing-report.md)** - 修正前後兩輪結果（mutation score 43% → 63%）、測試缺口與處理狀態、重跑方式（明細：[第一輪](docs/mutation-testing-survivors.md)、[第二輪](docs/mutation-testing-survivors-round2.md)）
+- **[後端變異測試報告](docs/mutation-testing-report.md)** - 三輪結果（mutation score 43% → 63% → 86%）、測試缺口與處理狀態、重跑方式（明細：[第一輪](docs/mutation-testing-survivors.md)、[第二輪](docs/mutation-testing-survivors-round2.md)、[第三輪](docs/mutation-testing-survivors-round3.md)）
 
 ### 文檔重點內容
 
