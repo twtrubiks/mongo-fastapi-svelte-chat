@@ -6,12 +6,15 @@
 3. dispatch — 以生產設定（DEBUG=False）與真實 Redis 驗證實際回 429、
    路徑對應的限制、跳過路徑與分桶；dispatch 對任何錯誤 fail-open 放行，
    因此「沒有回 429」本身就是限流失效的訊號
+4. 時間相關 — 固定限流模組的時間來源，驗證突發視窗邊界、重置秒數範圍、
+   429 回應內容與標頭一致性、key 的 TTL
 
 限流需要 Redis：Redis 不可用時測試直接失敗，不 skip。
 """
 
 import logging
 import uuid
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -34,6 +37,24 @@ PRODUCTION = {
     "RATE_LIMIT_REQUESTS_PER_HOUR": 1000,
     "RATE_LIMIT_BURST_SIZE": 10,
 }
+
+NOW = 1_800_000_000
+
+
+def freeze_time(now: int):
+    """固定限流模組看到的時間（只換掉該模組的 time，不影響 event loop 與 Redis client）"""
+    return patch("app.middleware.rate_limiting.time", SimpleNamespace(time=lambda: now))
+
+
+def rate_limit_headers(response) -> dict[str, str]:
+    return {k: v for k, v in response.headers.items() if k.startswith("x-ratelimit-")}
+
+
+@pytest.fixture
+async def redis_client():
+    client = await get_redis()
+    assert await client.ping(), "Redis 不可用：限流測試需要真實 Redis"
+    return client
 
 
 def make_request(
@@ -108,12 +129,6 @@ class TestClientIdentifier:
 class TestSlidingWindowCounting:
     """滑動視窗計數：同秒請求必須逐筆計數（需要真實 Redis 驗證 ZADD 語意）"""
 
-    @pytest.fixture
-    async def redis_client(self):
-        client = await get_redis()
-        assert await client.ping(), "Redis 不可用：限流測試需要真實 Redis"
-        return client
-
     async def test_same_second_requests_counted_individually(self, redis_client):
         """同一秒內連續請求逐筆計數，超過上限即拒絕（回歸：member 摺疊）"""
         limiter = SlidingWindowRateLimiter(redis_client, Settings())
@@ -145,6 +160,84 @@ class TestSlidingWindowCounting:
             assert results == [True, True, False, False]
         finally:
             await redis_client.delete(key)
+
+
+class TestSlidingWindowTiming:
+    """固定時間來源下的視窗邊界、重置秒數與 key 存活時間（真實 Redis）"""
+
+    @pytest.mark.parametrize(("age", "allowed"), [(60, False), (61, True)])
+    async def test_burst_window_covers_last_60_seconds(
+        self, redis_client, age, allowed
+    ):
+        """突發視窗含 60 秒前的請求，61 秒前的不再計入突發"""
+        limiter = SlidingWindowRateLimiter(redis_client, Settings())
+        key = f"rate_limit:test:{uuid.uuid4().hex}"
+        try:
+            await redis_client.zadd(key, {f"old-{i}": NOW - age for i in range(2)})
+            with freeze_time(NOW):
+                result, _, _ = await limiter.is_allowed(
+                    key, window_size=300, max_requests=100, burst_size=2
+                )
+        finally:
+            await redis_client.delete(key)
+
+        assert result is allowed
+
+    async def test_reset_seconds_within_window_at_every_second(self, redis_client):
+        """連續兩分鐘的每一秒，回報的重置秒數都落在 1 ~ 視窗長度
+
+        0 會叫客戶端立刻重試、負數或超過視窗長度則不合理；
+        突發視窗含 60 秒前的請求，因此上限是 61 秒。
+        """
+        limiter = SlidingWindowRateLimiter(redis_client, Settings())
+        keys = []
+        out_of_range = []
+        try:
+            for now in range(NOW, NOW + 120):
+                window_key = f"rate_limit:test:{uuid.uuid4().hex}"
+                burst_key = f"rate_limit:test:{uuid.uuid4().hex}"
+                keys += [window_key, burst_key]
+                with freeze_time(now):
+                    first = await limiter.is_allowed(window_key, 60, 1)
+                    window_blocked = await limiter.is_allowed(window_key, 60, 1)
+                    await limiter.is_allowed(burst_key, 300, 100, burst_size=1)
+                    burst_blocked = await limiter.is_allowed(
+                        burst_key, 300, 100, burst_size=1
+                    )
+
+                assert (first[0], window_blocked[0], burst_blocked[0]) == (
+                    True,
+                    False,
+                    False,
+                )
+                if not (
+                    1 <= first[2] <= 60
+                    and 1 <= window_blocked[2] <= 60
+                    and 1 <= burst_blocked[2] <= 61
+                ):
+                    out_of_range.append(
+                        (now, first[2], window_blocked[2], burst_blocked[2])
+                    )
+        finally:
+            await redis_client.delete(*keys)
+
+        assert out_of_range == []
+
+    async def test_key_expires_once_last_request_stops_counting(self, redis_client):
+        """key 存活到最後一筆請求不再被計數為止後由 Redis 自動清除
+
+        視窗 60 秒、突發視窗含 60 秒前的請求，最後一筆在 61 秒內都還算數，
+        TTL 不足會提早遺失計數，未設定則閒置 key 永遠殘留。
+        """
+        limiter = SlidingWindowRateLimiter(redis_client, Settings())
+        key = f"rate_limit:test:{uuid.uuid4().hex}"
+        try:
+            await limiter.is_allowed(key, window_size=60, max_requests=10, burst_size=5)
+            ttl_ms = await redis_client.pttl(key)
+        finally:
+            await redis_client.delete(key)
+
+        assert 60_000 < ttl_ms <= 61_000
 
 
 def make_app(**settings_overrides) -> FastAPI:
@@ -206,15 +299,56 @@ class TestRateLimitingDispatch:
         assert statuses == [200] * 5 + [429]
 
     async def test_rate_limit_headers_on_allowed_requests(self):
-        async with make_client(make_app()) as client:
-            headers = unique_client()
-            first = await client.post("/api/auth/login", headers=headers)
-            second = await client.post("/api/auth/login", headers=headers)
+        with freeze_time(NOW):
+            async with make_client(make_app()) as client:
+                headers = unique_client()
+                first = await client.post("/api/auth/login", headers=headers)
+                second = await client.post("/api/auth/login", headers=headers)
 
-        assert first.headers["X-RateLimit-Limit"] == "20"
-        assert first.headers["X-RateLimit-Window"] == "300"
-        assert first.headers["X-RateLimit-Remaining"] == "19"
-        assert second.headers["X-RateLimit-Remaining"] == "18"
+        reset_at = int(first.headers["X-RateLimit-Reset"])
+        assert NOW < reset_at <= NOW + 300
+        assert rate_limit_headers(first) == {
+            "x-ratelimit-limit": "20",
+            "x-ratelimit-remaining": "19",
+            "x-ratelimit-reset": str(reset_at),
+            "x-ratelimit-window": "300",
+        }
+        assert rate_limit_headers(second) == {
+            **rate_limit_headers(first),
+            "x-ratelimit-remaining": "18",
+        }
+
+    @pytest.mark.parametrize(
+        ("overrides", "limit"),
+        [
+            ({"RATE_LIMIT_REQUESTS_PER_MINUTE": 2, "RATE_LIMIT_BURST_SIZE": 10}, 2),
+            ({"RATE_LIMIT_REQUESTS_PER_MINUTE": 100, "RATE_LIMIT_BURST_SIZE": 2}, 100),
+        ],
+        ids=["window-limit", "burst-limit"],
+    )
+    async def test_rejected_response_contract(self, overrides, limit):
+        """429 的 body 與標頭彼此一致：retry_after = Retry-After、Reset = 現在 + Retry-After"""
+        with freeze_time(NOW):
+            async with make_client(make_app(**overrides)) as client:
+                headers = unique_client()
+                await hit(client, "/api/rooms", headers, 2)
+                blocked = await client.post("/api/rooms", headers=headers)
+
+        assert blocked.status_code == 429
+        retry_after = int(blocked.headers["Retry-After"])
+        assert blocked.json() == {
+            "error": "Rate limit exceeded",
+            "message": f"Too many requests. Please try again in {retry_after} seconds.",
+            "retry_after": retry_after,
+            "limit": limit,
+            "window": 60,
+        }
+        assert rate_limit_headers(blocked) == {
+            "x-ratelimit-limit": str(limit),
+            "x-ratelimit-remaining": "0",
+            "x-ratelimit-reset": str(NOW + retry_after),
+            "x-ratelimit-window": "60",
+        }
 
     async def test_api_paths_use_configured_limits(self):
         async with make_client(
@@ -286,7 +420,10 @@ class TestRateLimitingDispatch:
 
     async def test_untrusted_client_cannot_rotate_buckets_with_xff(self):
         """直連（非可信 proxy）偽造 X-Forwarded-For 無法換桶繞過限流"""
-        client_ip = f"198.51.100.{uuid.uuid4().int % 250 + 1}"
+        # 註冊桶視窗 1 小時：只有 250 種隨機 IP 時，重跑會撞到 Redis 中仍在視窗內的舊桶，
+        # 改用文件保留段（2001:db8::/32）的 IPv6 加 48 位元隨機後綴
+        suffix = uuid.uuid4().hex[:12]
+        client_ip = f"2001:db8::{suffix[:4]}:{suffix[4:8]}:{suffix[8:]}"
         async with make_client(make_app(), client_ip=client_ip) as client:
             statuses = [
                 (
@@ -332,16 +469,28 @@ class TestRateLimitingDispatch:
 
         assert caplog.records == []
 
-    async def test_fail_open_when_redis_unavailable(self):
-        """Redis 不可用時放行請求（刻意的 fail-open 設計）"""
-        with patch(
-            "app.middleware.rate_limiting.get_redis",
-            side_effect=ConnectionError("redis down"),
+    async def test_fail_open_when_redis_unavailable(self, caplog):
+        """Redis 不可用時放行請求（刻意的 fail-open 設計），並以 warning 記錄限流停用，
+        而不是走進內部錯誤分支"""
+        with (
+            patch(
+                "app.middleware.rate_limiting.get_redis",
+                side_effect=ConnectionError("redis down"),
+            ),
+            caplog.at_level(logging.WARNING, logger="app.middleware.rate_limiting"),
         ):
             async with make_client(make_app(RATE_LIMIT_BURST_SIZE=1)) as client:
                 statuses = await hit(client, "/api/rooms", unique_client(), 3)
 
         assert statuses == [200, 200, 200]
+        assert [
+            (r.levelname, r.getMessage())
+            for r in caplog.records
+            if r.name == "app.middleware.rate_limiting"
+        ] == [
+            ("WARNING", "Failed to initialize rate limiter: redis down"),
+            ("WARNING", "Rate limiter not available, allowing request"),
+        ] * 3
 
 
 @pytest.mark.unit
@@ -368,6 +517,28 @@ class TestRateLimitConfiguration:
         for path, limits in production.rate_limits.items():
             assert debug.rate_limits[path]["max_requests"] > limits["max_requests"]
             assert debug.rate_limits[path]["burst"] > limits["burst"]
+
+    def test_debug_limits_applied_per_path(self):
+        """DEBUG 模式下各類路徑實際套用的限制"""
+        debug = RateLimitingMiddleware(
+            app=None, settings=Settings(**{**PRODUCTION, "DEBUG": True})
+        )
+        expected = {
+            "/api/auth/login": {"window": 60, "max_requests": 100, "burst": 50},
+            "/api/auth/register": {"window": 300, "max_requests": 50, "burst": 25},
+            "/api/rooms": {"window": 60, "max_requests": 200, "burst": 100},
+            "/api/files/upload/image": {
+                "window": 300,
+                "max_requests": 100,
+                "burst": 50,
+            },
+            "/ws/room-1": {"window": 60, "max_requests": 50, "burst": 20},
+            "/": {"window": 3600, "max_requests": 5000, "burst": 500},
+        }
+
+        assert {path: debug._get_rate_limit_config(path) for path in expected} == (
+            expected
+        )
 
     def test_trusted_proxies_parsed_from_settings(self):
         middleware = RateLimitingMiddleware(

@@ -2,6 +2,8 @@
 
 import hashlib
 import io
+import re
+import shutil
 from datetime import UTC, datetime
 from unittest.mock import Mock, patch
 
@@ -17,6 +19,7 @@ from app.utils.file_upload import (
 )
 from app.utils.image_processor import (
     MAX_IMAGE_PIXELS,
+    ImageProcessor,
     ImageProcessorError,
     _ensure_pixel_limit,
 )
@@ -162,6 +165,102 @@ class TestGetFileType:
         assert not any(path.is_file() for path in tmp_path.rglob("*"))
 
 
+def _sized_upload(filename: str, size: int) -> UploadFile:
+    """只宣告大小的 UploadFile（validate_file 依 multipart 解析出的 size 判斷，不讀內容）"""
+    return UploadFile(
+        file=io.BytesIO(b""),
+        size=size,
+        filename=filename,
+        headers=Headers({"content-type": "application/octet-stream"}),
+    )
+
+
+class TestValidateFile:
+    """validate_file：大小上限、檔名長度與檔名字元"""
+
+    @pytest.mark.parametrize(
+        ("filename", "file_type", "max_size", "limit_text"),
+        [
+            ("photo.png", "image", 10 * 1024 * 1024, "10.0MB"),
+            ("report.pdf", "document", 50 * 1024 * 1024, "50.0MB"),
+            ("clip.mp4", "video", 100 * 1024 * 1024, "100.0MB"),
+            ("song.mp3", "audio", 20 * 1024 * 1024, "20.0MB"),
+        ],
+    )
+    def test_size_limit_boundary(
+        self, tmp_path, filename, file_type, max_size, limit_text
+    ):
+        """恰好等於上限可通過，多 1 byte 即拒絕"""
+        manager = FileUploadManager(upload_dir=str(tmp_path))
+
+        assert manager.validate_file(_sized_upload(filename, max_size)) == (
+            file_type,
+            {
+                "file_type": file_type,
+                "original_name": filename,
+                "content_type": "application/octet-stream",
+                "size": max_size,
+            },
+        )
+        with pytest.raises(
+            FileUploadError, match=re.escape(f"檔案大小超過限制 ({limit_text})")
+        ):
+            manager.validate_file(_sized_upload(filename, max_size + 1))
+
+    def test_filename_length_boundary(self, tmp_path):
+        """檔名 255 字元可通過，256 字元拒絕"""
+        manager = FileUploadManager(upload_dir=str(tmp_path))
+        longest = "a" * 251 + ".png"
+
+        assert len(longest) == 255
+        manager.validate_file(_make_upload(longest, PNG_BYTES, "image/png"))
+        with pytest.raises(FileUploadError, match="檔案名稱太長"):
+            manager.validate_file(_make_upload("a" + longest, PNG_BYTES, "image/png"))
+
+    @pytest.mark.parametrize("char", ["<", ">", ":", '"', "|", "?", "*", "\\", "/"])
+    def test_reserved_characters_rejected(self, tmp_path, char):
+        manager = FileUploadManager(upload_dir=str(tmp_path))
+        upload = _make_upload(f"bad{char}name.png", PNG_BYTES, "image/png")
+
+        with pytest.raises(FileUploadError, match="檔案名稱包含不允許的字符"):
+            manager.validate_file(upload)
+
+    def test_ordinary_filename_accepted(self, tmp_path):
+        manager = FileUploadManager(upload_dir=str(tmp_path))
+        upload = _make_upload("會議 紀錄 (1)_v2-final.png", PNG_BYTES, "image/png")
+
+        assert manager.validate_file(upload)[0] == "image"
+
+
+class TestUploadDirectories:
+    """上傳目錄的建立：全新環境與執行期目錄被清除"""
+
+    def test_fresh_environment_creates_type_directories(self, tmp_path):
+        upload_dir = tmp_path / "uploads"  # 尚不存在
+
+        FileUploadManager(upload_dir=str(upload_dir))
+
+        assert sorted(p.name for p in upload_dir.iterdir()) == [
+            "audio",
+            "document",
+            "image",
+            "video",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_save_recreates_directories_removed_at_runtime(self, tmp_path):
+        """啟動後 uploads 整個被清掉（例如 volume 重新掛載），上傳仍成功並重建目錄"""
+        upload_dir = tmp_path / "uploads"
+        manager = FileUploadManager(upload_dir=str(upload_dir))
+        shutil.rmtree(upload_dir)
+
+        file_info = await manager.save_file(
+            _make_upload("photo.png", PNG_BYTES, "image/png")
+        )
+
+        assert (upload_dir / "image" / file_info["filename"]).read_bytes() == PNG_BYTES
+
+
 class TestSaveFileMagicValidation:
     """save_file 對偽裝副檔名的拒絕行為"""
 
@@ -229,6 +328,19 @@ class TestPixelLimit:
         bomb = Mock(width=100_000, height=100_000)  # 100 億像素
         with pytest.raises(ImageProcessorError, match="像素數超過上限"):
             _ensure_pixel_limit(bomb)
+
+    @pytest.mark.filterwarnings("ignore::PIL.Image.DecompressionBombWarning")
+    def test_pixel_limit_boundary_with_real_images(self, tmp_path):
+        """恰好 5 千萬像素可讀取，多 1 像素即在解碼前被拒"""
+        processor = ImageProcessor(output_dir=str(tmp_path / "processed"))
+        at_limit = tmp_path / "at_limit.png"
+        over_limit = tmp_path / "over_limit.png"
+        Image.new("1", (10_000, 5_000)).save(at_limit, compress_level=1)
+        Image.new("1", (14_041, 3_561)).save(over_limit, compress_level=1)
+
+        assert processor.get_image_info(str(at_limit))["size"] == (10_000, 5_000)
+        with pytest.raises(ImageProcessorError, match="像素數超過上限（14041x3561"):
+            processor.get_image_info(str(over_limit))
 
     def test_pillow_global_limit_configured(self):
         # 第二道防線：Pillow 全域上限已設定
