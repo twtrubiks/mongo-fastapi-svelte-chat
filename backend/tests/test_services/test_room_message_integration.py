@@ -103,7 +103,7 @@ class TestRoomMessageIntegration:
             user_id=owner_id,
             username="room_owner",
             content="歡迎來到房間！",
-            message_type=MessageType.SYSTEM,
+            message_type=MessageType.TEXT,
             created_at=datetime.now(UTC),
             updated_at=datetime.now(UTC),
         )
@@ -125,7 +125,7 @@ class TestRoomMessageIntegration:
 
         # 2. 發送歡迎消息
         message_create = MessageCreate(
-            room_id=room_id, content="歡迎來到房間！", message_type=MessageType.SYSTEM
+            room_id=room_id, content="歡迎來到房間！", message_type=MessageType.TEXT
         )
 
         # Mock UserRepository 用於 MessageService
@@ -198,7 +198,7 @@ class TestRoomMessageIntegration:
             user_id=new_user_id,
             username="new_member",
             content="new_member 加入了房間",
-            message_type=MessageType.SYSTEM,
+            message_type=MessageType.TEXT,
             created_at=datetime.now(UTC),
             updated_at=datetime.now(UTC),
         )
@@ -219,7 +219,7 @@ class TestRoomMessageIntegration:
         message_create = MessageCreate(
             room_id=room_id,
             content="new_member 加入了房間",
-            message_type=MessageType.SYSTEM,
+            message_type=MessageType.TEXT,
         )
 
         # Mock UserRepository 用於 MessageService
