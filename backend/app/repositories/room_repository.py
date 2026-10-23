@@ -39,6 +39,7 @@ class RoomRepository(BaseRepository[RoomInDB]):
         room_id: str,
         room_update: RoomUpdate,
         password_hash: str | None = None,
+        invite_code: str | None = None,
     ) -> RoomInDB | None:
         """
         更新房間（純資料操作，驗證與加密由 Service 層負責）
@@ -47,6 +48,7 @@ class RoomRepository(BaseRepository[RoomInDB]):
             room_id: 房間 ID
             room_update: 更新資料
             password_hash: 已雜湊的密碼（由 Service 層傳入）
+            invite_code: 新的邀請碼（由 Service 層產生）
 
         Returns:
             Optional[RoomInDB]: 更新後的房間物件，如果失敗則返回 None
@@ -66,6 +68,8 @@ class RoomRepository(BaseRepository[RoomInDB]):
             update_data["join_policy"] = room_update.join_policy.value
         if password_hash is not None:
             update_data["password_hash"] = password_hash
+        if invite_code is not None:
+            update_data["invite_code"] = invite_code
 
         if not update_data:
             return await self.get_by_id(room_id)
