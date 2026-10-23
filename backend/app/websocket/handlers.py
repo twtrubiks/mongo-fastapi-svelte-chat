@@ -774,9 +774,9 @@ async def handle_notification_read(
                 success = False
 
         elif read_type == "all":
-            # 標記所有通知為已讀
+            # 標記所有通知為已讀（與房間已讀、HTTP /read-all 一致：沒有未讀通知也算成功）
             count = await notification_service.mark_all_as_read(user_id)
-            success = count > 0
+            success = True
             logger.info(f"Marked {count} notifications as read for user {user_id}")
 
         # 發送響應

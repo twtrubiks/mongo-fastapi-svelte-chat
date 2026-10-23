@@ -938,6 +938,21 @@ class TestNotificationReadEvents:
         assert recorder.sent[0][3]["success"] is True
         assert recorder.sent[1][2]["data"]["read_type"] == "all"
 
+    async def test_read_all_with_nothing_unread_still_succeeds(self, ctx, recorder):
+        """與房間已讀、HTTP /read-all 一致：沒有未讀通知也回成功並同步其他裝置"""
+        sender = ctx.sender
+
+        await handle_message(
+            sender["id"],
+            ctx.room_id,
+            {"type": "notification_read", "read_type": "all"},
+            sender["info"],
+        )
+
+        assert [event[0] for event in recorder.sent] == ["personal", "event"]
+        assert recorder.sent[0][3]["success"] is True
+        assert recorder.sent[1][2]["data"]["read_type"] == "all"
+
 
 @pytest.mark.asyncio
 @pytest.mark.unit
