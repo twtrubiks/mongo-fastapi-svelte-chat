@@ -627,16 +627,15 @@ def cmd_setup(args):
                 "*.pyc",
             ),
         )
-        cfg = dst / "tests" / "test_config.py"
-        text = cfg.read_text()
-        patched = text.replace(
-            'TEST_DATABASE_NAME = "test_chatroom"',
-            f'TEST_DATABASE_NAME = "test_chatroom_mut{i}"',
-        ).replace('"redis://localhost:6379/1"', f'"redis://localhost:6379/{2 + i}"')
-        if f"test_chatroom_mut{i}" not in patched or f"6379/{2 + i}" not in patched:
-            raise SystemExit("無法修補 tests/test_config.py 的資料庫設定，請更新本腳本")
-        cfg.write_text(patched)
     print(f"已建立 {args.workers} 個 worker 複本（各自的 MongoDB DB 與 Redis DB）")
+
+
+def _worker_test_env(index: int) -> dict[str, str]:
+    """每個 worker 使用自己的 MongoDB DB 與 Redis DB（見 tests/test_config.py）"""
+    return {
+        "TEST_DATABASE_NAME": f"test_chatroom_mut{index}",
+        "TEST_REDIS_URL": f"redis://localhost:6379/{2 + index}",
+    }
 
 
 def _launch_workers(jobs_file: Path, workers: int):
@@ -650,6 +649,7 @@ def _launch_workers(jobs_file: Path, workers: int):
                 str(jobs_file),
             ],
             cwd=WORKDIR / f"w{i}" / "backend",
+            env={**os.environ, **_worker_test_env(i)},
         )
         for i in range(workers)
     ]
