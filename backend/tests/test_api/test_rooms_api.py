@@ -647,6 +647,26 @@ class TestMessageAuthorization:
         assert outsider.status_code == 403
         assert via_messages_api.status_code == 403
 
+    async def test_users_cannot_post_system_messages(self, async_client, users):
+        """system 訊息在前端顯示為系統公告，使用者不可自行建立"""
+        room = await _create_room(async_client, users["owner"])
+        body = {"room_id": room["id"], "content": "系統公告", "message_type": "system"}
+
+        via_room = await async_client.post(
+            f"/api/rooms/{room['id']}/messages",
+            json=body,
+            headers=users["owner"]["headers"],
+        )
+        via_messages_api = await async_client.post(
+            "/api/messages/", json=body, headers=users["owner"]["headers"]
+        )
+
+        assert via_room.status_code == via_messages_api.status_code == 403
+        history = await async_client.get(
+            f"/api/rooms/{room['id']}/messages", headers=users["owner"]["headers"]
+        )
+        assert history.json() == []
+
     async def test_room_messages_returned_in_order(self, async_client, users):
         room = await _create_room(async_client, users["owner"])
         for content in ("first", "second", "third"):

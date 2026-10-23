@@ -404,6 +404,37 @@ class TestChatMessageEvents:
         ]
         assert await ctx.db.messages.count_documents({}) == 0
 
+    async def test_system_message_type_rejected(self, ctx, recorder):
+        """使用者不可經 WS 建立 system 訊息（前端會顯示為系統公告）"""
+        sender = ctx.sender
+
+        await handle_message(
+            sender["id"],
+            ctx.room_id,
+            {
+                "type": "chat_message",
+                "content": "系統公告：請重新登入",
+                "message_type": "system",
+                "client_id": "c-sys",
+            },
+            sender["info"],
+        )
+
+        assert recorder.sent == [
+            (
+                "personal",
+                sender["id"],
+                ctx.room_id,
+                {
+                    "type": "error",
+                    "message": "訊息發送失敗",
+                    "timestamp": NOW,
+                    "temp_id": "c-sys",
+                },
+            )
+        ]
+        assert await ctx.db.messages.count_documents({}) == 0
+
     async def test_non_member_gets_send_failure(self, ctx, recorder):
         outsider = await _make_user(ctx.client, "outsider")
 
