@@ -257,6 +257,20 @@ class TestSlidingWindowTiming:
         assert too_early[0] is False
         assert on_time[0] is True
 
+    async def test_retry_after_minimum_is_one_second(self, redis_client):
+        """擋住請求的紀錄下一秒就滑出視窗時，回報 1 秒（不多報）"""
+        limiter = SlidingWindowRateLimiter(redis_client, Settings())
+        key = f"rate_limit:test:{uuid.uuid4().hex}"
+        try:
+            await redis_client.zadd(key, {"almost-expired": NOW - 59})
+            with freeze_time(NOW):
+                allowed, _, retry_after = await limiter.is_allowed(key, 60, 1)
+        finally:
+            await redis_client.delete(key)
+
+        assert allowed is False
+        assert retry_after == 1
+
     async def test_key_expires_once_last_request_stops_counting(self, redis_client):
         """key 存活到最後一筆請求不再被計數為止後由 Redis 自動清除
 
