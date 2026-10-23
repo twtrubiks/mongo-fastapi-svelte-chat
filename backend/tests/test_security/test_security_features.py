@@ -83,6 +83,7 @@ class TestSecurityFeatures:
         )
 
         assert response.status_code == 401
+        assert response.headers["WWW-Authenticate"] == "Bearer"
 
     @pytest.mark.parametrize(
         "forge",
@@ -126,6 +127,45 @@ class TestSecurityFeatures:
         )
 
         assert response.status_code == 401
+        # RFC 6750：Bearer 認證失敗的 401 必須帶 challenge
+        assert response.headers["WWW-Authenticate"] == "Bearer"
+
+    async def test_stale_token_version_rejected_with_bearer_challenge(
+        self, async_client, isolated_db_manager, test_user
+    ):
+        """簽章有效但 token_version 與使用者目前版本不符（改密碼前簽發）"""
+        session = await _register_and_login(async_client, test_user)
+        user_id = session["me"].json()["id"]
+        stale = create_access_token(
+            {"sub": test_user["username"], "user_id": user_id, "token_version": 1}
+        )
+
+        response = await async_client.get("/api/auth/me", headers=_bearer(stale))
+
+        assert response.status_code == 401
+        assert response.json() == {"detail": "認證已失效，請重新登入"}
+        assert response.headers["WWW-Authenticate"] == "Bearer"
+
+    async def test_unauthorized_error_carries_bearer_challenge(
+        self, async_client, isolated_db_manager, test_user
+    ):
+        """Service 層拋出的 UnauthorizedError（登入失敗、refresh 無效）同樣帶 challenge"""
+        await _register_and_login(async_client, test_user)
+
+        bad_login = await async_client.post(
+            "/api/auth/login",
+            data={"username": test_user["username"], "password": "wrong-password"},
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+        bad_refresh = await async_client.post(
+            "/api/auth/refresh", json={"refresh_token": "not-a-jwt"}
+        )
+
+        assert bad_login.status_code == 401
+        assert bad_login.json() == {"detail": "使用者名稱或密碼錯誤"}
+        assert bad_login.headers["WWW-Authenticate"] == "Bearer"
+        assert bad_refresh.status_code == 401
+        assert bad_refresh.headers["WWW-Authenticate"] == "Bearer"
 
     async def test_valid_token_with_same_claims_is_accepted(
         self, async_client, isolated_db_manager, test_user

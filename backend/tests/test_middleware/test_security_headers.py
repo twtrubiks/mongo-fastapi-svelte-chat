@@ -1,5 +1,6 @@
 """安全標頭中間件測試"""
 
+import logging
 from unittest.mock import AsyncMock
 
 import pytest
@@ -10,6 +11,33 @@ from fastapi.testclient import TestClient
 from app.middleware.security_headers import (
     SecurityHeadersMiddleware,
 )
+
+PERMISSIONS_POLICY = (
+    "geolocation=(), microphone=(), camera=(), "
+    "payment=(), usb=(), magnetometer=(), gyroscope=()"
+)
+
+
+def parse_csp(header: str) -> dict[str, list[str]]:
+    directives = {}
+    for part in header.split(";"):
+        name, *sources = part.split()
+        directives[name] = sources
+    return directives
+
+
+def app_with(middleware: SecurityHeadersMiddleware) -> FastAPI:
+    app = FastAPI()
+
+    @app.middleware("http")
+    async def add_security_headers(request: Request, call_next):
+        return await middleware(request, call_next)
+
+    @app.get("/test")
+    async def test_endpoint():
+        return {"message": "test"}
+
+    return app
 
 
 @pytest.mark.unit
@@ -95,12 +123,24 @@ class TestSecurityHeadersMiddleware:
 
         assert response.status_code == 200
 
-        # 檢查基本安全標頭
+        # 檢查基本安全標頭（未帶 custom_headers 時即為中間件自身的基礎標頭）
         assert response.headers["X-Content-Type-Options"] == "nosniff"
         assert response.headers["X-Frame-Options"] == "DENY"
         assert response.headers["X-XSS-Protection"] == "1; mode=block"
-        assert "Referrer-Policy" in response.headers
-        assert "Permissions-Policy" in response.headers
+        assert response.headers["Referrer-Policy"] == "strict-origin-when-cross-origin"
+        assert response.headers["Permissions-Policy"] == PERMISSIONS_POLICY
+        csp = parse_csp(response.headers["Content-Security-Policy"])
+        assert set(csp) == {
+            "default-src",
+            "script-src",
+            "style-src",
+            "img-src",
+            "font-src",
+            "connect-src",
+            "frame-ancestors",
+        }
+        assert csp["default-src"] == ["'self'"]
+        assert csp["frame-ancestors"] == ["'none'"]
 
         # 檢查內容
         assert response.json() == {"message": "test"}
@@ -123,8 +163,10 @@ class TestSecurityHeadersMiddleware:
             response = client.get("/test")
 
             assert response.status_code == 200
-            assert "Strict-Transport-Security" in response.headers
-            assert "max-age=" in response.headers["Strict-Transport-Security"]
+            # 預設 max-age 為一年
+            assert response.headers["Strict-Transport-Security"] == (
+                "max-age=31536000; includeSubDomains; preload"
+            )
 
     def test_hsts_header_skipped_for_http(self):
         """測試 HTTP 環境下跳過 HSTS 標頭"""
@@ -166,6 +208,19 @@ class TestSecurityHeadersMiddleware:
             assert response.status_code == 200
             assert "Strict-Transport-Security" in response.headers
 
+    @pytest.mark.parametrize(
+        ("forwarded_ssl", "expect_hsts"), [("on", True), ("off", False)]
+    )
+    def test_x_forwarded_ssl(self, forwarded_ssl, expect_hsts):
+        """部分反向代理以 X-Forwarded-SSL: on 標示 HTTPS"""
+        with TestClient(
+            app_with(SecurityHeadersMiddleware(enable_hsts=True))
+        ) as client:
+            response = client.get("/test", headers={"X-Forwarded-SSL": forwarded_ssl})
+
+        assert response.status_code == 200
+        assert ("Strict-Transport-Security" in response.headers) is expect_hsts
+
     def test_csp_header_configuration(self):
         """測試內容安全政策標頭配置"""
         # 啟用 CSP
@@ -193,9 +248,35 @@ class TestSecurityHeadersMiddleware:
             response = client.get("/error")
 
             assert response.status_code == 500
+            assert response.json() == {"error": "Internal server error"}
             # 即使出錯，安全標頭也應該存在
             assert "X-Content-Type-Options" in response.headers
             assert "X-Frame-Options" in response.headers
+
+    def test_error_log_message_truncated_to_500_chars(self, caplog):
+        app = FastAPI()
+        middleware = SecurityHeadersMiddleware()
+
+        @app.middleware("http")
+        async def add_security_headers(request: Request, call_next):
+            return await middleware(request, call_next)
+
+        @app.get("/error")
+        async def error_endpoint():
+            raise ValueError("a" * 500 + "TAIL")
+
+        with caplog.at_level(logging.ERROR, logger="app.middleware.security_headers"):
+            with TestClient(app) as client:
+                client.get("/error")
+
+        messages = [
+            r.getMessage()
+            for r in caplog.records
+            if r.name == "app.middleware.security_headers"
+        ]
+        assert messages == [
+            "Error in SecurityHeadersMiddleware: [ValueError] " + "a" * 500
+        ]
 
     def test_server_header_added(self, client):
         """測試 Server 標頭是否添加"""
