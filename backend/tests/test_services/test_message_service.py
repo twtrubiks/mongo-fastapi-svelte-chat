@@ -1,13 +1,14 @@
 """訊息服務整合測試 - 使用 Mock Repository"""
 
 from datetime import UTC, datetime
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from bson import ObjectId
 from pymongo.errors import DuplicateKeyError
 
-from app.core.exceptions import ForbiddenError
+from app.core.exceptions import ForbiddenError, NotFoundError
+from app.models.enums import RoomType
 from app.models.message import (
     MessageCreate,
     MessageInDB,
@@ -195,6 +196,54 @@ class TestMessageServiceIntegration:
         assert result.id == message_id
         assert result.content == "測試訊息"
         assert result.user_id == user_id
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("room_type", "is_member", "expected"),
+        [
+            (RoomType.PUBLIC, True, None),
+            (RoomType.PRIVATE, True, None),
+            (RoomType.PUBLIC, False, ForbiddenError),
+            (RoomType.PRIVATE, False, NotFoundError),
+        ],
+    )
+    async def test_get_message_for_user(
+        self, message_service_with_mocks, room_type, is_member, expected
+    ):
+        """只有房間成員可讀訊息；私人房非成員回 404 不洩漏存在性"""
+        service = message_service_with_mocks
+        user_id = str(ObjectId())
+        message = MessageResponse(
+            id=str(ObjectId()),
+            content="secret",
+            message_type=MessageType.TEXT,
+            user_id=str(ObjectId()),
+            room_id=str(ObjectId()),
+            username="author",
+            status=MessageStatus.SENT,
+            edited=False,
+            created_at=datetime.now(UTC),
+            updated_at=datetime.now(UTC),
+        )
+        service.message_repo.get_with_reply.return_value = message
+        room = Mock(room_type=room_type, members=[user_id] if is_member else [])
+        service.room_repo.get_by_id.return_value = room
+
+        if expected is None:
+            assert await service.get_message_for_user(message.id, user_id) == message
+        else:
+            with pytest.raises(expected):
+                await service.get_message_for_user(message.id, user_id)
+        service.room_repo.get_by_id.assert_awaited_once_with(message.room_id)
+
+    @pytest.mark.asyncio
+    async def test_get_message_for_user_room_gone(self, message_service_with_mocks):
+        service = message_service_with_mocks
+        service.message_repo.get_with_reply.return_value = Mock(room_id="gone")
+        service.room_repo.get_by_id.return_value = None
+
+        with pytest.raises(NotFoundError):
+            await service.get_message_for_user(str(ObjectId()), str(ObjectId()))
 
     @pytest.mark.asyncio
     async def test_get_room_messages(self, message_service_with_mocks):

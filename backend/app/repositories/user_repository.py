@@ -65,21 +65,13 @@ class UserRepository(BaseRepository[UserInDB]):
             return self._to_model(document)
         return None
 
-    async def update(
-        self,
-        user_id: str,
-        user_update: UserUpdate,
-        *,
-        bump_token_version: bool = False,
-    ) -> UserInDB | None:
+    async def update(self, user_id: str, user_update: UserUpdate) -> UserInDB | None:
         """
-        更新使用者
+        更新使用者資料（不含密碼，密碼請用 update_password）
 
         Args:
             user_id: 使用者 ID
             user_update: 更新資料
-            bump_token_version: 是否同時遞增 token 版本（密碼變更時由 Service 指定，
-                與 $set 合併為單次原子更新）
 
         Returns:
             Optional[UserInDB]: 更新後的使用者物件，如果失敗則返回 None
@@ -95,9 +87,6 @@ class UserRepository(BaseRepository[UserInDB]):
                 logger.warning(f"Email {user_update.email} already exists")
                 return None
             update_data["email"] = user_update.email
-        if user_update.password is not None:
-            # 這裡應該傳入已經雜湊的密碼
-            update_data["hashed_password"] = user_update.password
         if user_update.avatar is not None:
             update_data["avatar"] = user_update.avatar
 
@@ -105,16 +94,35 @@ class UserRepository(BaseRepository[UserInDB]):
             # 沒有需要更新的資料
             return await self.get_by_id(user_id)
 
-        # 執行更新（token 版本遞增與欄位更新合併為單次原子操作）
-        update_ops: dict = {"$set": update_data}
-        if bump_token_version:
-            update_ops["$inc"] = {"token_version": 1}
-        success = await self.update_one({"_id": ObjectId(user_id)}, update_ops)
+        success = await self.update_one(
+            {"_id": ObjectId(user_id)}, {"$set": update_data}
+        )
 
         if success:
             return await self.get_by_id(user_id)
 
         return None
+
+    async def update_password(self, user_id: str, hashed_password: str) -> bool:
+        """
+        更新密碼雜湊並遞增 token 版本
+
+        兩者合併為單次原子更新，使既有 access / refresh token 全部失效。
+
+        Args:
+            user_id: 使用者 ID
+            hashed_password: 已雜湊的新密碼
+
+        Returns:
+            bool: 是否有使用者被更新
+        """
+        return await self.update_one(
+            {"_id": ObjectId(user_id)},
+            {
+                "$set": {"hashed_password": hashed_password},
+                "$inc": {"token_version": 1},
+            },
+        )
 
     async def delete(self, user_id: str) -> bool:
         """

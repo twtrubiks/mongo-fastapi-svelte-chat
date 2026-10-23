@@ -66,13 +66,11 @@ ALLOWED_FILE_TYPES = {
 # 從 ALLOWED_FILE_TYPES 建立預計算的查找表（模組載入時一次性建立）
 _EXT_TO_TYPE: dict[str, str] = {}
 _EXT_TO_MIME: dict[str, str] = {}
-_MIME_TO_TYPE: dict[str, str] = {}
 
 for _file_type, _config in ALLOWED_FILE_TYPES.items():
     for _ext, _mime in zip(_config["extensions"], _config["mime_types"], strict=True):
         _EXT_TO_TYPE[_ext] = _file_type
         _EXT_TO_MIME[_ext] = _mime
-        _MIME_TO_TYPE[_mime] = _file_type
 
 
 def get_mime_type(ext: str) -> str:
@@ -139,7 +137,11 @@ class FileUploadManager:
 
     def get_file_type(self, file: UploadFile) -> str:
         """
-        根據檔案擴展名和 MIME 類型判斷檔案類型
+        根據副檔名判斷檔案類型
+
+        只採信副檔名白名單：客戶端宣稱的 content_type 不可信，若以它補判，
+        evil.html 帶 image/png 就會被當成圖片接受，且 magic-byte 檢查對沒有
+        簽章的副檔名不會攔下。
 
         Args:
             file: 上傳的檔案
@@ -151,13 +153,12 @@ class FileUploadManager:
             FileUploadError: 不支援的檔案類型
         """
         file_ext = Path(file.filename).suffix.lower()
-        mime_type = file.content_type
 
-        file_type = _EXT_TO_TYPE.get(file_ext) or _MIME_TO_TYPE.get(mime_type)
+        file_type = _EXT_TO_TYPE.get(file_ext)
         if file_type:
             return file_type
 
-        raise FileUploadError(f"不支援的檔案類型: {file_ext} ({mime_type})")
+        raise FileUploadError(f"不支援的檔案類型: {file_ext or '（無副檔名）'}")
 
     def validate_file(self, file: UploadFile) -> tuple[str, dict[str, Any]]:
         """

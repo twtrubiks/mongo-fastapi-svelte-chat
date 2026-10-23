@@ -55,6 +55,19 @@ class Settings(BaseSettings):
     UPLOAD_DIR: str = "uploads"
     GENERATE_THUMBNAILS: bool = True
 
+    # 安全標頭（app/security_config.py）；與其他設定一樣可由 .env 或環境變數覆蓋
+    SECURITY_ENABLE_HSTS: bool = True
+    SECURITY_HSTS_MAX_AGE: int = 31536000  # 1 年
+    SECURITY_HSTS_INCLUDE_SUBDOMAINS: bool = True
+    SECURITY_HSTS_PRELOAD: bool = True
+    SECURITY_ENABLE_CSP: bool = True
+    SECURITY_CSP_REPORT_ONLY: bool = False
+    SECURITY_CSP_REPORT_URI: str | None = None
+    SECURITY_ENABLE_HEADERS: bool = True
+    SECURITY_HIDE_SERVER: bool = True
+    SECURITY_SERVER_HEADER: str = "FastAPI"
+    SECURITY_DEVELOPMENT_MODE: bool = False
+
     model_config = ConfigDict(env_file=".env", case_sensitive=True, extra="ignore")
 
 

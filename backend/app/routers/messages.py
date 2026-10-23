@@ -59,20 +59,21 @@ async def get_room_messages(
 @router.get("/{message_id}", response_model=MessageWithReply)
 async def get_message(
     message_id: str,
-    _current_user: dict = Depends(get_current_active_user),
+    current_user: dict = Depends(get_current_active_user),
     message_service: MessageService = MessageServiceDep,
 ):
     """
-    獲取特定訊息資料
+    獲取特定訊息資料（僅限該房間成員）
 
     Args:
         message_id: 訊息 ID
+        current_user: 當前使用者
         message_service: 訊息服務實例
 
     Returns:
         MessageWithReply: 訊息資料（含 reply_to_message 引用預覽）
     """
-    return await message_service.get_message_by_id(message_id)
+    return await message_service.get_message_for_user(message_id, current_user["_id"])
 
 
 @router.put("/{message_id}", response_model=MessageResponse)

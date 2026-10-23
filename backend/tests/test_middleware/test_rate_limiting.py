@@ -1,13 +1,22 @@
 """Rate Limiting 中間件測試
 
-涵蓋兩類回歸：
+涵蓋：
 1. 同秒摺疊 — ZSET member 若不唯一，同一秒內的請求會被 ZADD 摺疊成一筆，計數失真
 2. 客戶端識別符 — X-Forwarded-For 只信任可信 proxy、Bearer token 分桶、直連偽造 XFF 無效
+3. dispatch — 以生產設定（DEBUG=False）與真實 Redis 驗證實際回 429、
+   路徑對應的限制、跳過路徑與分桶；dispatch 對任何錯誤 fail-open 放行，
+   因此「沒有回 429」本身就是限流失效的訊號
+
+限流需要 Redis：Redis 不可用時測試直接失敗，不 skip。
 """
 
+import logging
 import uuid
+from unittest.mock import patch
 
 import pytest
+from fastapi import FastAPI
+from httpx import ASGITransport, AsyncClient
 from starlette.requests import Request
 
 from app.auth.jwt_handler import create_access_token
@@ -17,6 +26,14 @@ from app.middleware.rate_limiting import (
     RateLimitingMiddleware,
     SlidingWindowRateLimiter,
 )
+
+PRODUCTION = {
+    "_env_file": None,
+    "DEBUG": False,
+    "RATE_LIMIT_REQUESTS_PER_MINUTE": 60,
+    "RATE_LIMIT_REQUESTS_PER_HOUR": 1000,
+    "RATE_LIMIT_BURST_SIZE": 10,
+}
 
 
 def make_request(
@@ -93,11 +110,8 @@ class TestSlidingWindowCounting:
 
     @pytest.fixture
     async def redis_client(self):
-        try:
-            client = await get_redis()
-            await client.ping()
-        except Exception:
-            pytest.skip("Redis 不可用，跳過計數測試")
+        client = await get_redis()
+        assert await client.ping(), "Redis 不可用：限流測試需要真實 Redis"
         return client
 
     async def test_same_second_requests_counted_individually(self, redis_client):
@@ -131,3 +145,239 @@ class TestSlidingWindowCounting:
             assert results == [True, True, False, False]
         finally:
             await redis_client.delete(key)
+
+
+def make_app(**settings_overrides) -> FastAPI:
+    """掛上 RateLimitingMiddleware 的最小 app，所有路徑都回 200"""
+    app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
+    app.add_middleware(
+        RateLimitingMiddleware,
+        settings=Settings(**{**PRODUCTION, **settings_overrides}),
+    )
+
+    @app.api_route("/{path:path}", methods=["GET", "POST"])
+    async def catch_all(path: str):
+        return {"ok": True}
+
+    return app
+
+
+def make_client(app: FastAPI, client_ip: str = "127.0.0.1") -> AsyncClient:
+    return AsyncClient(
+        transport=ASGITransport(app=app, client=(client_ip, 12345)),
+        base_url="http://test",
+    )
+
+
+def unique_client() -> dict:
+    """經可信 proxy（127.0.0.1）轉送的唯一客戶端，避免測試間共用限流桶"""
+    return {"X-Forwarded-For": f"client-{uuid.uuid4().hex}"}
+
+
+async def hit(client: AsyncClient, path: str, headers: dict, times: int) -> list[int]:
+    return [
+        (await client.post(path, headers=headers)).status_code for _ in range(times)
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+class TestRateLimitingDispatch:
+    """經由 dispatch 實際限流（生產設定、真實 Redis）"""
+
+    async def test_login_burst_limit(self):
+        async with make_client(make_app()) as client:
+            headers = unique_client()
+            statuses = await hit(client, "/api/auth/login", headers, 10)
+            blocked = await client.post("/api/auth/login", headers=headers)
+
+        assert statuses == [200] * 10
+        assert blocked.status_code == 429
+        assert blocked.json()["error"] == "Rate limit exceeded"
+        assert blocked.json()["limit"] == 20
+        assert blocked.json()["window"] == 300
+        assert 0 < int(blocked.headers["Retry-After"]) <= 60
+        assert blocked.headers["X-RateLimit-Remaining"] == "0"
+
+    async def test_register_burst_limit(self):
+        async with make_client(make_app()) as client:
+            statuses = await hit(client, "/api/auth/register", unique_client(), 6)
+
+        assert statuses == [200] * 5 + [429]
+
+    async def test_rate_limit_headers_on_allowed_requests(self):
+        async with make_client(make_app()) as client:
+            headers = unique_client()
+            first = await client.post("/api/auth/login", headers=headers)
+            second = await client.post("/api/auth/login", headers=headers)
+
+        assert first.headers["X-RateLimit-Limit"] == "20"
+        assert first.headers["X-RateLimit-Window"] == "300"
+        assert first.headers["X-RateLimit-Remaining"] == "19"
+        assert second.headers["X-RateLimit-Remaining"] == "18"
+
+    async def test_api_paths_use_configured_limits(self):
+        async with make_client(
+            make_app(RATE_LIMIT_REQUESTS_PER_MINUTE=40, RATE_LIMIT_BURST_SIZE=3)
+        ) as client:
+            headers = unique_client()
+            statuses = await hit(client, "/api/rooms", headers, 4)
+            blocked = await client.post("/api/rooms", headers=headers)
+
+        assert statuses == [200, 200, 200, 429]
+        assert blocked.json()["limit"] == 40
+        assert blocked.json()["window"] == 60
+
+    @pytest.mark.parametrize("path", ["/api/files/upload", "/api/files/upload/image"])
+    async def test_upload_paths_use_upload_limits(self, path):
+        """上傳子路徑要套用上傳設定，不能被較短的 /api/ 前綴搶先命中"""
+        async with make_client(make_app()) as client:
+            statuses = await hit(client, path, unique_client(), 6)
+            response = await client.post(path, headers=unique_client())
+
+        assert statuses == [200] * 5 + [429]
+        assert response.headers["X-RateLimit-Window"] == "300"
+        assert response.headers["X-RateLimit-Limit"] == "20"
+
+    async def test_websocket_path_limits(self):
+        async with make_client(make_app()) as client:
+            statuses = await hit(client, "/ws/room-1", unique_client(), 4)
+
+        assert statuses == [200, 200, 200, 429]
+
+    async def test_other_paths_use_default_limits(self):
+        async with make_client(make_app(RATE_LIMIT_REQUESTS_PER_HOUR=500)) as client:
+            response = await client.get("/", headers=unique_client())
+
+        assert response.headers["X-RateLimit-Window"] == "3600"
+        assert response.headers["X-RateLimit-Limit"] == "500"
+
+    @pytest.mark.parametrize(
+        "path", ["/health", "/docs", "/redoc", "/openapi.json", "/static/app.js"]
+    )
+    async def test_skipped_paths_never_limited(self, path):
+        async with make_client(make_app(RATE_LIMIT_BURST_SIZE=1)) as client:
+            headers = unique_client()
+            responses = [await client.get(path, headers=headers) for _ in range(3)]
+
+        assert [r.status_code for r in responses] == [200, 200, 200]
+        assert all("X-RateLimit-Limit" not in r.headers for r in responses)
+
+    async def test_api_health_like_paths_are_not_skipped(self):
+        async with make_client(make_app()) as client:
+            response = await client.get("/api/health", headers=unique_client())
+
+        assert response.headers["X-RateLimit-Window"] == "60"
+
+    async def test_buckets_are_per_client_and_per_path(self):
+        async with make_client(make_app()) as client:
+            exhausted = unique_client()
+            await hit(client, "/api/auth/register", exhausted, 5)
+
+            same_client = await client.post("/api/auth/register", headers=exhausted)
+            other_client = await client.post(
+                "/api/auth/register", headers=unique_client()
+            )
+            other_path = await client.post("/api/auth/login", headers=exhausted)
+
+        assert same_client.status_code == 429
+        assert other_client.status_code == 200
+        assert other_path.status_code == 200
+
+    async def test_untrusted_client_cannot_rotate_buckets_with_xff(self):
+        """直連（非可信 proxy）偽造 X-Forwarded-For 無法換桶繞過限流"""
+        client_ip = f"198.51.100.{uuid.uuid4().int % 250 + 1}"
+        async with make_client(make_app(), client_ip=client_ip) as client:
+            statuses = [
+                (
+                    await client.post("/api/auth/register", headers=unique_client())
+                ).status_code
+                for _ in range(6)
+            ]
+
+        assert statuses == [200] * 5 + [429]
+
+    async def test_authenticated_user_bucket_follows_token(self):
+        token = create_access_token(
+            {"sub": "limited", "user_id": f"user-{uuid.uuid4().hex}"}
+        )
+        async with make_client(make_app()) as client:
+            statuses = [
+                (
+                    await client.post(
+                        "/api/auth/register",
+                        headers={
+                            "Authorization": f"Bearer {token}",
+                            **unique_client(),
+                        },
+                    )
+                ).status_code
+                for _ in range(6)
+            ]
+
+        assert statuses == [200] * 5 + [429]
+
+    async def test_debug_mode_uses_lenient_limits(self):
+        async with make_client(make_app(DEBUG=True)) as client:
+            statuses = await hit(client, "/api/auth/login", unique_client(), 11)
+
+        assert statuses == [200] * 11
+
+    async def test_no_fail_open_on_normal_requests(self, caplog):
+        """正常請求不應走進 fail-open 分支（初始化或查表錯誤都會靜默放行）"""
+        with caplog.at_level(logging.WARNING, logger="app.middleware.rate_limiting"):
+            async with make_client(make_app()) as client:
+                for path in ("/api/auth/login", "/api/rooms", "/ws/x", "/"):
+                    await client.post(path, headers=unique_client())
+
+        assert caplog.records == []
+
+    async def test_fail_open_when_redis_unavailable(self):
+        """Redis 不可用時放行請求（刻意的 fail-open 設計）"""
+        with patch(
+            "app.middleware.rate_limiting.get_redis",
+            side_effect=ConnectionError("redis down"),
+        ):
+            async with make_client(make_app(RATE_LIMIT_BURST_SIZE=1)) as client:
+                statuses = await hit(client, "/api/rooms", unique_client(), 3)
+
+        assert statuses == [200, 200, 200]
+
+
+@pytest.mark.unit
+class TestRateLimitConfiguration:
+    def test_production_limits(self):
+        middleware = RateLimitingMiddleware(app=None, settings=Settings(**PRODUCTION))
+
+        assert middleware.rate_limits == {
+            "/api/auth/login": {"window": 300, "max_requests": 20, "burst": 10},
+            "/api/auth/register": {"window": 3600, "max_requests": 10, "burst": 5},
+            "/api/": {"window": 60, "max_requests": 60, "burst": 10},
+            "/api/files/upload": {"window": 300, "max_requests": 20, "burst": 5},
+            "/ws": {"window": 60, "max_requests": 10, "burst": 3},
+            "default": {"window": 3600, "max_requests": 1000, "burst": 10},
+        }
+
+    def test_debug_limits_are_more_lenient(self):
+        production = RateLimitingMiddleware(app=None, settings=Settings(**PRODUCTION))
+        debug = RateLimitingMiddleware(
+            app=None, settings=Settings(**{**PRODUCTION, "DEBUG": True})
+        )
+
+        assert set(debug.rate_limits) == set(production.rate_limits)
+        for path, limits in production.rate_limits.items():
+            assert debug.rate_limits[path]["max_requests"] > limits["max_requests"]
+            assert debug.rate_limits[path]["burst"] > limits["burst"]
+
+    def test_trusted_proxies_parsed_from_settings(self):
+        middleware = RateLimitingMiddleware(
+            app=None,
+            settings=Settings(**{**PRODUCTION, "TRUSTED_PROXIES": " 10.0.0.1, ,::1 "}),
+        )
+
+        assert middleware.trusted_proxies == {"10.0.0.1", "::1"}
+
+    def test_app_registers_rate_limiting(self):
+        from app.main import app
+
+        assert RateLimitingMiddleware in [m.cls for m in app.user_middleware]

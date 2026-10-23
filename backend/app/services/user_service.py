@@ -147,23 +147,8 @@ class UserService:
             if existing_email and existing_email.id != user_id:
                 raise ConflictError("信箱已被使用")
 
-        # 準備更新資料，處理密碼加密
-        update_dict = update_data.model_dump(exclude_unset=True)
-        bump_token_version = False
-        if "password" in update_dict:
-            # 將密碼轉換為雜湊密碼
-            hashed_password = await get_password_hash(update_dict.pop("password"))
-            # 創建新的更新資料，將 password 替換為已雜湊的值
-            update_dict["password"] = hashed_password
-            # 重新創建 UserUpdate 物件
-            update_data = UserUpdate(**update_dict)
-            # 密碼變更時遞增 token 版本，使既有 token 全部失效
-            bump_token_version = True
-
-        # 更新使用者
-        updated_user = await self.user_repo.update(
-            user_id, update_data, bump_token_version=bump_token_version
-        )
+        # 更新使用者（UserUpdate 不含密碼，密碼只能經 change_password 修改）
+        updated_user = await self.user_repo.update(user_id, update_data)
         if not updated_user:
             raise NotFoundError("使用者不存在")
         logger.info(f"User updated: {user_id}")
@@ -193,12 +178,8 @@ class UserService:
             raise AppError("目前密碼錯誤")
 
         hashed_password = await get_password_hash(new_password)
-        update_data = UserUpdate(password=hashed_password)
         # 遞增 token 版本（與密碼同一次原子更新），使既有 access/refresh token 全部失效
-        updated_user = await self.user_repo.update(
-            user_id, update_data, bump_token_version=True
-        )
-        if not updated_user:
+        if not await self.user_repo.update_password(user_id, hashed_password):
             raise NotFoundError("使用者不存在")
         logger.info(f"Password changed for user: {user_id}")
         await invalidate_user_cache(user_id)
