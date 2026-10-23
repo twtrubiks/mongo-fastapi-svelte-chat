@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from pymongo.errors import DuplicateKeyError
 
 from app.core.exceptions import AppError, ForbiddenError, NotFoundError
+from app.models.enums import RoomType
 from app.models.message import (
     MAX_CONTENT_LENGTH,
     MessageCreate,
@@ -196,6 +197,27 @@ class MessageService:
         if not message:
             raise NotFoundError("訊息不存在")
         return message
+
+    async def get_message_for_user(
+        self, message_id: str, user_id: str
+    ) -> MessageWithReply:
+        """
+        根據 ID 獲取訊息（僅限房間成員）
+
+        與 require_room_membership 一致：非成員於公開房回 403，
+        私人房回 404 不洩漏訊息存在性。
+
+        Raises:
+            NotFoundError: 訊息不存在，或私人房非成員時
+            ForbiddenError: 公開房非成員時
+        """
+        message = await self.get_message_by_id(message_id)
+        room = await self.room_repo.get_by_id(message.room_id)
+        if room and user_id in room.members:
+            return message
+        if room and room.room_type == RoomType.PUBLIC:
+            raise ForbiddenError("您不是該聊天室的成員")
+        raise NotFoundError("訊息不存在")
 
     async def get_room_messages(
         self,
