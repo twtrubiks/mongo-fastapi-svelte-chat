@@ -148,7 +148,13 @@ class TestExtractToken:
 @pytest.mark.asyncio
 @pytest.mark.integration
 class TestAuthenticateWebsocket:
-    async def test_valid_token_returns_user_info(self, ctx):
+    async def test_valid_token_returns_user_info(self, async_client, ctx):
+        await async_client.put(
+            "/api/auth/profile",
+            json={"avatar": "/api/files/image/me.png"},
+            headers=ctx["member"]["headers"],
+        )
+
         info = await authenticate_websocket(fake_ws(), ctx["member"]["token"])
 
         assert set(info) == USER_INFO_KEYS
@@ -156,6 +162,7 @@ class TestAuthenticateWebsocket:
         assert info["username"] == "wsmember"
         assert info["email"] == "wsmember@example.com"
         assert info["full_name"] == "Wsmember"
+        assert info["avatar"] == "/api/files/image/me.png"
         assert info["is_active"] is True
 
     @pytest.mark.parametrize(

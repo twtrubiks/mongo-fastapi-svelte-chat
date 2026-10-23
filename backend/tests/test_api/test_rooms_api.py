@@ -544,6 +544,11 @@ class TestRoomOwnership:
 
         assert too_small.status_code == 400
         assert exact.status_code == 200
+        assert exact.json()["max_members"] == 3
+        stored = await async_client.get(
+            f"/api/rooms/{room['id']}", headers=users["owner"]["headers"]
+        )
+        assert stored.json()["max_members"] == 3
 
     async def test_only_owner_can_delete(self, async_client, users):
         room = await _create_room(async_client, users["owner"])
@@ -598,6 +603,24 @@ class TestMessageAuthorization:
             json={"room_id": room_id, "content": content},
             headers=user["headers"],
         )
+
+    async def test_path_room_id_overrides_body(self, async_client, users):
+        """POST /rooms/{room_id}/messages 以路徑的 room_id 為準"""
+        target = await _create_room(async_client, users["owner"], name="target")
+        other = await _create_room(async_client, users["owner"], name="other")
+
+        response = await async_client.post(
+            f"/api/rooms/{target['id']}/messages",
+            json={"room_id": other["id"], "content": "where am I"},
+            headers=users["owner"]["headers"],
+        )
+
+        assert response.status_code == 201
+        assert response.json()["room_id"] == target["id"]
+        other_history = await async_client.get(
+            f"/api/rooms/{other['id']}/messages", headers=users["owner"]["headers"]
+        )
+        assert other_history.json() == []
 
     async def test_only_members_can_send(self, async_client, users):
         room = await _create_room(async_client, users["owner"])
