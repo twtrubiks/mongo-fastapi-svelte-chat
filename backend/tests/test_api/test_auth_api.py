@@ -639,19 +639,24 @@ class TestAuthAPI:
         assert response.status_code in [200, 422]  # 可能成功或驗證錯誤
 
     @pytest.mark.asyncio
-    async def test_register_with_weak_password(self, async_client, isolated_db_manager):
-        """測試使用弱密碼註冊失敗"""
+    @pytest.mark.parametrize(
+        ("password", "expected_status"),
+        [("", 422), ("12345", 422), ("123456", 201)],
+    )
+    async def test_register_password_min_length(
+        self, async_client, isolated_db_manager, password, expected_status
+    ):
+        """測試註冊密碼長度下限（6 字元）"""
         user_data = {
             "username": "weakpassuser",
             "email": "weak@example.com",
-            "password": "123",  # 太短的密碼
+            "password": password,
             "full_name": "Weak Pass User",
         }
 
         response = await async_client.post("/api/auth/register", json=user_data)
 
-        # 如果系統沒有密碼強度驗證，可能會成功建立用戶
-        assert response.status_code in [201, 400, 422]
+        assert response.status_code == expected_status
 
     @pytest.mark.asyncio
     async def test_login_with_deactivated_user(self, async_client, isolated_db_manager):

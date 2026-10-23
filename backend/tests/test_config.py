@@ -11,8 +11,8 @@ from app.config import settings
 class TestConfig:
     """測試配置類別"""
 
-    # 測試資料庫設定
-    TEST_DATABASE_NAME = "test_chatroom"
+    # 測試資料庫設定（可用環境變數覆寫，供多個測試程序平行執行時各用各的 DB）
+    TEST_DATABASE_NAME = os.environ.get("TEST_DATABASE_NAME", "test_chatroom")
     TEST_MONGODB_URL = "mongodb://root:password@localhost:27017"
 
     # 測試使用者設定
@@ -28,7 +28,9 @@ class TestConfig:
     JWT_ALGORITHM = "HS256"
 
     # Redis 測試設定
-    TEST_REDIS_URL = "redis://localhost:6379/1"  # 使用不同的資料庫編號避免衝突
+    TEST_REDIS_URL = os.environ.get(
+        "TEST_REDIS_URL", "redis://localhost:6379/1"
+    )  # 使用不同的資料庫編號避免衝突
 
     @classmethod
     def setup_test_environment(cls):

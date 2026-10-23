@@ -36,3 +36,6 @@ Plans.md
 
 # pyenv
 .python-version
+
+# 變異測試工作目錄（backend/scripts/mutation_test.py）
+.mutation/
