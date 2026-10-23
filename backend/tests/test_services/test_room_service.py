@@ -3,6 +3,7 @@
 使用 Mock 優先的方式測試所有功能
 """
 
+import logging
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, Mock
 
@@ -726,3 +727,127 @@ class TestRoomService:
             other_user2,
         }
         assert notified_users == expected_users
+
+    @pytest.mark.asyncio
+    async def test_owner_name_backfilled_for_legacy_room(
+        self, room_service, mock_repositories, sample_room
+    ):
+        """缺 owner_name 的舊房間以擁有者的 username 補填；擁有者已不存在則維持 None"""
+        room_repo, user_repo, message_repo = mock_repositories
+        sample_room.owner_name = None
+        room_repo.get_by_id.return_value = sample_room
+
+        owner = Mock()
+        owner.username = "legacy-owner"
+        user_repo.get_by_id.return_value = owner
+        backfilled = await room_service.get_room_by_id(sample_room.id)
+
+        user_repo.get_by_id.return_value = None
+        orphaned = await room_service.get_room_by_id(sample_room.id)
+
+        user_repo.get_by_id.assert_awaited_with(sample_room.owner_id)
+        assert backfilled.owner_name == "legacy-owner"
+        assert orphaned.owner_name is None
+
+    @pytest.mark.asyncio
+    async def test_create_room_broadcasts_summary_to_others(
+        self, room_service, mock_repositories, mock_connection_manager
+    ):
+        """公開房間的 room_created 只送給其他在線者，內容為摘要（不含邀請碼）與建立者 ID"""
+        room_repo, user_repo, message_repo = mock_repositories
+        owner_id, other_id = str(ObjectId()), str(ObjectId())
+        creator = Mock()
+        creator.username = "creator"
+        user_repo.get_by_id.return_value = creator
+        room_repo.get_by_name.return_value = None
+        room_repo.create.side_effect = lambda room: room.model_copy(
+            update={"id": str(ObjectId())}
+        )
+        mock_connection_manager.active_connections = {owner_id: {}, other_id: {}}
+        mock_connection_manager.send_event = AsyncMock()
+
+        response = await room_service.create_room(
+            owner_id, RoomCreate(name="New Room", join_policy=JoinPolicy.INVITE)
+        )
+
+        [(recipient, event)] = [
+            call.args for call in mock_connection_manager.send_event.await_args_list
+        ]
+        room = event.pop("room")
+        assert recipient == other_id
+        assert event == {"type": "room_created", "creator_id": owner_id}
+        assert response.invite_code
+        assert room["id"] == response.id
+        assert room["name"] == "New Room"
+        assert "invite_code" not in room
+
+    @pytest.mark.asyncio
+    async def test_leave_room_broadcasts_user_left(
+        self, room_service, mock_repositories, mock_connection_manager, sample_room
+    ):
+        room_repo, user_repo, message_repo = mock_repositories
+        user_id = str(ObjectId())
+        sample_room.members = [sample_room.owner_id, user_id]
+        room_repo.get_by_id.return_value = sample_room
+        room_repo.remove_member.return_value = True
+        mock_connection_manager.user_info = {
+            user_id: {"id": user_id, "username": "leaver"}
+        }
+
+        await room_service.leave_room(sample_room.id, user_id)
+
+        mock_connection_manager.broadcast_to_room.assert_awaited_once()
+        room_id, event = mock_connection_manager.broadcast_to_room.await_args.args
+        sent_at = datetime.fromisoformat(event.pop("timestamp"))
+        assert room_id == sample_room.id
+        assert event == {
+            "type": "user_left",
+            "user": {"id": user_id, "username": "leaver"},
+            "room_id": sample_room.id,
+            "removed": True,
+        }
+        assert abs(datetime.now(UTC) - sent_at) < timedelta(seconds=5)
+
+    @pytest.mark.asyncio
+    async def test_get_members_of_missing_room_is_empty_list(
+        self, room_service, mock_repositories
+    ):
+        room_repo, user_repo, message_repo = mock_repositories
+        room_repo.get_by_id.return_value = None
+
+        assert await room_service.get_room_members(str(ObjectId())) == []
+
+    @pytest.mark.asyncio
+    async def test_broadcast_logs_each_failed_recipient_only(
+        self, room_service, mock_connection_manager, caplog
+    ):
+        """成功送達不記錯誤；每位送達失敗的收件者各記一筆錯誤，其餘收件者照常送出"""
+        failures = {
+            "broken-1": RuntimeError("socket-1 gone"),
+            "broken-2": RuntimeError("socket-2 gone"),
+        }
+
+        async def send_event(user_id, message):
+            if user_id in failures:
+                raise failures[user_id]
+
+        mock_connection_manager.active_connections = {
+            "ok-1": {},
+            "broken-1": {},
+            "ok-2": {},
+            "broken-2": {},
+        }
+        mock_connection_manager.send_event = AsyncMock(side_effect=send_event)
+        caplog.set_level(logging.ERROR, logger="app.services.room_service")
+
+        await room_service._broadcast_room_event({"type": "room_updated"})
+
+        errors = [
+            r.getMessage()
+            for r in caplog.records
+            if r.name == "app.services.room_service" and r.levelno >= logging.ERROR
+        ]
+        assert mock_connection_manager.send_event.await_count == 4
+        assert len(errors) == 2
+        assert any("socket-1 gone" in e for e in errors)
+        assert any("socket-2 gone" in e for e in errors)

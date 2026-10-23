@@ -72,6 +72,31 @@ class TestGetModel:
         assert _get_model() is _get_model()
 
 
+class TestModelSettings:
+    """實際交給 pydantic-ai 模型的生成參數（每次請求都會帶上）"""
+
+    def test_nvidia_settings(self, monkeypatch):
+        monkeypatch.setattr(ai_service.settings, "AI_PROVIDER", "nvidia")
+        monkeypatch.setattr(ai_service.settings, "NVIDIA_API_KEY", "nv-key")
+
+        assert _get_model().settings == {
+            "temperature": 0.6,
+            "max_tokens": 2048,
+            "timeout": 60.0,
+        }
+
+    def test_gemini_settings_disable_thinking(self, monkeypatch):
+        """Gemini 思考 token 會吃掉 max_tokens 預算，必須關閉（thinking_budget=0）"""
+        monkeypatch.setattr(ai_service.settings, "AI_PROVIDER", "gemini")
+        monkeypatch.setattr(ai_service.settings, "GOOGLE_API_KEY", "g-key")
+
+        assert _get_model().settings == {
+            "temperature": 0.6,
+            "max_tokens": 2048,
+            "google_thinking_config": {"thinking_budget": 0},
+        }
+
+
 class TestNotConfigured:
     """未配置當前供應商的 API key 時拋 AppError"""
 

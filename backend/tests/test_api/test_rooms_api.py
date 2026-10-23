@@ -9,6 +9,12 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from bson import ObjectId
 
+from app.database.mongodb import get_database
+from app.models.enums import MemberRole
+from app.models.message import MessageInDB
+from app.models.room import RoomInDB
+from app.models.user import UserInDB
+
 FORM = {"Content-Type": "application/x-www-form-urlencoded"}
 
 
@@ -564,6 +570,7 @@ class TestRoomOwnership:
             f"/api/rooms/{room['id']}", headers=users["owner"]["headers"]
         )
         assert deleted.status_code == 200
+        assert deleted.json() == {"message": "聊天室刪除成功"}
         gone = await async_client.get(
             f"/api/rooms/{room['id']}", headers=users["owner"]["headers"]
         )
@@ -577,6 +584,7 @@ class TestRoomOwnership:
             f"/api/rooms/{room['id']}/leave", headers=users["member"]["headers"]
         )
         assert left.status_code == 200
+        assert left.json() == {"message": "成功離開房間"}
 
         messages = await async_client.get(
             f"/api/rooms/{room['id']}/messages", headers=users["member"]["headers"]
@@ -701,7 +709,161 @@ class TestMessageAuthorization:
 
         deleted = await async_client.delete(url, headers=users["owner"]["headers"])
         assert deleted.status_code == 200
+        assert deleted.json() == {"message": "訊息刪除成功"}
         history = await async_client.get(
             f"/api/rooms/{room['id']}/messages", headers=users["owner"]["headers"]
         )
         assert history.json() == []
+
+
+# 比預設分頁筆數（50）多一筆
+CROWD = 51
+
+PAGINATED_LISTS = [
+    "/api/rooms",
+    "/api/rooms/my",
+    "/api/rooms/{room_id}/members",
+    "/api/rooms/{room_id}/messages",
+    "/api/messages/room/{room_id}",
+]
+MESSAGE_LISTS = PAGINATED_LISTS[3:]
+
+
+@pytest.fixture
+async def crowded(async_client, users) -> str:
+    """owner 可見 51 個房間；其中回傳的房間有 51 位成員與 51 則訊息（seq 1~51）"""
+    db = await get_database()
+    owner_id = users["owner"]["id"]
+    room_id = (await _create_room(async_client, users["owner"], name="crowded"))["id"]
+    now = datetime.now(UTC)
+
+    await db.rooms.insert_many(
+        [
+            RoomInDB(
+                name=f"filler-{i:02d}",
+                owner_id=owner_id,
+                owner_name="owner",
+                members=[owner_id],
+                member_roles={owner_id: MemberRole.OWNER},
+            ).model_dump(exclude={"id"})
+            for i in range(CROWD - 1)
+        ]
+    )
+
+    member_ids = [ObjectId() for _ in range(CROWD - 1)]
+    await db.users.insert_many(
+        [
+            {
+                "_id": member_id,
+                **UserInDB(
+                    username=f"crowd{i:02d}",
+                    email=f"crowd{i:02d}@example.com",
+                    hashed_password="unused",
+                ).model_dump(exclude={"id"}),
+            }
+            for i, member_id in enumerate(member_ids)
+        ]
+    )
+    await db.rooms.update_one(
+        {"_id": ObjectId(room_id)},
+        {"$push": {"members": {"$each": [str(m) for m in member_ids]}}},
+    )
+
+    await db.messages.insert_many(
+        [
+            MessageInDB(
+                room_id=room_id,
+                user_id=owner_id,
+                username="owner",
+                content=f"m{seq}",
+                seq=seq,
+                created_at=now + timedelta(seconds=seq),
+                updated_at=now + timedelta(seconds=seq),
+            ).model_dump(exclude={"id"})
+            for seq in range(1, CROWD + 1)
+        ]
+    )
+    return room_id
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+class TestListQueryParams:
+    """列表端點的分頁 / 搜尋參數：預設值與上下界"""
+
+    @pytest.mark.parametrize("path", PAGINATED_LISTS)
+    async def test_limit_default_and_bounds(self, async_client, users, crowded, path):
+        """預設 50 筆；limit 接受 1~100，0 與 101 回 422"""
+        url = path.format(room_id=crowded)
+
+        async def fetch(**params):
+            return await async_client.get(
+                url, params=params, headers=users["owner"]["headers"]
+            )
+
+        default = await fetch()
+        smallest = await fetch(limit=1)
+        largest = await fetch(limit=100)
+        below = await fetch(limit=0)
+        above = await fetch(limit=101)
+
+        assert [r.status_code for r in (default, smallest, largest)] == [200] * 3
+        assert [len(r.json()) for r in (default, smallest, largest)] == [50, 1, CROWD]
+        assert below.status_code == above.status_code == 422
+
+    @pytest.mark.parametrize("path", MESSAGE_LISTS)
+    async def test_default_page_is_latest_messages(
+        self, async_client, users, crowded, path
+    ):
+        """未帶參數時回傳最新 50 則（由舊到新），不跳過最新的訊息"""
+        response = await async_client.get(
+            path.format(room_id=crowded), headers=users["owner"]["headers"]
+        )
+
+        assert [m["seq"] for m in response.json()] == list(range(2, CROWD + 1))
+
+    @pytest.mark.parametrize("path", MESSAGE_LISTS)
+    async def test_before_seq_lower_bound(self, async_client, users, crowded, path):
+        """before_seq 最小為 1（取 seq < 1，即空列表）；0 回 422"""
+        url = path.format(room_id=crowded)
+        headers = users["owner"]["headers"]
+
+        at_bound = await async_client.get(
+            url, params={"before_seq": 1}, headers=headers
+        )
+        next_page = await async_client.get(
+            url, params={"before_seq": 3}, headers=headers
+        )
+        below = await async_client.get(url, params={"before_seq": 0}, headers=headers)
+
+        assert at_bound.status_code == 200
+        assert at_bound.json() == []
+        assert [m["seq"] for m in next_page.json()] == [1, 2]
+        assert below.status_code == 422
+
+    async def test_search_max_length(self, async_client, users):
+        await _create_room(async_client, users["owner"], name="a" * 100)
+        headers = users["outsider"]["headers"]
+
+        at_limit = await async_client.get(
+            "/api/rooms", params={"search": "a" * 100}, headers=headers
+        )
+        too_long = await async_client.get(
+            "/api/rooms", params={"search": "a" * 101}, headers=headers
+        )
+
+        assert at_limit.status_code == 200
+        assert [r["name"] for r in at_limit.json()] == ["a" * 100]
+        assert too_long.status_code == 422
+
+    async def test_trailing_slash_served_without_redirect(self, async_client, users):
+        """/api/rooms 與 /api/rooms/ 都直接回 200（不經 307 轉址）"""
+        await _create_room(async_client, users["owner"], name="listed")
+        headers = users["outsider"]["headers"]
+
+        bare = await async_client.get("/api/rooms", headers=headers)
+        slashed = await async_client.get("/api/rooms/", headers=headers)
+
+        assert bare.status_code == slashed.status_code == 200
+        assert slashed.json() == bare.json()
+        assert [r["name"] for r in slashed.json()] == ["listed"]

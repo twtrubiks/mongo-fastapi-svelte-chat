@@ -1,5 +1,6 @@
 """通知 Repository 測試"""
 
+from datetime import datetime, timedelta
 from unittest.mock import patch
 
 import pytest
@@ -364,6 +365,59 @@ class TestNotificationRepository:
         stats = await repo.get_stats("invalid_user_id")
         assert stats.total_count == 0
         assert stats.unread_count == 0
+
+
+async def _insert_with_created_at(collection, user_id: str, minutes: list[int]):
+    """依序插入通知（_id 遞增），created_at 為基準時間 + 各自分鐘數；回傳插入的文件"""
+    base = datetime(2026, 1, 1)
+    docs = [
+        {
+            "_id": ObjectId(),
+            **NotificationInDB(
+                user_id=user_id,
+                title=f"n{i}",
+                content="內容",
+                type=NotificationType.MESSAGE if i % 2 else NotificationType.SYSTEM,
+                created_at=base + timedelta(minutes=minute),
+                updated_at=base + timedelta(minutes=minute),
+            ).model_dump(exclude={"id"}),
+        }
+        for i, minute in enumerate(minutes)
+    ]
+    await collection.insert_many(docs)
+    return docs
+
+
+@pytest.mark.unit
+class TestNotificationOrdering:
+    """排序以 created_at 為準（刻意讓 created_at 與 _id / 插入順序不一致）"""
+
+    @pytest.mark.asyncio
+    async def test_get_by_user_newest_first(self, db_manager):
+        repo = NotificationRepository(db_manager.database)
+        user_id = str(ObjectId())
+        await _insert_with_created_at(repo.collection, user_id, [1, 2, 0])
+
+        notifications = await repo.get_by_user(user_id)
+
+        assert [n.title for n in notifications] == ["n1", "n0", "n2"]
+
+    @pytest.mark.asyncio
+    async def test_stats_recent_activity_is_latest_five(self, db_manager):
+        repo = NotificationRepository(db_manager.database)
+        user_id = str(ObjectId())
+        docs = await _insert_with_created_at(
+            repo.collection, user_id, [3, 6, 0, 5, 1, 4, 2]
+        )
+
+        stats = await repo.get_stats(user_id)
+
+        latest = sorted(docs, key=lambda d: d["created_at"], reverse=True)[:5]
+        assert [d["title"] for d in latest] == ["n1", "n3", "n5", "n0", "n6"]
+        assert stats.recent_activity == [
+            {"type": d["type"], "title": d["title"], "created_at": d["created_at"]}
+            for d in latest
+        ]
 
 
 @pytest.mark.unit

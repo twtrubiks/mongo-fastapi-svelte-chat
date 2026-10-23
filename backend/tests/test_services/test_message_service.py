@@ -1,6 +1,6 @@
 """訊息服務整合測試 - 使用 Mock Repository"""
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, Mock
 
 import pytest
@@ -639,6 +639,13 @@ class TestMessageSync:
         )
 
 
+def _assert_recent_iso_timestamp(value: str) -> None:
+    """WS 事件 timestamp 為帶時區的 ISO 字串，且是剛剛產生的"""
+    sent_at = datetime.fromisoformat(value)
+    assert sent_at.tzinfo is not None
+    assert abs(datetime.now(UTC) - sent_at) < timedelta(seconds=5)
+
+
 @pytest.mark.unit
 class TestMessageBroadcast:
     """測試編輯/刪除訊息的 WS 廣播"""
@@ -677,8 +684,14 @@ class TestMessageBroadcast:
             created_at=datetime.now(),
             updated_at=datetime.now(),
         )
+        edited_at = datetime(2026, 1, 2, 3, 4, 5, 123000)
         updated = original.model_copy(
-            update={"content": "更新後的訊息", "edited": True}
+            update={
+                "content": "更新後的訊息",
+                "edited": True,
+                "edited_at": edited_at,
+                "updated_at": edited_at,
+            }
         )
 
         service.message_repo.get_by_id.return_value = original
@@ -694,11 +707,21 @@ class TestMessageBroadcast:
         call_args = cm.broadcast_to_room.await_args
         assert call_args.args[0] == room_id
         event = call_args.args[1]
-        assert event["type"] == "message_edited"
-        assert event["room_id"] == room_id
-        assert event["message"]["id"] == message_id
-        assert event["message"]["content"] == "更新後的訊息"
-        assert event["message"]["edited"] is True
+        _assert_recent_iso_timestamp(event.pop("timestamp"))
+        # 只帶會變動的欄位，前端依 id 合併
+        assert event == {
+            "type": "message_edited",
+            "room_id": room_id,
+            "message": {
+                "id": message_id,
+                "content": "更新後的訊息",
+                "status": MessageStatus.SENT,
+                "edited": True,
+                "edited_at": "2026-01-02T03:04:05.123000Z",
+                "updated_at": "2026-01-02T03:04:05.123000Z",
+                "metadata": None,
+            },
+        }
 
     @pytest.mark.asyncio
     async def test_delete_message_broadcasts(self, service_with_cm):
@@ -730,5 +753,56 @@ class TestMessageBroadcast:
         call_args = cm.broadcast_to_room.await_args
         assert call_args.args[0] == room_id
         event = call_args.args[1]
-        assert event["type"] == "message_deleted"
-        assert event["message_id"] == message_id
+        _assert_recent_iso_timestamp(event.pop("timestamp"))
+        assert event == {
+            "type": "message_deleted",
+            "room_id": room_id,
+            "message_id": message_id,
+        }
+
+
+@pytest.mark.integration
+class TestMessageSyncGapBoundary:
+    """斷線補發的 gap 上限（200）：恰為上限仍逐則補發，超過一則才全量重載最新 50 則"""
+
+    @pytest.fixture
+    async def room_with_201_messages(self, db_manager) -> str:
+        room_id = str(ObjectId())
+        base = datetime(2026, 1, 1, tzinfo=UTC)
+        await db_manager.database.messages.insert_many(
+            [
+                MessageInDB(
+                    room_id=room_id,
+                    user_id="test_user_id",
+                    username="testuser",
+                    content=f"m{seq}",
+                    seq=seq,
+                    created_at=base + timedelta(seconds=seq),
+                    updated_at=base + timedelta(seconds=seq),
+                ).model_dump(exclude={"id"})
+                for seq in range(1, 202)
+            ]
+        )
+        return room_id
+
+    @pytest.mark.asyncio
+    async def test_gap_at_limit_replays_every_message(
+        self, message_service, room_with_201_messages
+    ):
+        messages, full_reload = await message_service.sync_messages_since(
+            room_with_201_messages, last_seq=1
+        )
+
+        assert full_reload is False
+        assert [m.seq for m in messages] == list(range(2, 202))
+
+    @pytest.mark.asyncio
+    async def test_gap_over_limit_reloads_latest_50(
+        self, message_service, room_with_201_messages
+    ):
+        messages, full_reload = await message_service.sync_messages_since(
+            room_with_201_messages, last_seq=0
+        )
+
+        assert full_reload is True
+        assert [m.seq for m in messages] == list(range(152, 202))

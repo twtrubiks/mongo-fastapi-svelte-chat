@@ -1,6 +1,7 @@
 """房間 Repository 測試"""
 
-from datetime import UTC, datetime
+import logging
+from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
 
 import pytest
@@ -695,6 +696,74 @@ class TestRoomRepository:
         # 測試 None ID
         result = await repo.get_by_id(None)
         assert result is None
+
+
+@pytest.mark.unit
+class TestRoomListOrdering:
+    """房間列表依 created_at 由新到舊（刻意讓 created_at 與 _id 順序不一致）"""
+
+    @pytest.mark.asyncio
+    async def test_lists_sorted_by_created_at(self, db_manager):
+        repo = RoomRepository(db_manager.database)
+        owner_id = str(ObjectId())
+        base = datetime(2026, 1, 1)
+        # 依序插入（_id 遞增），created_at：b 最新、a 次之、c 最舊
+        await repo.collection.insert_many(
+            [
+                {
+                    "_id": ObjectId(),
+                    **RoomInDB(
+                        name=name,
+                        owner_id=owner_id,
+                        members=[owner_id],
+                        created_at=base + timedelta(minutes=minute),
+                        updated_at=base,
+                    ).model_dump(exclude={"id"}),
+                }
+                for name, minute in (("a", 1), ("b", 2), ("c", 0))
+            ]
+        )
+        outsider = str(ObjectId())
+
+        public = await repo.get_public_rooms()
+        for_user = await repo.get_rooms_for_user(outsider)
+        explore = await repo.get_explore_rooms(outsider)
+
+        for rooms in (public, for_user, explore):
+            assert [room.name for room in rooms] == ["b", "a", "c"]
+
+
+@pytest.mark.unit
+class TestMembershipLogging:
+    """成員異動的 log 只在實際成功時記錄（失敗時不可誤記為已加入 / 已移除）"""
+
+    @pytest.mark.asyncio
+    async def test_logs_only_successful_changes(self, db_manager, caplog):
+        repo = RoomRepository(db_manager.database)
+        owner_id = str(ObjectId())
+        room = await repo.create(
+            RoomInDB(
+                name="log room", owner_id=owner_id, members=[owner_id], max_members=2
+            )
+        )
+        joiner, latecomer = str(ObjectId()), str(ObjectId())
+        missing_room = str(ObjectId())
+        caplog.set_level(logging.INFO, logger="app.repositories.room_repository")
+
+        assert await repo.add_member(room.id, joiner, MemberRole.MEMBER) is True
+        # 房間已滿
+        assert await repo.add_member(room.id, latecomer, MemberRole.MEMBER) is False
+        assert await repo.remove_member(room.id, joiner) is True
+        assert await repo.remove_member(missing_room, joiner) is False
+
+        logged = [
+            record.getMessage()
+            for record in caplog.records
+            if record.name == "app.repositories.room_repository"
+        ]
+        assert len(logged) == 2
+        assert all(joiner in message and room.id in message for message in logged)
+        assert not any(latecomer in m or missing_room in m for m in logged)
 
 
 @pytest.mark.unit
