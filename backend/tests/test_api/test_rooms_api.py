@@ -307,6 +307,7 @@ class TestInviteCodeVisibility:
         )
 
         assert valid.status_code == 200
+        assert valid.json()["valid"] is True
         assert valid.json()["room_id"] == room["id"]
         assert valid.json()["inviter_name"] == "owner"
         assert invalid.status_code == 404
