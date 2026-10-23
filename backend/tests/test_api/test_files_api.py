@@ -4,12 +4,14 @@
 """
 
 import hashlib
+import io
 import re
 import uuid
 from datetime import UTC, datetime
 from unittest.mock import patch
 
 import pytest
+from PIL import Image
 
 from app.config import settings
 from app.core.fastapi_integration import create_file_service
@@ -112,8 +114,6 @@ class TestFilesApi:
         # 儲存檔名：上傳時間_8 碼隨機十六進位 + 小寫副檔名
         assert re.fullmatch(r"20260102_030405_[0-9a-f]{8}\.txt", filename)
         assert uuid.UUID(file_info["id"]).version == 4
-        # path 是伺服器端絕對路徑（內部細節），不列入 API 契約
-        file_info.pop("path")
         assert body == {
             "message": "檔案上傳成功",
             "file": {
@@ -136,6 +136,36 @@ class TestFilesApi:
         download = await async_client.get(file_info["url"], headers=uploader["headers"])
         assert download.status_code == 200
         assert download.content == content
+
+    async def test_image_upload_exposes_urls_not_server_paths(
+        self, async_client, uploader, upload_dir, tmp_path, monkeypatch
+    ):
+        """回應不含伺服器端絕對路徑；縮圖以可下載的 URL 表示"""
+        monkeypatch.chdir(tmp_path)  # 縮圖下載以工作目錄下的 processed/ 為根
+        image = io.BytesIO()
+        Image.new("RGB", (400, 300), "blue").save(image, format="PNG")
+
+        response = await async_client.post(
+            "/api/files/upload/image",
+            files={"file": ("photo.png", image.getvalue(), "image/png")},
+            headers=uploader["headers"],
+        )
+
+        assert response.status_code == 201, response.text
+        file_info = response.json()["file"]
+        filename = file_info["filename"]
+        assert "path" not in file_info
+        assert str(tmp_path) not in response.text
+        assert file_info["thumbnails"] == {
+            size: f"/api/files/thumbnail/{filename}?size={size}"
+            for size in ("small", "medium", "large")
+        }
+        thumbnail = await async_client.get(
+            file_info["thumbnails"]["small"], headers=uploader["headers"]
+        )
+        assert thumbnail.status_code == 200
+        with Image.open(io.BytesIO(thumbnail.content)) as img:
+            assert max(img.size) == 150
 
     async def test_download_content_type_per_extension(
         self, async_client, uploader, upload_dir

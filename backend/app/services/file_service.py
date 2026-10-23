@@ -98,6 +98,18 @@ class FileService:
             raise AppError(str(e)) from e
 
     @staticmethod
+    def _public_file_info(file_info: dict) -> dict:
+        """回給客戶端的檔案資訊：不含伺服器端絕對路徑，縮圖以下載 URL 表示"""
+        public = {key: value for key, value in file_info.items() if key != "path"}
+        if "thumbnails" in public:
+            filename = file_info["filename"]
+            public["thumbnails"] = {
+                size: f"/api/files/thumbnail/{filename}?size={size}" if path else None
+                for size, path in file_info["thumbnails"].items()
+            }
+        return public
+
+    @staticmethod
     def _attach_uploader(file_info: dict, current_user: dict) -> None:
         """在檔案資訊中記錄上傳者"""
         file_info["uploaded_by"] = current_user["username"]
@@ -114,7 +126,7 @@ class FileService:
             )
 
         self._attach_uploader(file_info, current_user)
-        return {"message": "檔案上傳成功", "file": file_info}
+        return {"message": "檔案上傳成功", "file": self._public_file_info(file_info)}
 
     async def upload_image(
         self, file, generate_thumbnails: bool, current_user: dict
@@ -129,7 +141,7 @@ class FileService:
             file_info["image_info"] = await self._try_get_image_info(file_info["path"])
 
         self._attach_uploader(file_info, current_user)
-        return {"message": "圖片上傳成功", "file": file_info}
+        return {"message": "圖片上傳成功", "file": self._public_file_info(file_info)}
 
     def resolve_thumbnail(self, filename: str, size: str) -> tuple[Path, str]:
         """解析縮圖路徑，回傳 (絕對路徑, 檔案名稱)"""
