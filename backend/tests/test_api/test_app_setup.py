@@ -263,6 +263,23 @@ class TestHstsConfiguration:
             "max-age=600; includeSubDomains; preload"
         )
 
+    async def test_debug_skips_hsts(self, app_client):
+        """開發模式即使走 HTTPS 也不送 HSTS（預設 SECURITY_* 設定）"""
+        async with app_client(base_url="https://test", DEBUG=True) as client:
+            response = await client.get("/")
+
+        assert response.status_code == 200
+        assert "Strict-Transport-Security" not in response.headers
+        assert response.headers["X-Frame-Options"] == "DENY"
+
+    async def test_production_sends_hsts(self, app_client):
+        async with app_client(base_url="https://test", DEBUG=False) as client:
+            response = await client.get("/")
+
+        assert response.headers["Strict-Transport-Security"] == (
+            "max-age=31536000; includeSubDomains; preload"
+        )
+
     async def test_debug_without_custom_headers_skips_hsts(self, app_client):
         async with app_client(
             base_url="https://test", DEBUG=True, SECURITY_ENABLE_HEADERS=False

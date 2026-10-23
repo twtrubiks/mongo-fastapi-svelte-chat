@@ -92,8 +92,8 @@ class SecurityConfig(BaseModel):
             }
         )
 
-        # HSTS 標頭 (僅在啟用時)
-        if self.enable_hsts:
+        # HSTS 標頭（開發模式不送：瀏覽器會把 localhost 記成只能走 HTTPS，長達 max-age）
+        if self.enable_hsts and not self.development_mode:
             headers["Strict-Transport-Security"] = self.get_hsts_header()
 
         # CSP 標頭
