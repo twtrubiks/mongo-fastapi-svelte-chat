@@ -531,7 +531,7 @@ class TestRoomService:
         assert result is not None
         assert result.name == "Updated Name"
         room_repo.update.assert_called_once_with(
-            sample_room.id, update_data, password_hash=None
+            sample_room.id, update_data, password_hash=None, invite_code=None
         )
 
     @pytest.mark.asyncio

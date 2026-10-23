@@ -342,18 +342,61 @@ class TestJoinPolicies:
         assert again.json() == {"message": "您已經是該房間的成員"}
         assert await self._is_member(async_client, room["id"], users["member"])
 
-    async def test_private_room_rejects_direct_join(self, async_client, users):
-        """公開房改成私人後保留 DIRECT 策略，仍不允許直接加入"""
+    async def test_switch_to_private_becomes_invite_only(self, async_client, users):
+        """公開房改成私人：自動產生邀請碼並改為邀請制，只能憑邀請碼加入"""
         room = await _create_room(async_client, users["owner"])
-        await async_client.put(
+        assert room["invite_code"] is None
+
+        updated = await async_client.put(
             f"/api/rooms/{room['id']}",
             json={"room_type": "private"},
             headers=users["owner"]["headers"],
         )
 
-        response = await _join(async_client, room["id"], users["member"])
+        assert updated.status_code == 200
+        invite_code = updated.json()["invite_code"]
+        assert invite_code
+        assert updated.json()["join_policy"] == "invite"
+        without_code = await _join(async_client, room["id"], users["member"])
+        assert without_code.status_code == 400
+        assert not await self._is_member(async_client, room["id"], users["member"])
 
-        assert response.status_code == 403
+        invited = await _join(
+            async_client, room["id"], users["member"], {"invite_code": invite_code}
+        )
+        assert invited.status_code == 200
+        assert await self._is_member(async_client, room["id"], users["member"])
+
+    async def test_switch_to_private_keeps_existing_invite_code(
+        self, async_client, users
+    ):
+        room = await _create_room(async_client, users["owner"], join_policy="invite")
+        assert room["invite_code"]
+
+        updated = await async_client.put(
+            f"/api/rooms/{room['id']}",
+            json={"room_type": "private"},
+            headers=users["owner"]["headers"],
+        )
+
+        assert updated.json()["invite_code"] == room["invite_code"]
+        assert updated.json()["join_policy"] == "invite"
+
+    async def test_private_room_stays_invite_only(self, async_client, users):
+        """私人房不能改成其他加入策略（與建立時相同）"""
+        room = await _create_room(async_client, users["owner"], room_type="private")
+
+        updated = await async_client.put(
+            f"/api/rooms/{room['id']}",
+            json={"join_policy": "direct"},
+            headers=users["owner"]["headers"],
+        )
+
+        assert updated.status_code == 200
+        assert updated.json()["join_policy"] == "invite"
+        assert updated.json()["invite_code"] == room["invite_code"]
+        without_code = await _join(async_client, room["id"], users["member"])
+        assert without_code.status_code == 400
         assert not await self._is_member(async_client, room["id"], users["member"])
 
     async def test_password_policy_without_password_set(self, async_client, users):

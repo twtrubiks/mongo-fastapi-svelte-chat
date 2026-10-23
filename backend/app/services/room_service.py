@@ -332,6 +332,14 @@ class RoomService:
                 RoomType.PUBLIC if update_data.is_public else RoomType.PRIVATE
             )
 
+        # 私人房間一律邀請制（與 create_room 相同）；由公開改為私人時若還沒有邀請碼
+        # 就產生一組，否則改成私人後沒有任何人能加入
+        invite_code = None
+        if (update_data.room_type or room.room_type) == RoomType.PRIVATE:
+            update_data.join_policy = JoinPolicy.INVITE
+            if not room.invite_code:
+                invite_code = secrets.token_urlsafe(16)
+
         # 密碼雜湊（加密邏輯，由 Service 層負責）
         password_hash = None
         if update_data.password is not None:
@@ -339,7 +347,7 @@ class RoomService:
 
         # 更新房間
         updated_room = await self.room_repo.update(
-            room_id, update_data, password_hash=password_hash
+            room_id, update_data, password_hash=password_hash, invite_code=invite_code
         )
         if not updated_room:
             raise NotFoundError("聊天室不存在")
