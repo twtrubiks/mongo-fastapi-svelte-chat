@@ -560,6 +560,9 @@ class MutantGenerator:
 
 def cmd_gen(args):
     WORKDIR.mkdir(exist_ok=True)
+    # 變異體會重新編號：清掉上一次的執行結果，否則續跑機制會把舊結果當成已完成
+    for name in ("results", "claims", "logs"):
+        shutil.rmtree(WORKDIR / name, ignore_errors=True)
     mutants: list[dict] = []
     for path in sorted((BACKEND / "app").rglob("*.py")):
         rel = str(path.relative_to(BACKEND))
