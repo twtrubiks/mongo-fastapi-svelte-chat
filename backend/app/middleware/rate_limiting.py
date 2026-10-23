@@ -190,15 +190,20 @@ class RateLimitingMiddleware(BaseHTTPMiddleware):
         return f"ip:{client_ip}"
 
     def _get_rate_limit_config(self, path: str) -> dict[str, int]:
-        """根據路徑獲取 rate limit 配置"""
+        """根據路徑獲取 rate limit 配置（精確匹配優先，其次最長前綴）"""
         # 精確匹配
         if path in self.rate_limits:
             return self.rate_limits[path]
 
-        # 前綴匹配
-        for pattern, config in self.rate_limits.items():
-            if path.startswith(pattern):
-                return config
+        # 最長前綴匹配：/api/files/upload/image 要套用上傳設定，
+        # 不能被較短的通用 /api/ 搶先命中（不依賴 dict 的宣告順序）
+        prefixes = [
+            pattern
+            for pattern in self.rate_limits
+            if pattern != "default" and path.startswith(pattern)
+        ]
+        if prefixes:
+            return self.rate_limits[max(prefixes, key=len)]
 
         # 使用預設配置
         return self.rate_limits["default"]
