@@ -655,6 +655,22 @@ class TestRoomService:
             await room_service.validate_invite_code("test-invite-code")
         assert "已過期" in str(exc_info.value)
 
+    @pytest.mark.parametrize(
+        ("offset", "expired"),
+        [(timedelta(hours=-1), True), (timedelta(hours=1), False)],
+    )
+    def test_invite_code_expiry_with_naive_datetime(self, sample_room, offset, expired):
+        """MongoDB 讀回的時間不帶時區，比較時不可拋 TypeError"""
+        naive_utc_now = datetime.now(UTC).replace(tzinfo=None)
+        sample_room.invite_code_expires_at = naive_utc_now + offset
+
+        assert RoomService._invite_code_expired(sample_room) is expired
+
+    def test_invite_code_without_expiry_never_expires(self, sample_room):
+        sample_room.invite_code_expires_at = None
+
+        assert RoomService._invite_code_expired(sample_room) is False
+
     @pytest.mark.asyncio
     async def test_delete_room_with_websocket_notification(
         self, room_service, mock_repositories, mock_connection_manager, sample_room

@@ -74,6 +74,20 @@ class RoomService:
                 room_data["invite_code"] = None
         return RoomResponse(**room_data)
 
+    @staticmethod
+    def _invite_code_expired(room: RoomInDB) -> bool:
+        """邀請碼是否已過期
+
+        MongoDB 讀回的是不帶時區的 UTC 時間，直接與 datetime.now(UTC) 比較會拋
+        TypeError，需先補上 UTC 時區。
+        """
+        expires_at = room.invite_code_expires_at
+        if expires_at is None:
+            return False
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=UTC)
+        return expires_at < datetime.now(UTC)
+
     async def _convert_many_summaries(
         self, rooms: list[RoomInDB], user_id: str | None = None
     ) -> list[RoomSummary]:
@@ -449,10 +463,7 @@ class RoomService:
                 raise AppError("邀請碼無效")
 
             # 檢查邀請碼是否過期
-            if (
-                room.invite_code_expires_at
-                and room.invite_code_expires_at < datetime.now(UTC)
-            ):
+            if self._invite_code_expired(room):
                 raise AppError("邀請碼已過期")
 
         # 原子加入房間（含 max_members 條件檢查 + 角色設定）
@@ -484,9 +495,7 @@ class RoomService:
             raise NotFoundError("邀請碼無效或已過期")
 
         # 過期檢查與 join_room 保持一致
-        if room.invite_code_expires_at and room.invite_code_expires_at < datetime.now(
-            UTC
-        ):
+        if self._invite_code_expired(room):
             raise AppError("邀請碼已過期")
 
         owner = await self.user_repo.get_by_id(room.owner_id)
