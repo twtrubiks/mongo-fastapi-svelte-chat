@@ -243,6 +243,51 @@ class TestRoomRepository:
         assert updated_room.member_roles.get(new_member_id) == MemberRole.MEMBER
 
     @pytest.mark.asyncio
+    async def test_add_member_rejected_when_room_full(self, db_manager):
+        """max_members 由 update 的原子條件把關（service 先查後寫擋不住併發）"""
+        repo = RoomRepository(db_manager.database)
+        members = [str(ObjectId()), str(ObjectId())]
+        room = await repo.create(
+            RoomInDB(
+                name="full room",
+                owner_id=members[0],
+                members=members,
+                member_roles={
+                    members[0]: MemberRole.OWNER,
+                    members[1]: MemberRole.MEMBER,
+                },
+                max_members=2,
+            )
+        )
+        newcomer = str(ObjectId())
+
+        assert await repo.add_member(room.id, newcomer, MemberRole.MEMBER) is False
+
+        unchanged = await repo.get_by_id(room.id)
+        assert unchanged.members == members
+        assert newcomer not in unchanged.member_roles
+
+    @pytest.mark.asyncio
+    async def test_add_member_fills_last_seat(self, db_manager):
+        repo = RoomRepository(db_manager.database)
+        owner = str(ObjectId())
+        room = await repo.create(
+            RoomInDB(
+                name="one seat left", owner_id=owner, members=[owner], max_members=2
+            )
+        )
+        newcomer = str(ObjectId())
+
+        assert await repo.add_member(room.id, newcomer, MemberRole.MEMBER) is True
+        assert (
+            await repo.add_member(room.id, str(ObjectId()), MemberRole.MEMBER) is False
+        )
+
+        updated = await repo.get_by_id(room.id)
+        assert updated.members == [owner, newcomer]
+        assert updated.member_roles[newcomer] == MemberRole.MEMBER
+
+    @pytest.mark.asyncio
     async def test_remove_member(self, db_manager):
         """測試移除房間成員（同時清除 member_roles）"""
         repo = RoomRepository(db_manager.database)
