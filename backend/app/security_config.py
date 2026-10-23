@@ -1,8 +1,8 @@
 """安全配置設定"""
 
-import os
-
 from pydantic import BaseModel
+
+from app.config import Settings, settings
 
 
 class SecurityConfig(BaseModel):
@@ -108,25 +108,23 @@ class SecurityConfig(BaseModel):
         return headers
 
 
-# 從環境變數載入安全配置
-def load_security_config() -> SecurityConfig:
-    """從環境變數載入安全配置"""
+def load_security_config(config: Settings | None = None) -> SecurityConfig:
+    """從應用程式設定載入安全配置
+
+    透過 Settings 讀取 SECURITY_*，因此 .env 與環境變數都會生效
+    （pydantic-settings 讀取 .env 時不會寫入 os.environ，不能用 os.getenv）。
+    """
+    config = config or settings
     return SecurityConfig(
-        enable_hsts=os.getenv("SECURITY_ENABLE_HSTS", "true").lower() == "true",
-        hsts_max_age=int(os.getenv("SECURITY_HSTS_MAX_AGE", "31536000")),
-        hsts_include_subdomains=os.getenv(
-            "SECURITY_HSTS_INCLUDE_SUBDOMAINS", "true"
-        ).lower()
-        == "true",
-        hsts_preload=os.getenv("SECURITY_HSTS_PRELOAD", "true").lower() == "true",
-        enable_csp=os.getenv("SECURITY_ENABLE_CSP", "true").lower() == "true",
-        csp_report_only=os.getenv("SECURITY_CSP_REPORT_ONLY", "false").lower()
-        == "true",
-        csp_report_uri=os.getenv("SECURITY_CSP_REPORT_URI"),
-        enable_security_headers=os.getenv("SECURITY_ENABLE_HEADERS", "true").lower()
-        == "true",
-        hide_server_header=os.getenv("SECURITY_HIDE_SERVER", "true").lower() == "true",
-        custom_server_header=os.getenv("SECURITY_SERVER_HEADER", "FastAPI"),
-        development_mode=os.getenv("SECURITY_DEVELOPMENT_MODE", "false").lower()
-        == "true",
+        enable_hsts=config.SECURITY_ENABLE_HSTS,
+        hsts_max_age=config.SECURITY_HSTS_MAX_AGE,
+        hsts_include_subdomains=config.SECURITY_HSTS_INCLUDE_SUBDOMAINS,
+        hsts_preload=config.SECURITY_HSTS_PRELOAD,
+        enable_csp=config.SECURITY_ENABLE_CSP,
+        csp_report_only=config.SECURITY_CSP_REPORT_ONLY,
+        csp_report_uri=config.SECURITY_CSP_REPORT_URI,
+        enable_security_headers=config.SECURITY_ENABLE_HEADERS,
+        hide_server_header=config.SECURITY_HIDE_SERVER,
+        custom_server_header=config.SECURITY_SERVER_HEADER,
+        development_mode=config.SECURITY_DEVELOPMENT_MODE,
     )
