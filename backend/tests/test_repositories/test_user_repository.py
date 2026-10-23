@@ -230,6 +230,55 @@ class TestUserRepository:
         assert updated_user2.avatar == "/api/files/image/new_avatar.png"
 
     @pytest.mark.asyncio
+    async def test_update_profile_keeps_password_and_token_version(self, db_manager):
+        """一般資料更新不動密碼雜湊與 token 版本（不會讓既有 token 失效）"""
+        repo = UserRepository(db_manager.database)
+        created_user = await repo.create(
+            UserInDB(
+                username="profileonly",
+                email="profileonly@example.com",
+                hashed_password="original_hash",
+            )
+        )
+
+        updated_user = await repo.update(
+            created_user.id, UserUpdate(full_name="New Name")
+        )
+
+        assert updated_user.full_name == "New Name"
+        assert updated_user.hashed_password == "original_hash"
+        assert updated_user.token_version == created_user.token_version == 0
+
+    @pytest.mark.asyncio
+    async def test_update_password_bumps_token_version(self, db_manager):
+        """改密碼與 token 版本遞增在同一次更新完成"""
+        repo = UserRepository(db_manager.database)
+        created_user = await repo.create(
+            UserInDB(
+                username="pwdchange",
+                email="pwdchange@example.com",
+                hashed_password="old_hash",
+            )
+        )
+
+        assert await repo.update_password(created_user.id, "new_hash") is True
+        first = await repo.get_by_id(created_user.id)
+        assert first.hashed_password == "new_hash"
+        assert first.token_version == 1
+        assert first.updated_at > created_user.updated_at
+
+        assert await repo.update_password(created_user.id, "newer_hash") is True
+        second = await repo.get_by_id(created_user.id)
+        assert second.hashed_password == "newer_hash"
+        assert second.token_version == 2
+
+    @pytest.mark.asyncio
+    async def test_update_password_nonexistent_user(self, db_manager):
+        repo = UserRepository(db_manager.database)
+
+        assert await repo.update_password(str(ObjectId()), "hash") is False
+
+    @pytest.mark.asyncio
     async def test_update_nonexistent_user(self, db_manager):
         """測試更新不存在的使用者"""
         repo = UserRepository(db_manager.database)

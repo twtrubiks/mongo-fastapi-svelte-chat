@@ -299,11 +299,10 @@ class TestAuthAPI:
         assert data["username"] == "updateuser"  # 用戶名不應該改變
 
     @pytest.mark.asyncio
-    async def test_update_user_profile_with_password(
+    async def test_update_user_profile_rejects_password(
         self, async_client, isolated_db_manager
     ):
-        """測試更新用戶密碼"""
-        # 先註冊使用者
+        """PUT /profile 不能改密碼（必須走需驗證目前密碼的 change-password）"""
         test_user = {
             "username": "passworduser",
             "email": "password@example.com",
@@ -315,31 +314,78 @@ class TestAuthAPI:
             "/api/auth/register", json=test_user
         )
         user_id = register_response.json()["user"]["id"]
-
-        # 建立 JWT token
         token = create_access_token(
             data={"sub": test_user["username"], "user_id": user_id}
         )
         headers = {"Authorization": f"Bearer {token}"}
 
-        # 更新密碼
-        update_data = {"password": "newpass123"}
-
         response = await async_client.put(
-            "/api/auth/profile", json=update_data, headers=headers
+            "/api/auth/profile",
+            json={"full_name": "Renamed", "password": "newpass123"},
+            headers=headers,
         )
 
-        assert response.status_code == 200
+        assert response.status_code == 422
 
-        # 驗證新密碼可以登入
-        login_data = {"username": "passworduser", "password": "newpass123"}
+        async def login(password: str) -> int:
+            login_response = await async_client.post(
+                "/api/auth/login",
+                data={"username": "passworduser", "password": password},
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+            )
+            return login_response.status_code
 
+        # 密碼與其他欄位都沒有被改動
+        assert await login("newpass123") == 401
+        assert await login("oldpass123") == 200
+        profile = await async_client.get("/api/auth/profile", headers=headers)
+        assert profile.json()["full_name"] == "Password User"
+
+    @pytest.mark.asyncio
+    async def test_change_password_requires_current_password(
+        self, async_client, isolated_db_manager
+    ):
+        """PUT /change-password：目前密碼錯誤回 400，正確才會更新"""
+        test_user = {
+            "username": "changepwduser",
+            "email": "changepwd@example.com",
+            "password": "oldpass123",
+        }
+        await async_client.post("/api/auth/register", json=test_user)
         login_response = await async_client.post(
             "/api/auth/login",
-            data=login_data,
+            data={"username": "changepwduser", "password": "oldpass123"},
             headers={"Content-Type": "application/x-www-form-urlencoded"},
         )
-        assert login_response.status_code == 200
+        headers = {"Authorization": f"Bearer {login_response.json()['access_token']}"}
+
+        wrong = await async_client.put(
+            "/api/auth/change-password",
+            json={"current_password": "wrongpass", "new_password": "newpass123"},
+            headers=headers,
+        )
+        assert wrong.status_code == 400
+
+        too_short = await async_client.put(
+            "/api/auth/change-password",
+            json={"current_password": "oldpass123", "new_password": "12345"},
+            headers=headers,
+        )
+        assert too_short.status_code == 422
+
+        ok = await async_client.put(
+            "/api/auth/change-password",
+            json={"current_password": "oldpass123", "new_password": "newpass123"},
+            headers=headers,
+        )
+        assert ok.status_code == 200
+
+        login_new = await async_client.post(
+            "/api/auth/login",
+            data={"username": "changepwduser", "password": "newpass123"},
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+        assert login_new.status_code == 200
 
     @pytest.mark.asyncio
     async def test_update_user_profile_email_conflict(

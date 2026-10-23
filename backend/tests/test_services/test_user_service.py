@@ -10,6 +10,7 @@ import pytest
 from bson import ObjectId
 
 from app.core.exceptions import (
+    AppError,
     ConflictError,
     ForbiddenError,
     NotFoundError,
@@ -343,32 +344,69 @@ class TestUserService:
         assert "您只能刪除自己的帳號" in str(exc_info.value)
 
     @pytest.mark.asyncio
-    async def test_update_user_with_password(
+    async def test_change_password_success(
         self, user_service, mock_user_repo, sample_user
     ):
-        """測試更新使用者包含密碼"""
-        user_repo = mock_user_repo
+        """測試修改密碼：驗證目前密碼後寫入新雜湊並清除快取"""
+        mock_user_repo.get_by_id.return_value = sample_user
+        mock_user_repo.update_password.return_value = True
 
-        # Mock 設置
-        user_repo.get_by_id.return_value = sample_user
+        with (
+            patch(
+                "app.services.user_service.verify_password", return_value=True
+            ) as mock_verify,
+            patch(
+                "app.services.user_service.get_password_hash",
+                return_value="new_hashed_password",
+            ) as mock_hash,
+            patch("app.services.user_service.invalidate_user_cache") as mock_invalidate,
+        ):
+            await user_service.change_password(sample_user.id, "old_pass", "new_pass")
 
-        # Mock 密碼加密
-        with patch("app.services.user_service.get_password_hash") as mock_hash:
-            mock_hash.return_value = "new_hashed_password"
+        mock_verify.assert_awaited_once_with("old_pass", sample_user.hashed_password)
+        mock_hash.assert_awaited_once_with("new_pass")
+        mock_user_repo.update_password.assert_awaited_once_with(
+            sample_user.id, "new_hashed_password"
+        )
+        mock_invalidate.assert_awaited_once_with(sample_user.id)
 
-            # Mock 更新後的使用者
-            updated_user = UserInDB(**sample_user.model_dump())
-            user_repo.update.return_value = updated_user
+    @pytest.mark.asyncio
+    async def test_change_password_wrong_current_password(
+        self, user_service, mock_user_repo, sample_user
+    ):
+        """測試目前密碼錯誤時不寫入新密碼"""
+        mock_user_repo.get_by_id.return_value = sample_user
 
-            # 更新數據包含密碼
-            update_data = UserUpdate(password="new_password")
+        with patch("app.services.user_service.verify_password", return_value=False):
+            with pytest.raises(AppError, match="目前密碼錯誤"):
+                await user_service.change_password(sample_user.id, "wrong", "new_pass")
 
-            # 執行
-            await user_service.update_user(sample_user.id, update_data, sample_user.id)
+        mock_user_repo.update_password.assert_not_called()
 
-            # 驗證密碼被加密
-            mock_hash.assert_called_once_with("new_password")
-            # 驗證 update 被調用時使用了加密後的密碼
-            user_repo.update.assert_called_once()
-            call_args = user_repo.update.call_args[0]
-            assert call_args[0] == sample_user.id
+    @pytest.mark.asyncio
+    async def test_change_password_user_not_found(self, user_service, mock_user_repo):
+        """測試使用者不存在"""
+        mock_user_repo.get_by_id.return_value = None
+
+        with pytest.raises(NotFoundError):
+            await user_service.change_password(str(ObjectId()), "old", "new_pass")
+
+        mock_user_repo.update_password.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_change_password_update_failed(
+        self, user_service, mock_user_repo, sample_user
+    ):
+        """測試寫入時使用者已不存在"""
+        mock_user_repo.get_by_id.return_value = sample_user
+        mock_user_repo.update_password.return_value = False
+
+        with (
+            patch("app.services.user_service.verify_password", return_value=True),
+            patch("app.services.user_service.get_password_hash", return_value="h"),
+            patch("app.services.user_service.invalidate_user_cache") as mock_invalidate,
+        ):
+            with pytest.raises(NotFoundError):
+                await user_service.change_password(sample_user.id, "old", "new_pass")
+
+        mock_invalidate.assert_not_called()

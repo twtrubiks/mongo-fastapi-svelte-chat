@@ -211,10 +211,10 @@ export class ApiClient {
       return this.bffRequest<User>('GET', '/api/auth/profile');
     },
 
+    // 密碼不可經由 profile 修改（後端會回 422），請使用 changePassword
     updateProfile: async (userData: {
       full_name?: string;
       email?: string;
-      password?: string;
       avatar?: string;
     }): Promise<User> => {
       return this.bffRequest<User>('PUT', '/api/auth/profile', { data: userData });

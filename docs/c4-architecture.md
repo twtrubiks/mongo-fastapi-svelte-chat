@@ -505,7 +505,8 @@ classDiagram
         +get_by_ids(user_ids) list~UserInDB~
         +get_by_username(username) UserInDB
         +get_by_email(email) UserInDB
-        +update(user_id, user_update, bump_token_version) UserInDB
+        +update(user_id, user_update) UserInDB
+        +update_password(user_id, hashed_password) bool
         +delete(user_id) bool
         +update_last_login(user_id) bool
     }

@@ -17,7 +17,7 @@ from app.models.message import (
 )
 from app.models.notification import NotificationStatus, NotificationType
 from app.models.room import RoomBase, RoomCreate, RoomInDB, RoomSummary, RoomUpdate
-from app.models.user import PasswordChange, UserCreate, UserResponse
+from app.models.user import PasswordChange, UserCreate, UserResponse, UserUpdate
 
 ROOM_ID = "507f1f77bcf86cd799439011"
 NAIVE_TIME = datetime(2026, 1, 2, 3, 4, 5)
@@ -131,6 +131,21 @@ class TestUserValidation:
 
     def test_password_change_requires_current_password(self):
         assert not _accepts(PasswordChange, current_password="", new_password="123456")
+
+    def test_profile_update_accepts_profile_fields(self):
+        update = UserUpdate(full_name="Name", email="u@example.com", avatar="/a.png")
+        assert update.model_dump(exclude_unset=True) == {
+            "full_name": "Name",
+            "email": "u@example.com",
+            "avatar": "/a.png",
+        }
+
+    @pytest.mark.parametrize(
+        "field", ["password", "hashed_password", "token_version", "is_active"]
+    )
+    def test_profile_update_rejects_other_fields(self, field):
+        """密碼只能經 PasswordChange 修改；其他欄位一律拒絕而非靜默忽略"""
+        assert not _accepts(UserUpdate, full_name="Name", **{field: "x"})
 
 
 @pytest.mark.unit

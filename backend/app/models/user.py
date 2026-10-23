@@ -24,12 +24,17 @@ class UserCreate(UserBase):
 
 
 class UserUpdate(BaseModel):
-    """使用者更新模型"""
+    """使用者資料更新模型
+
+    不含密碼：修改密碼必須走 PasswordChange（需驗證目前密碼）。
+    拒絕未知欄位，避免送出 password 時被靜默忽略而誤以為已修改。
+    """
 
     full_name: str | None = None
     email: EmailStr | None = None
     avatar: str | None = None
-    password: str | None = Field(None, min_length=6)
+
+    model_config = ConfigDict(extra="forbid")
 
 
 class UserInDB(UserBase):
