@@ -1,6 +1,6 @@
 """訊息 Repository 測試"""
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
 
 import pytest
@@ -416,6 +416,107 @@ class TestMessageRepository:
         # Repository 不負責跨房間回覆驗證（已收斂至 Service 層），訊息應正常建立
         result = await repo.create(reply_message_data)
         assert result is not None
+
+
+async def _insert_with_created_at(collection, room_id: str, minutes: list[int]):
+    """依序插入訊息（_id 遞增），內容為 m0、m1…，created_at 為基準時間 + 各自分鐘數"""
+    base = datetime(2026, 1, 1)
+    await collection.insert_many(
+        [
+            {
+                "_id": ObjectId(),
+                **MessageInDB(
+                    room_id=room_id,
+                    user_id=str(ObjectId()),
+                    username="testuser",
+                    content=f"m{i}",
+                    created_at=base + timedelta(minutes=minute),
+                    updated_at=base + timedelta(minutes=minute),
+                ).model_dump(exclude={"id"}),
+            }
+            for i, minute in enumerate(minutes)
+        ]
+    )
+
+
+@pytest.mark.unit
+class TestMessageRepositoryContracts:
+    """建立狀態、排序（刻意讓 created_at 與 _id 順序不一致）、分頁旗標與批次刪除"""
+
+    @pytest.mark.asyncio
+    async def test_create_always_persists_sent_status(self, db_manager):
+        repo = MessageRepository(db_manager.database)
+        message = MessageInDB(
+            room_id=str(ObjectId()),
+            user_id=str(ObjectId()),
+            username="testuser",
+            content="新訊息",
+            status=MessageStatus.DELETED,
+        )
+
+        created = await repo.create(message)
+
+        raw = await repo.collection.find_one({"_id": ObjectId(created.id)})
+        assert created.status == raw["status"] == MessageStatus.SENT
+        assert set(raw) == set(MessageInDB.model_fields) - {"id"} | {"_id"}
+
+    @pytest.mark.asyncio
+    async def test_room_messages_ordered_by_created_at(self, db_manager):
+        """最新的一頁、由舊到新排列"""
+        repo = MessageRepository(db_manager.database)
+        room_id = str(ObjectId())
+        await _insert_with_created_at(repo.collection, room_id, [1, 2, 0])
+
+        messages = await repo.get_room_messages(room_id)
+        latest_two = await repo.get_room_messages(room_id, limit=2)
+
+        assert [m.content for m in messages] == ["m2", "m0", "m1"]
+        assert [m.content for m in latest_two] == ["m0", "m1"]
+
+    @pytest.mark.asyncio
+    async def test_search_newest_first(self, db_manager):
+        repo = MessageRepository(db_manager.database)
+        room_id = str(ObjectId())
+        await _insert_with_created_at(repo.collection, room_id, [1, 2, 0])
+
+        result = await repo.search_messages(room_id, MessageSearchQuery(keyword="m"))
+
+        assert [m.content for m in result.messages] == ["m1", "m0", "m2"]
+
+    @pytest.mark.asyncio
+    async def test_search_pagination_flags(self, db_manager):
+        """4 筆、每頁 2 筆：第 1 頁只有下一頁、第 2 頁（恰好最後一頁）只有上一頁"""
+        repo = MessageRepository(db_manager.database)
+        room_id = str(ObjectId())
+        await _insert_with_created_at(repo.collection, room_id, [3, 2, 1, 0])
+
+        pages = [
+            await repo.search_messages(
+                room_id, MessageSearchQuery(page=page, page_size=2)
+            )
+            for page in (1, 2)
+        ]
+
+        assert [
+            (p.total, p.has_next, p.has_prev, [m.content for m in p.messages])
+            for p in pages
+        ] == [
+            (4, True, False, ["m0", "m1"]),
+            (4, False, True, ["m2", "m3"]),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_delete_by_room_id_returns_deleted_count(self, db_manager):
+        repo = MessageRepository(db_manager.database)
+        room_id, other_room_id = str(ObjectId()), str(ObjectId())
+        await _insert_with_created_at(repo.collection, room_id, [0, 1, 2])
+        await _insert_with_created_at(repo.collection, other_room_id, [0])
+
+        deleted = await repo.delete_by_room_id(room_id)
+
+        assert deleted == 3
+        assert await repo.collection.count_documents({"room_id": room_id}) == 0
+        assert await repo.collection.count_documents({"room_id": other_room_id}) == 1
 
 
 @pytest.mark.unit

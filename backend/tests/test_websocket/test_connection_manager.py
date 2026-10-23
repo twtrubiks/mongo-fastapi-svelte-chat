@@ -2,11 +2,13 @@
 
 import asyncio
 import json
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, Mock
 
 import pytest
 from fastapi import WebSocket
 
+import app.websocket.manager as manager_module
 from app.websocket.manager import ConnectionManager
 
 
@@ -728,3 +730,431 @@ class TestConnectionManager:
         # debounce 後：使用者已從 room_users 移除
         assert user_id not in connection_manager.room_users.get(room_id, set())
         assert (user_id, room_id) not in connection_manager._pending_room_leave
+
+
+# ==================== debounce 時間軸與事件 payload ====================
+
+FROZEN_NOW = datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC)
+TS = "2026-01-02T03:04:05+00:00"
+
+ALICE = {"id": "alice", "username": "Alice", "avatar": None}
+BOB = {"id": "bob", "username": "Bob", "avatar": None}
+CAROL = {"id": "carol", "username": "Carol", "avatar": None}
+DAVE = {"id": "dave", "username": "Dave", "avatar": None}
+
+
+class _FrozenDatetime(datetime):
+    @classmethod
+    def now(cls, tz=None):
+        return FROZEN_NOW
+
+
+async def _drain():
+    """讓背景 task 跑到下一個等待點"""
+    for _ in range(20):
+        await asyncio.sleep(0)
+
+
+class VirtualClock:
+    """取代 manager 模組內的 asyncio：sleep 改走虛擬時間，由 advance_to() 推進
+
+    其餘屬性（create_task、Lock…）照常委派給真正的 asyncio。
+    """
+
+    def __init__(self):
+        self.now = 0.0
+        self._sleepers: list[tuple[float, asyncio.Future]] = []
+
+    def __getattr__(self, name):
+        return getattr(asyncio, name)
+
+    async def sleep(self, seconds):
+        future = asyncio.get_running_loop().create_future()
+        self._sleepers.append((self.now + seconds, future))
+        await future
+
+    async def advance_to(self, t: float):
+        """推進到時間 t：依到期先後逐一放行到期的 sleep"""
+        await _drain()
+        while due := sorted(
+            (item for item in self._sleepers if item[0] <= t and not item[1].done()),
+            key=lambda item: item[0],
+        ):
+            deadline, future = due[0]
+            self.now = deadline
+            future.set_result(None)
+            await _drain()
+        self.now = t
+        await _drain()
+
+    async def shutdown(self):
+        for _, future in self._sleepers:
+            if not future.done():
+                future.cancel()
+        await _drain()
+
+
+def _ws():
+    ws = Mock(spec=WebSocket)
+    ws.accept = AsyncMock()
+    ws.send_text = AsyncMock()
+    ws.close = AsyncMock()
+    return ws
+
+
+def _received(ws) -> list[dict]:
+    """取出並清空此連線目前收到的訊息"""
+    messages = [json.loads(call.args[0]) for call in ws.send_text.call_args_list]
+    ws.send_text.reset_mock()
+    return messages
+
+
+async def _join(manager, user, room_id):
+    ws = _ws()
+    await manager.connect(ws, user["id"], room_id, dict(user))
+    return ws
+
+
+def _room_user_ids(manager, room_id) -> list[str]:
+    return sorted(user["id"] for user in manager.get_room_users(room_id))
+
+
+def _joined(user, room_id):
+    return {"type": "user_joined", "user": user, "timestamp": TS, "room_id": room_id}
+
+
+def _left(user, room_id):
+    return {"type": "user_left", "user": user, "timestamp": TS, "room_id": room_id}
+
+
+def _offline(user):
+    return {
+        "type": "user_status_changed",
+        "user_id": user["id"],
+        "user": user,
+        "is_online": False,
+        "timestamp": TS,
+    }
+
+
+@pytest.fixture
+async def clock(monkeypatch):
+    virtual_clock = VirtualClock()
+    monkeypatch.setattr(manager_module, "asyncio", virtual_clock)
+    monkeypatch.setattr(manager_module, "datetime", _FrozenDatetime)
+    yield virtual_clock
+    await virtual_clock.shutdown()
+
+
+@pytest.fixture
+def manager(clock):
+    return ConnectionManager()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+class TestEventPayloads:
+    """連線事件的完整 payload 契約"""
+
+    async def test_connect_events(self, manager):
+        alice_ws = await _join(manager, ALICE, "r1")
+        carol_ws = await _join(manager, CAROL, "r2")
+        _received(alice_ws)
+        _received(carol_ws)
+
+        bob_ws = _ws()
+        await manager.connect(bob_ws, "bob", "r1", dict(BOB))
+
+        # 同房其他人：user_joined；其他房間：上線狀態
+        assert _received(alice_ws) == [
+            {"type": "user_joined", "user": BOB, "timestamp": TS, "room_id": "r1"}
+        ]
+        assert _received(carol_ws) == [
+            {
+                "type": "user_status_changed",
+                "user_id": "bob",
+                "user": BOB,
+                "is_online": True,
+                "timestamp": TS,
+            }
+        ]
+        # 本人：房內在線列表（集合轉 list，順序不固定）
+        [room_users] = _received(bob_ws)
+        room_users["users"].sort(key=lambda user: user["id"])
+        room_users["global_online_user_ids"].sort()
+        assert room_users == {
+            "type": "room_users",
+            "users": [{**ALICE, "is_active": True}, {**BOB, "is_active": True}],
+            "global_online_user_ids": ["alice", "bob", "carol"],
+            "timestamp": TS,
+            "room_id": "r1",
+            "online_only": True,
+        }
+
+    async def test_notification(self, manager):
+        bob_ws = await _join(manager, BOB, "r1")
+        _received(bob_ws)
+        data = {
+            "id": "n1",
+            "title": "新訊息",
+            "message": "Alice: 嗨",
+            "type": "message",
+        }
+
+        await manager.send_notification("bob", data)
+
+        assert _received(bob_ws) == [
+            {"type": "notification", "data": data, "timestamp": TS}
+        ]
+
+    async def test_personal_message_to_absent_connection_is_dropped(self, manager):
+        bob_ws = await _join(manager, BOB, "r1")
+        _received(bob_ws)
+
+        await manager.send_personal_message("ghost", "r1", {"type": "pong"})
+        await manager.send_personal_message("bob", "r2", {"type": "pong"})
+
+        assert _received(bob_ws) == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+class TestDebounceTimeline:
+    """離線（3 秒）與房間離開（5 秒）debounce：以虛擬時間驗證時間軸"""
+
+    async def test_offline_announced_exactly_3s_after_last_room_closes(
+        self, manager, clock
+    ):
+        alice_ws = await _join(manager, ALICE, "r1")
+        bob_ws = await _join(manager, BOB, "r1")
+        _received(alice_ws)
+
+        await manager.disconnect("bob", "r1", bob_ws)
+
+        await clock.advance_to(2.999)
+        assert _received(alice_ws) == []
+        assert sorted(manager.get_global_online_user_ids()) == ["alice", "bob"]
+
+        await clock.advance_to(3)
+        assert _received(alice_ws) == [
+            {"type": "user_left", "user": BOB, "timestamp": TS, "room_id": "r1"},
+            {
+                "type": "user_status_changed",
+                "user_id": "bob",
+                "user": BOB,
+                "is_online": False,
+                "timestamp": TS,
+            },
+        ]
+        assert manager.get_global_online_user_ids() == ["alice"]
+        assert manager.get_room_users("r1") == [ALICE]
+        # 計時器跑完後不殘留在 pending 表
+        assert manager._pending_offline == {}
+        assert manager._pending_room_leave == {}
+
+    @pytest.mark.parametrize("rejoin_at, announced", [(4.999, False), (5, True)])
+    async def test_room_rejoin_window_is_5s(self, manager, clock, rejoin_at, announced):
+        alice_ws = await _join(manager, ALICE, "r1")
+        await _join(manager, BOB, "r2")  # bob 仍在其他房間，不會離線
+        bob_r1 = await _join(manager, BOB, "r1")
+        _received(alice_ws)
+
+        await manager.disconnect("bob", "r1", bob_r1)
+        await clock.advance_to(rejoin_at)
+        assert _room_user_ids(manager, "r1") == (
+            ["alice"] if announced else ["alice", "bob"]
+        )
+
+        await _join(manager, BOB, "r1")
+        assert _received(alice_ws) == ([_joined(BOB, "r1")] if announced else [])
+
+    async def test_reconnect_within_offline_window_restarts_debounce(
+        self, manager, clock
+    ):
+        """斷線 → 3 秒內重連 → 再斷線：離線要從最後一次斷線起算"""
+        alice_ws = await _join(manager, ALICE, "r1")
+        bob_ws = await _join(manager, BOB, "r1")
+        _received(alice_ws)
+
+        await manager.disconnect("bob", "r1", bob_ws)
+        await clock.advance_to(1)
+        bob_ws = await _join(manager, BOB, "r1")
+        await clock.advance_to(2)
+        await manager.disconnect("bob", "r1", bob_ws)
+
+        await clock.advance_to(4.999)
+        assert _received(alice_ws) == []
+        assert "bob" in manager.get_global_online_user_ids()
+
+        await clock.advance_to(5)
+        assert _received(alice_ws) == [_left(BOB, "r1"), _offline(BOB)]
+
+    async def test_room_flap_restarts_rejoin_window(self, manager, clock):
+        """同房斷線 → 重連 → 再斷線：舊的房間離開計時器作廢，視窗從最後一次斷線起算"""
+        alice_ws = await _join(manager, ALICE, "r1")
+        await _join(manager, BOB, "r2")
+        bob_r1 = await _join(manager, BOB, "r1")
+        _received(alice_ws)
+
+        await manager.disconnect("bob", "r1", bob_r1)
+        await clock.advance_to(1)
+        bob_r1 = await _join(manager, BOB, "r1")
+        await clock.advance_to(2)
+        await manager.disconnect("bob", "r1", bob_r1)
+
+        # 距第一次斷線已超過 5 秒、距最後一次未滿
+        await clock.advance_to(6)
+        assert _room_user_ids(manager, "r1") == ["alice", "bob"]
+        await _join(manager, BOB, "r1")
+        assert _received(alice_ws) == []
+
+    async def test_force_disconnect_discards_pending_rejoin_timer(self, manager, clock):
+        """斷線 debounce 中被移出房間，之後重新加入：舊計時器不可再動到新連線的狀態"""
+        alice_ws = await _join(manager, ALICE, "r1")
+        await _join(manager, BOB, "r2")
+        bob_r1 = await _join(manager, BOB, "r1")
+        _received(alice_ws)
+
+        await manager.disconnect("bob", "r1", bob_r1)
+        await clock.advance_to(1)
+        await manager.force_disconnect("bob", "r1")
+        await clock.advance_to(2)
+        bob_r1 = await _join(manager, BOB, "r1")
+        assert _received(alice_ws) == [_joined(BOB, "r1")]
+        await clock.advance_to(3)
+        await manager.disconnect("bob", "r1", bob_r1)
+
+        await clock.advance_to(6)
+        assert _room_user_ids(manager, "r1") == ["alice", "bob"]
+        await _join(manager, BOB, "r1")
+        assert _received(alice_ws) == []
+
+    async def test_going_offline_discards_pending_rejoin_timers(self, manager, clock):
+        """離線後重新上線：離線前排下的房間離開計時器不可再動到新連線的狀態"""
+        alice_ws = await _join(manager, ALICE, "r1")
+        bob_ws = await _join(manager, BOB, "r1")
+        _received(alice_ws)
+
+        await manager.disconnect("bob", "r1", bob_ws)
+        await clock.advance_to(3)
+        assert _received(alice_ws) == [_left(BOB, "r1"), _offline(BOB)]
+
+        await clock.advance_to(4)
+        bob_ws = await _join(manager, BOB, "r1")
+        assert _received(alice_ws) == [_joined(BOB, "r1")]
+        await clock.advance_to(4.5)
+        await manager.disconnect("bob", "r1", bob_ws)
+
+        await clock.advance_to(6)
+        assert _room_user_ids(manager, "r1") == ["alice", "bob"]
+        await _join(manager, BOB, "r1")
+        assert _received(alice_ws) == []
+
+    async def test_room_left_earlier_is_not_reannounced_on_offline(
+        self, manager, clock
+    ):
+        """切房（仍在線）不廣播 user_left；之後離線也不可對早已離開的房間補發 user_left"""
+        alice_ws = await _join(manager, ALICE, "r1")
+        bob_r2 = await _join(manager, BOB, "r2")
+        bob_r1 = await _join(manager, BOB, "r1")
+        _received(alice_ws)
+
+        await manager.disconnect("bob", "r1", bob_r1)
+        await clock.advance_to(5)
+        assert _received(alice_ws) == []
+        assert manager.get_room_users("r1") == [ALICE]
+
+        await clock.advance_to(6)
+        await manager.disconnect("bob", "r2", bob_r2)
+        await clock.advance_to(9)
+        assert _received(alice_ws) == [_offline(BOB)]
+
+    async def test_room_leave_finalizes_while_offline_pending(self, manager, clock):
+        """房間離開計時器到期時使用者已無任何連線（尚在離線 debounce 中），仍要移出該房"""
+        await _join(manager, ALICE, "r1")
+        bob_r2 = await _join(manager, BOB, "r2")
+        bob_r1 = await _join(manager, BOB, "r1")
+
+        await manager.disconnect("bob", "r1", bob_r1)
+        await clock.advance_to(4)
+        await manager.disconnect("bob", "r2", bob_r2)
+
+        await clock.advance_to(5)
+        assert manager.get_room_users("r1") == [ALICE]
+        assert "bob" in manager.get_global_online_user_ids()
+
+    async def test_room_switch_race_leftover_offline_timer_is_replaced(
+        self, manager, clock
+    ):
+        """換房競態：舊房 disconnect 與新房 connect 排在同一把鎖後，舊房排下的離線計時器
+        會殘留到新連線上；之後再斷線必須取代它，離線仍從最後一次斷線起算 3 秒"""
+        alice_ws = await _join(manager, ALICE, "r1")
+        bob_r2 = await _join(manager, BOB, "r2")
+
+        # 慢速 client：connect 持鎖廣播時卡在它身上，製造鎖競爭
+        gate = asyncio.Event()
+        gate.set()
+
+        async def slow_send(_text):
+            await gate.wait()
+
+        slow_ws = _ws()
+        slow_ws.send_text = AsyncMock(side_effect=slow_send)
+        await manager.connect(slow_ws, "carol", "r3", dict(CAROL))
+
+        gate.clear()
+        holder = asyncio.create_task(_join(manager, DAVE, "r3"))
+        await _drain()
+        leaving = asyncio.create_task(manager.disconnect("bob", "r2", bob_r2))
+        await _drain()
+        bob_r1 = _ws()
+        switching = asyncio.create_task(manager.connect(bob_r1, "bob", "r1", dict(BOB)))
+        await _drain()
+        gate.set()
+        await asyncio.gather(holder, leaving, switching)
+        _received(alice_ws)
+
+        await clock.advance_to(1)
+        await manager.disconnect("bob", "r1", bob_r1)
+
+        await clock.advance_to(3.999)
+        assert _received(alice_ws) == []
+        assert "bob" in manager.get_global_online_user_ids()
+
+        await clock.advance_to(4)
+        assert _received(alice_ws) == [_left(BOB, "r1"), _offline(BOB)]
+
+    async def test_repeated_legacy_disconnect_restarts_room_timer(self, manager, clock):
+        """不帶 websocket 的舊式 disconnect 重複呼叫：房間離開計時器重新起算，舊的作廢"""
+        await _join(manager, ALICE, "r1")
+        await _join(manager, BOB, "r2")
+        await _join(manager, BOB, "r1")
+
+        await manager.disconnect("bob", "r1")
+        await clock.advance_to(1)
+        await manager.disconnect("bob", "r1")
+
+        await clock.advance_to(5.5)
+        assert _room_user_ids(manager, "r1") == ["alice", "bob"]
+        await clock.advance_to(6)
+        assert _room_user_ids(manager, "r1") == ["alice"]
+
+    async def test_legacy_disconnect_after_force_disconnect_is_noop(
+        self, manager, clock
+    ):
+        """被移出房間後再呼叫不帶 websocket 的 disconnect：不拋錯、不排任何計時器"""
+        await _join(manager, BOB, "r9")
+        await manager.force_disconnect("bob", "r9")  # 房內已無人，房間項目被移除
+        await manager.disconnect("bob", "r9")
+
+        alice_ws = await _join(manager, ALICE, "r1")
+        await _join(manager, BOB, "r2")
+        await _join(manager, BOB, "r1")
+        await manager.force_disconnect("bob", "r1")
+        await manager.disconnect("bob", "r1")
+        _received(alice_ws)
+
+        # 之後重新加入是新的加入，要照常廣播
+        await clock.advance_to(1)
+        await _join(manager, BOB, "r1")
+        assert _received(alice_ws) == [_joined(BOB, "r1")]

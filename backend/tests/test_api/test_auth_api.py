@@ -1,9 +1,9 @@
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from bson import ObjectId
 
-from app.auth.jwt_handler import create_access_token
+from app.auth.jwt_handler import create_access_token, create_refresh_token
 from app.database.mongodb import get_database
 
 
@@ -366,6 +366,20 @@ class TestAuthAPI:
         )
         assert wrong.status_code == 400
 
+        # 目前密碼只要求非空（1 個字元即送去比對），不套用新密碼的長度規則
+        empty_current = await async_client.put(
+            "/api/auth/change-password",
+            json={"current_password": "", "new_password": "newpass123"},
+            headers=headers,
+        )
+        one_char_current = await async_client.put(
+            "/api/auth/change-password",
+            json={"current_password": "x", "new_password": "newpass123"},
+            headers=headers,
+        )
+        assert empty_current.status_code == 422
+        assert one_char_current.status_code == 400
+
         too_short = await async_client.put(
             "/api/auth/change-password",
             json={"current_password": "oldpass123", "new_password": "12345"},
@@ -379,6 +393,7 @@ class TestAuthAPI:
             headers=headers,
         )
         assert ok.status_code == 200
+        assert ok.json() == {"message": "密碼修改成功"}
 
         login_new = await async_client.post(
             "/api/auth/login",
@@ -839,3 +854,95 @@ class TestAuthAPI:
         )
         assert me_response.status_code == 200
         assert me_response.json()["username"] == test_user["username"]
+
+    @pytest.mark.asyncio
+    async def test_login_records_last_login_at(self, async_client, isolated_db_manager):
+        register_response = await async_client.post(
+            "/api/auth/register",
+            json={
+                "username": "lastloginuser",
+                "email": "lastlogin@example.com",
+                "password": "testpass123",
+            },
+        )
+        user_id = ObjectId(register_response.json()["user"]["id"])
+        db = await get_database()
+        await db.users.update_one({"_id": user_id}, {"$unset": {"last_login_at": ""}})
+        now = datetime.now(UTC).replace(tzinfo=None)
+        # DB 只存到毫秒
+        before = now.replace(microsecond=now.microsecond // 1000 * 1000)
+
+        login_response = await async_client.post(
+            "/api/auth/login",
+            data={"username": "lastloginuser", "password": "testpass123"},
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+        after = datetime.now(UTC).replace(tzinfo=None)
+
+        assert login_response.status_code == 200
+        stored = await db.users.find_one({"_id": user_id})
+        assert before <= stored["last_login_at"] <= after
+
+    @pytest.mark.asyncio
+    async def test_refresh_token_requires_subject(
+        self, async_client, isolated_db_manager
+    ):
+        """簽章有效的 refresh token 仍須同時帶 sub 與 user_id 才能換發"""
+        register_response = await async_client.post(
+            "/api/auth/register",
+            json={
+                "username": "nosubuser",
+                "email": "nosub@example.com",
+                "password": "testpass123",
+            },
+        )
+        claims = {
+            "sub": "nosubuser",
+            "user_id": register_response.json()["user"]["id"],
+            "token_version": 0,
+        }
+        without_sub = {k: v for k, v in claims.items() if k != "sub"}
+
+        complete = await async_client.post(
+            "/api/auth/refresh",
+            json={"refresh_token": create_refresh_token(data=claims)},
+        )
+        missing_sub = await async_client.post(
+            "/api/auth/refresh",
+            json={"refresh_token": create_refresh_token(data=without_sub)},
+        )
+
+        assert complete.status_code == 200
+        assert missing_sub.status_code == 401
+
+    @pytest.mark.asyncio
+    async def test_user_missing_is_active_treated_as_active(
+        self, async_client, isolated_db_manager
+    ):
+        """缺 is_active 欄位的舊使用者文件視為啟用，可登入並使用 API"""
+        register_response = await async_client.post(
+            "/api/auth/register",
+            json={
+                "username": "legacyuser",
+                "email": "legacy@example.com",
+                "password": "testpass123",
+            },
+        )
+        user_id = ObjectId(register_response.json()["user"]["id"])
+        db = await get_database()
+        await db.users.update_one({"_id": user_id}, {"$unset": {"is_active": ""}})
+
+        login_response = await async_client.post(
+            "/api/auth/login",
+            data={"username": "legacyuser", "password": "testpass123"},
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+        assert login_response.status_code == 200
+        me_response = await async_client.get(
+            "/api/auth/me",
+            headers={
+                "Authorization": f"Bearer {login_response.json()['access_token']}"
+            },
+        )
+        assert me_response.status_code == 200
+        assert me_response.json()["is_active"] is True

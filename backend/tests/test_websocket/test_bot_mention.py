@@ -9,14 +9,18 @@ from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
+import app.core.bot as bot_module
 from app.core.bot import (
     BOT_HISTORY_MAX_ANSWER_CHARS,
     BOT_HISTORY_MAX_PAIRS,
     build_bot_history,
+    ensure_bot_user,
+    get_bot_user_id,
     is_bot_trigger,
     is_summary_command,
 )
-from app.models.message import MessageType
+from app.database.mongodb import get_database
+from app.models.message import MessageInDB, MessageType
 from app.websocket.handlers import handle_bot_mention, handle_summary_command
 
 
@@ -664,6 +668,102 @@ class TestBuildBotHistory:
             _hist_msg("AI 助理", "圖片", user_id="bot123", mtype=MessageType.IMAGE),
         ]
         assert build_bot_history(messages, "bot123") == ""
+
+
+HISTORY_NOW = datetime(2026, 5, 1, 12, 0, tzinfo=UTC)
+
+
+def _stored_msg(username, content, user_id, ago=timedelta(minutes=1)):
+    """模擬 get_room_messages_for_context 回傳的訊息（PyMongo 讀回為 naive UTC）"""
+    return MessageInDB(
+        room_id="room1",
+        user_id=user_id,
+        username=username,
+        content=content,
+        message_type=MessageType.TEXT,
+        created_at=(HISTORY_NOW - ago).replace(tzinfo=None),
+    )
+
+
+def _qa(username, question, answer, ago=timedelta(minutes=1)):
+    return [
+        _stored_msg(username, f"@bot {question}", "u1", ago),
+        _stored_msg("AI 助理", answer, "bot123", ago),
+    ]
+
+
+class TestBuildBotHistoryLimits:
+    """build_bot_history 的格式與上限：以實際訊息序列比對組出的完整歷史"""
+
+    def test_format(self):
+        messages = [
+            *_qa("Bob", "什麼是 Docker?", "Docker 是容器化技術"),
+            _stored_msg("Amy", "午餐吃什麼", "u2"),
+            *_qa("Amy", "那 VM 呢?", "VM 是虛擬機"),
+        ]
+
+        assert build_bot_history(messages, "bot123", now=HISTORY_NOW) == (
+            "Bob: 什麼是 Docker?\n"
+            "AI 助理: Docker 是容器化技術\n"
+            "Amy: 那 VM 呢?\n"
+            "AI 助理: VM 是虛擬機"
+        )
+
+    @pytest.mark.parametrize("total_pairs", [6, 7])
+    def test_keeps_latest_six_pairs(self, total_pairs):
+        messages = [
+            msg for i in range(total_pairs) for msg in _qa("Bob", f"問{i}", f"答{i}")
+        ]
+
+        expected_pairs = range(total_pairs - 6, total_pairs)
+        assert build_bot_history(messages, "bot123", now=HISTORY_NOW) == "\n".join(
+            f"Bob: 問{i}\nAI 助理: 答{i}" for i in expected_pairs
+        )
+
+    def test_ten_minute_window_boundary(self):
+        """bot 回答落在 10 分鐘前（含）才帶入；早 1 秒即視為舊對話"""
+        messages = [
+            *_qa("Bob", "太舊", "舊答", ago=timedelta(minutes=10, seconds=1)),
+            *_qa("Bob", "剛好", "邊界答", ago=timedelta(minutes=10)),
+            *_qa("Bob", "最近", "新答"),
+        ]
+
+        assert build_bot_history(messages, "bot123", now=HISTORY_NOW) == (
+            "Bob: 剛好\nAI 助理: 邊界答\nBob: 最近\nAI 助理: 新答"
+        )
+
+    def test_answer_truncated_to_200_chars(self):
+        exact = "甲" * 199 + "乙"
+        over = "丙" * 200 + "丁"
+        messages = [*_qa("Bob", "長答一", exact), *_qa("Bob", "長答二", over)]
+
+        assert build_bot_history(messages, "bot123", now=HISTORY_NOW) == (
+            f"Bob: 長答一\nAI 助理: {exact}\nBob: 長答二\nAI 助理: {'丙' * 200}"
+        )
+
+
+@pytest.mark.integration
+class TestEnsureBotUser:
+    """ensure_bot_user 以真實 MongoDB 種子化 bot 帳號"""
+
+    async def test_seeds_bot_account_once(self, isolated_db_manager, monkeypatch):
+        monkeypatch.setattr(bot_module, "_bot_user_id", None)
+        db = await get_database()
+
+        bot_id = await ensure_bot_user(db)
+        again = await ensure_bot_user(db)
+
+        docs = await db.users.find({"username": "AI 助理"}).to_list()
+        assert len(docs) == 1
+        assert again == bot_id == get_bot_user_id() == str(docs[0]["_id"])
+        assert {
+            key: docs[0][key] for key in ("username", "email", "full_name", "is_active")
+        } == {
+            "username": "AI 助理",
+            "email": "bot@chatroom.app",
+            "full_name": "聊天室 AI 助理",
+            "is_active": True,
+        }
 
 
 class TestBotDispatchNonBlocking:

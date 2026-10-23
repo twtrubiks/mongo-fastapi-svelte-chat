@@ -103,13 +103,20 @@ class TestSecurityHeaders:
     def test_production_headers(self):
         headers = SecurityConfig(development_mode=False).get_security_headers()
 
-        assert headers["X-Content-Type-Options"] == "nosniff"
-        assert headers["X-Frame-Options"] == "DENY"
-        assert headers["Referrer-Policy"] == "strict-origin-when-cross-origin"
-        assert headers["Strict-Transport-Security"] == (
-            "max-age=31536000; includeSubDomains; preload"
-        )
-        csp = headers["Content-Security-Policy"]
+        csp = headers.pop("Content-Security-Policy")
+        assert headers == {
+            "X-Content-Type-Options": "nosniff",
+            "X-Frame-Options": "DENY",
+            "X-XSS-Protection": "1; mode=block",
+            "Referrer-Policy": "strict-origin-when-cross-origin",
+            "Permissions-Policy": (
+                "geolocation=(), microphone=(), camera=(), "
+                "payment=(), usb=(), magnetometer=(), gyroscope=()"
+            ),
+            "Strict-Transport-Security": (
+                "max-age=31536000; includeSubDomains; preload"
+            ),
+        }
         assert "script-src 'self';" in csp
         assert "'unsafe-eval'" not in csp
         assert "frame-ancestors 'none'" in csp

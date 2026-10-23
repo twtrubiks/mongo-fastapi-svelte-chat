@@ -3,86 +3,89 @@
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
+from pymongo.errors import InvalidOperation, ServerSelectionTimeoutError
 
+from app.database import mongodb as mongodb_module
 from app.database.mongodb import (
     MongoDBManager,
+    close_database,
     get_client,
     get_database,
+    init_database,
     mongo_client,
 )
+from tests.test_config import TestConfig
+
+# 關閉的埠：連線立即被拒；縮短伺服器選擇逾時（實測約 0.5 秒失敗）
+UNREACHABLE_URL = "mongodb://localhost:1/?serverSelectionTimeoutMS=100"
 
 
-class MongoDBTestManager:
-    """測試 MongoDBManager 類"""
+@pytest.mark.asyncio
+@pytest.mark.integration
+class TestMongoDBManagerLifecycle:
+    """連線生命週期（真實 MongoDB；一律使用獨立的 manager，不碰 conftest 的全域連線）"""
 
-    @pytest.mark.asyncio
-    async def test_connect_success(self):
-        """測試成功連線到 MongoDB"""
+    async def test_connect_fails_fast_when_server_unreachable(self):
         manager = MongoDBManager()
-
-        with patch("app.database.mongodb.AsyncMongoClient") as mock_client_class:
-            mock_client = AsyncMock()
-            mock_client.admin.command = AsyncMock()
-            mock_client.__getitem__.return_value = Mock()  # mock database
-            mock_client_class.return_value = mock_client
-
-            await manager.connect("mongodb://localhost:27017", "testdb")
-
-            assert manager.client is not None
-            assert manager.database is not None
-            mock_client.admin.command.assert_called_once_with("ping")
-
-    @pytest.mark.asyncio
-    async def test_connect_failure(self):
-        """測試連線 MongoDB 失敗"""
-        manager = MongoDBManager()
-
-        with patch("app.database.mongodb.AsyncMongoClient") as mock_client_class:
-            mock_client = AsyncMock()
-            mock_client.admin.command = AsyncMock(
-                side_effect=Exception("Connection failed")
-            )
-            mock_client_class.return_value = mock_client
-
-            with pytest.raises(Exception) as exc_info:
-                await manager.connect("mongodb://invalid:27017", "testdb")
-
-            assert "Connection failed" in str(exc_info.value)
-            # 連線失敗時，client 已經被建立但連線測試失敗，所以 client 不是 None
-            # 這符合實際的代碼邏輯
-
-    @pytest.mark.asyncio
-    async def test_get_database_not_connected(self):
-        """測試在未連線時獲取資料庫"""
-        manager = MongoDBManager()
-
-        with pytest.raises(RuntimeError) as exc_info:
-            await manager.get_database()
-
-        assert "Database not connected" in str(exc_info.value)
-
-    @pytest.mark.asyncio
-    async def test_disconnect(self):
-        """測試斷開連線"""
-        manager = MongoDBManager()
-
-        # 先建立連線
-        with patch("app.database.mongodb.AsyncMongoClient") as mock_client_class:
-            mock_client = AsyncMock()
-            mock_client.admin.command = AsyncMock()
-            mock_client.close = AsyncMock()
-            mock_client.__getitem__.return_value = Mock()
-            mock_client_class.return_value = mock_client
-
-            await manager.connect("mongodb://localhost:27017", "testdb")
-            assert manager.client is not None
-
-            # 斷開連線
+        try:
+            with pytest.raises(ServerSelectionTimeoutError):
+                await manager.connect(UNREACHABLE_URL, "unused")
+            with pytest.raises(RuntimeError, match="Database not connected"):
+                await manager.get_database()
+        finally:
             await manager.disconnect()
 
-            mock_client.close.assert_called_once()
-            assert manager.client is None
-            assert manager.database is None
+    async def test_disconnect_closes_client_and_allows_reconnect(self):
+        manager = MongoDBManager()
+        await manager.connect(
+            TestConfig.TEST_MONGODB_URL, TestConfig.TEST_DATABASE_NAME
+        )
+        try:
+            database = await manager.get_database()
+            assert database.name == TestConfig.TEST_DATABASE_NAME
+            assert (await database.command("ping"))["ok"] == 1
+
+            await manager.disconnect()
+
+            with pytest.raises(RuntimeError, match="Database not connected"):
+                await manager.get_database()
+            # 底層 client 已關閉，殘留的 database 參照不能再使用
+            with pytest.raises(InvalidOperation):
+                await database.command("ping")
+
+            await manager.connect(
+                TestConfig.TEST_MONGODB_URL, TestConfig.TEST_DATABASE_NAME
+            )
+            reconnected = await manager.get_database()
+            assert (await reconnected.command("ping"))["ok"] == 1
+        finally:
+            await manager.disconnect()
+
+    async def test_disconnect_without_connection_is_noop(self):
+        manager = MongoDBManager()
+
+        await manager.disconnect()
+
+        with pytest.raises(RuntimeError, match="Database not connected"):
+            await manager.get_database()
+
+    async def test_module_init_and_close(self, monkeypatch):
+        """init_database / close_database 作用在模組層的 manager（此處換成獨立實例）"""
+        manager = MongoDBManager()
+        monkeypatch.setattr(mongodb_module, "_db_manager", manager)
+        try:
+            await init_database(
+                TestConfig.TEST_MONGODB_URL, TestConfig.TEST_DATABASE_NAME
+            )
+            assert (await (await get_database()).command("ping"))["ok"] == 1
+
+            await close_database()
+
+            assert get_client() is None
+            with pytest.raises(RuntimeError, match="Database not connected"):
+                await get_database()
+        finally:
+            await manager.disconnect()
 
 
 class TestModuleFunctions:

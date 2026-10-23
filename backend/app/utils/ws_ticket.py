@@ -31,7 +31,7 @@ async def create_ws_ticket(user_id: str, room_id: str) -> str:
     ticket = secrets.token_urlsafe(32)
     key = f"{WS_TICKET_PREFIX}{ticket}"
     data = json.dumps({"user_id": user_id, "room_id": room_id})
-    await redis_client.setex(key, WS_TICKET_TTL, data)
+    await redis_client.set(key, data, ex=WS_TICKET_TTL)
     logger.debug(f"Created WS ticket for user {user_id} in room {room_id}")
     return ticket
 

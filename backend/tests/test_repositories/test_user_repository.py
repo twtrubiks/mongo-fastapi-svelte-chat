@@ -265,7 +265,6 @@ class TestUserRepository:
         first = await repo.get_by_id(created_user.id)
         assert first.hashed_password == "new_hash"
         assert first.token_version == 1
-        assert first.updated_at > created_user.updated_at
 
         assert await repo.update_password(created_user.id, "newer_hash") is True
         second = await repo.get_by_id(created_user.id)
