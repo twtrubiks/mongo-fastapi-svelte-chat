@@ -557,7 +557,7 @@ class TestRoomService:
 
     @pytest.mark.asyncio
     async def test_broadcast_room_event(
-        self, room_service, mock_repositories, mock_connection_manager
+        self, room_service, mock_repositories, mock_connection_manager, sample_room
     ):
         """測試廣播房間事件"""
         room_repo, user_repo, message_repo = mock_repositories
@@ -573,7 +573,9 @@ class TestRoomService:
         message = {"type": "room_created", "room": {"id": "room123", "name": "Test"}}
 
         # 執行 - 排除 creator
-        await room_service._broadcast_room_event(message, exclude_user_id="creator")
+        await room_service._broadcast_room_event(
+            sample_room, message, exclude_user_id="creator"
+        )
 
         # 驗證 - 應該發送給除了 creator 之外的所有用戶
         assert mock_connection_manager.send_event.call_count == 2
@@ -782,6 +784,73 @@ class TestRoomService:
         assert "invite_code" not in room
 
     @pytest.mark.asyncio
+    async def test_private_room_created_not_broadcast(
+        self, room_service, mock_repositories, mock_connection_manager
+    ):
+        """私人房對非成員不可見：建立時不可把房間摘要廣播給其他在線者"""
+        room_repo, user_repo, message_repo = mock_repositories
+        owner_id = str(ObjectId())
+        creator = Mock()
+        creator.username = "creator"
+        user_repo.get_by_id.return_value = creator
+        room_repo.get_by_name.return_value = None
+        room_repo.create.side_effect = lambda room: room.model_copy(
+            update={"id": str(ObjectId())}
+        )
+        mock_connection_manager.active_connections = {owner_id: {}, "other": {}}
+        mock_connection_manager.send_event = AsyncMock()
+
+        await room_service.create_room(
+            owner_id, RoomCreate(name="Secret", room_type=RoomType.PRIVATE)
+        )
+
+        mock_connection_manager.send_event.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("room_type", "recipients"),
+        [
+            (RoomType.PUBLIC, {"owner", "member", "outsider"}),
+            (RoomType.PRIVATE, {"owner", "member"}),
+        ],
+    )
+    async def test_room_updated_and_deleted_recipients(
+        self,
+        room_service,
+        mock_repositories,
+        mock_connection_manager,
+        sample_room,
+        room_type,
+        recipients,
+    ):
+        """公開房的更新 / 刪除事件送給所有在線者；私人房只送給成員"""
+        room_repo, user_repo, message_repo = mock_repositories
+        sample_room.room_type = room_type
+        sample_room.is_public = room_type == RoomType.PUBLIC
+        sample_room.owner_id = "owner"
+        sample_room.members = ["owner", "member", "offline-member"]
+        room_repo.get_by_id.return_value = sample_room
+        room_repo.delete.return_value = True
+        mock_connection_manager.active_connections = {
+            "owner": {},
+            "member": {},
+            "outsider": {},
+        }
+        mock_connection_manager.send_event = AsyncMock()
+
+        await room_service._notify_room_change(sample_room.id)
+        await room_service.delete_room(sample_room.id, "owner")
+
+        sent = [
+            (call.args[0], call.args[1]["type"])
+            for call in mock_connection_manager.send_event.await_args_list
+        ]
+        assert sorted(sent) == sorted(
+            [(user_id, "room_updated") for user_id in recipients]
+            + [(user_id, "room_deleted") for user_id in recipients]
+        )
+
+    @pytest.mark.asyncio
     async def test_leave_room_broadcasts_user_left(
         self, room_service, mock_repositories, mock_connection_manager, sample_room
     ):
@@ -819,7 +888,7 @@ class TestRoomService:
 
     @pytest.mark.asyncio
     async def test_broadcast_logs_each_failed_recipient_only(
-        self, room_service, mock_connection_manager, caplog
+        self, room_service, mock_connection_manager, sample_room, caplog
     ):
         """成功送達不記錯誤；每位送達失敗的收件者各記一筆錯誤，其餘收件者照常送出"""
         failures = {
@@ -840,7 +909,7 @@ class TestRoomService:
         mock_connection_manager.send_event = AsyncMock(side_effect=send_event)
         caplog.set_level(logging.ERROR, logger="app.services.room_service")
 
-        await room_service._broadcast_room_event({"type": "room_updated"})
+        await room_service._broadcast_room_event(sample_room, {"type": "room_updated"})
 
         errors = [
             r.getMessage()

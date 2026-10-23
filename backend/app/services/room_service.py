@@ -97,15 +97,21 @@ class RoomService:
         )
 
     async def _broadcast_room_event(
-        self, message: dict, exclude_user_id: str | None = None
+        self, room: RoomInDB, message: dict, exclude_user_id: str | None = None
     ):
-        """廣播房間事件給所有在線使用者（並行發送）"""
+        """廣播房間事件給看得到該房間的在線使用者（並行發送）
+
+        PRIVATE 房間只送給成員：私人房對非成員不可見（與 get_room_for_user 一致）
+        """
         if not self._connection_manager:
             return
         try:
+            online = list(self._connection_manager.active_connections.keys())
+            if room.room_type == RoomType.PRIVATE:
+                online = [user_id for user_id in online if user_id in room.members]
             tasks = [
                 self._connection_manager.send_event(user_id, message)
-                for user_id in list(self._connection_manager.active_connections.keys())
+                for user_id in online
                 if user_id != exclude_user_id
             ]
             results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -122,7 +128,7 @@ class RoomService:
             if updated_room:
                 room_summary = await self._convert_to_summary(updated_room)
                 message = {"type": "room_updated", "room": room_summary.model_dump()}
-                await self._broadcast_room_event(message)
+                await self._broadcast_room_event(updated_room, message)
         except Exception as e:  # intentional fail-open: 廣播/通知失敗不中斷主流程
             logger.error(f"廣播房間更新事件失敗: {e}")
 
@@ -205,7 +211,9 @@ class RoomService:
                 "room": room_summary.model_dump(),
                 "creator_id": owner_id,
             }
-            await self._broadcast_room_event(message, exclude_user_id=owner_id)
+            await self._broadcast_room_event(
+                created_room, message, exclude_user_id=owner_id
+            )
         except Exception as e:  # intentional fail-open: 廣播失敗不中斷主流程
             logger.error(f"廣播新房間創建事件失敗: {e}")
 
@@ -382,7 +390,7 @@ class RoomService:
                 "room_id": room_id,
                 "deleted_by": owner_id,
             }
-            await self._broadcast_room_event(delete_message)
+            await self._broadcast_room_event(room, delete_message)
         except Exception as e:  # intentional fail-open: 廣播失敗不中斷主流程
             logger.error(f"發送房間刪除通知時發生錯誤: {e}")
 
