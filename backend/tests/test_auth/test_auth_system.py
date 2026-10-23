@@ -350,18 +350,32 @@ class TestAuthSystem:
             await service.refresh_access_token(access_token)
 
     @pytest.mark.asyncio
-    async def test_refresh_access_token_inactive_user(self):
-        """測試使用已停用使用者的 refresh token（應失敗）"""
-        user_data = {"sub": "testuser", "user_id": "507f1f77bcf86cd799439011"}
+    @pytest.mark.parametrize("is_active", [True, False])
+    async def test_refresh_access_token_inactive_user(self, is_active):
+        """測試使用已停用使用者的 refresh token（應失敗）
+
+        其餘條件（token_version 相符）都滿足，is_active 是唯一的差異；
+        以啟用帳號作為對照組，確保失敗確實來自停用檢查。
+        """
+        user_data = {
+            "sub": "testuser",
+            "user_id": "507f1f77bcf86cd799439011",
+            "token_version": 0,
+        }
         refresh_token = create_refresh_token(data=user_data)
 
         mock_user_repo = AsyncMock()
         mock_user = Mock()
-        mock_user.is_active = False
+        mock_user.is_active = is_active
+        mock_user.token_version = 0
         mock_user_repo.get_by_id.return_value = mock_user
 
         service = UserService.__new__(UserService)
         service.user_repo = mock_user_repo
 
-        with pytest.raises(UnauthorizedError):
-            await service.refresh_access_token(refresh_token)
+        if is_active:
+            result = await service.refresh_access_token(refresh_token)
+            assert decode_access_token(result["access_token"]) is not None
+        else:
+            with pytest.raises(UnauthorizedError):
+                await service.refresh_access_token(refresh_token)
