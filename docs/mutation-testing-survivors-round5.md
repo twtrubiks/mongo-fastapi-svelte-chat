@@ -1,6 +1,6 @@
 # 變異測試附錄（第五輪）：存活變異體與未覆蓋函數明細
 
-本文件為 [變異測試報告](mutation-testing-report.md)「最新結果」一節的附錄，列出第五輪（補上通知 HTTP API、即時推播與批次已讀測試後）重跑時仍存活的變異體與從未被執行的函數。
+本文件為 [變異測試報告](mutation-testing-report.md)「第五輪」一節的附錄，列出第五輪（補上通知 HTTP API、即時推播與批次已讀測試後）重跑時仍存活的變異體與從未被執行的函數。
 前四輪的明細見 [第一輪](mutation-testing-survivors.md)、[第二輪](mutation-testing-survivors-round2.md)、[第三輪](mutation-testing-survivors-round3.md)、[第四輪](mutation-testing-survivors-round4.md)。編號為本輪 `gen` 產生的編號，與前四輪不同。
 
 分類沿用第一輪的定義：程式碼未變的存活者延用第四輪的判讀（依檔案、函數、運算子、變異前後內容與行序配對）；本輪才出現的存活者與複核後改判的存活者為人工判讀。
