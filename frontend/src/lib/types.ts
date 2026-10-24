@@ -148,6 +148,7 @@ export interface MessageCreate {
   content: string;
   message_type?: 'text' | 'image' | 'file';
   client_id?: string;  // 冪等去重用（HTTP fallback 路徑也需攜帶）
+  metadata?: Record<string, unknown>;  // 檔案訊息的檔名、大小等資訊
 }
 
 // === WebSocket 事件 Discriminated Union ===

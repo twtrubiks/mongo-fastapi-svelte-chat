@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { apiClient } from '../api/client';
 import type { Message } from '../types';
 import { messageStore } from './message.svelte';
+import { deferred } from '../../tests/deferred';
 
 function msg(id: string, minute: number, extra: Partial<Message> = {}): Message {
   const at = new Date(Date.UTC(2026, 0, 1, 0, minute)).toISOString();
@@ -246,6 +247,54 @@ describe('載入訊息', () => {
     await messageStore.loadMoreMessages('r1');
 
     expect(list).not.toHaveBeenCalled();
+    expect(messageStore.loading).toBe(false);
+  });
+
+  // 快速切換房間：A 的回應比 B 晚回來
+  it('較早發出、較晚回來的回應不覆蓋目前房間的訊息', async () => {
+    const roomA = deferred<Message[]>();
+    vi.spyOn(apiClient.messages, 'list').mockImplementation((roomId) =>
+      roomId === 'A' ? roomA.promise : Promise.resolve([msg('b1', 1, { room_id: 'B' })]));
+
+    const loadA = messageStore.loadMessages('A');
+    await messageStore.loadMessages('B');
+    roomA.resolve([msg('a1', 1, { room_id: 'A' })]);
+    await loadA;
+
+    expect(ids()).toEqual(['b1']);
+    expect(messageStore.loading).toBe(false);
+  });
+
+  it('較早發出、較晚失敗的請求不影響目前的載入狀態', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const roomA = deferred<Message[]>();
+    const roomB = deferred<Message[]>();
+    vi.spyOn(apiClient.messages, 'list').mockImplementation((roomId) => (roomId === 'A' ? roomA.promise : roomB.promise));
+
+    const loadA = messageStore.loadMessages('A');
+    const loadB = messageStore.loadMessages('B');
+    roomA.reject(new Error('down'));
+    await expect(loadA).rejects.toThrow('down');
+    expect(messageStore.loading).toBe(true);
+
+    roomB.resolve([msg('b1', 1, { room_id: 'B' })]);
+    await loadB;
+    expect(ids()).toEqual(['b1']);
+    expect(messageStore.loading).toBe(false);
+  });
+
+  it('切換房間後，前一個房間「載入更多」的結果不併入', async () => {
+    messageStore.applySync([msg('a2', 2, { room_id: 'A', seq: 2 })], true);
+    const older = deferred<Message[]>();
+    vi.spyOn(apiClient.messages, 'list').mockImplementation((roomId) =>
+      roomId === 'A' ? older.promise : Promise.resolve([msg('b1', 1, { room_id: 'B' })]));
+
+    const more = messageStore.loadMoreMessages('A');
+    await messageStore.loadMessages('B');
+    older.resolve([msg('a1', 1, { room_id: 'A', seq: 1 })]);
+    await more;
+
+    expect(ids()).toEqual(['b1']);
     expect(messageStore.loading).toBe(false);
   });
 });

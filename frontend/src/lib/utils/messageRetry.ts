@@ -4,7 +4,9 @@ import { wsManager } from '$lib/websocket/manager';
 export interface RetryableMessage {
   id: string;
   content: string;
-  type: 'text' | 'image';
+  type: 'text' | 'image' | 'file';
+  // 檔案訊息的檔名、大小等資訊；重送時須一併帶上，否則存下的訊息沒有檔名與大小
+  metadata?: Record<string, unknown>;
   maxRetries?: number;
 }
 
@@ -46,6 +48,9 @@ class MessageRetryManager {
     const wsInstance = wsManager.getInstance();
     if (!wsInstance.isConnected()) {
       console.warn(`[MessageRetry] WebSocket 未連接，延遲重試訊息 ${messageId}`);
+      // 維持失敗狀態：手動重試已清掉狀態，不標回失敗的話訊息看起來像已送出。
+      // 用 setStatus 不累加次數；連上時會重送所有失敗的訊息
+      messageStatusStore.setStatus(messageId, 'failed', '尚未連線，連線恢復後會自動重送');
       // 如果未連接，直接安排下次重試
       this.scheduleRetry(messageId);
       return false;
@@ -57,12 +62,12 @@ class MessageRetryManager {
     try {
       // 嘗試重新發送
       console.debug(`[MessageRetry] 正在重試訊息 ${messageId}, 第 ${retryCount + 1} 次`);
-      const success = wsInstance.sendMessage(message.content, message.type, messageId);
+      const success = wsInstance.sendMessage(message.content, message.type, messageId, message.metadata);
       
       if (success) {
-        // 發送成功，從佇列中移除
-        console.debug(`[MessageRetry] 訊息 ${messageId} 重試成功`);
-        this.removeFromQueue(messageId);
+        // 只代表已寫入 socket；留在佇列直到收到 ack（handleAck 移除），
+        // 否則 ack 逾時再次失敗時已無法重試
+        console.debug(`[MessageRetry] 訊息 ${messageId} 已重新送出，等待伺服器確認`);
         return true;
       } else {
         // 發送失敗，安排下次重試
@@ -110,8 +115,8 @@ class MessageRetryManager {
     // 清除自動重試計時器
     this.clearRetryTimeout(messageId);
     
-    // 重置重試次數（手動重試從 0 開始）
-    messageStatusStore.setStatus(messageId, 'idle');
+    // 重置重試次數（手動重試從 0 開始）；setStatus 會保留 retryCount，須清除整筆狀態
+    messageStatusStore.clearStatus(messageId);
     
     return await this.retryMessage(messageId);
   }
@@ -187,22 +192,3 @@ class MessageRetryManager {
 
 // 導出單例實例
 export const messageRetryManager = new MessageRetryManager();
-
-// 監聽 WebSocket 連線狀態變化
-if (typeof window !== 'undefined') {
-  const ws = wsManager.getInstance();
-  
-  // 當連線成功時，自動重試所有失敗的訊息
-  ws.on('connection_state_changed', (state: string) => {
-    if (state === 'connected') {
-      const failedMessages = messageStatusStore.getFailedMessageIds();
-      if (failedMessages.length > 0) {
-        console.log(`[MessageRetry] 發現 ${failedMessages.length} 則失敗訊息，開始重試`);
-        // 延遲一點時間讓連線穩定
-        setTimeout(() => {
-          messageRetryManager.retryAllFailed();
-        }, 1000);
-      }
-    }
-  });
-}

@@ -20,6 +20,8 @@ export class WebSocketManager {
   private connectionState: 'disconnected' | 'connecting' | 'connected' = 'disconnected';
   private lastConnectTime = 0;
   private connectionId = 0;
+  // 每次 connect() / disconnect() 遞增；取得 ticket 期間被取代的 connect() 不再建立連線
+  private connectRequestId = 0;
   private pingTimeout: number | null = null; // 添加 ping 超時檢測
   private lastPingTime = 0; // 記錄最後 ping 時間
 
@@ -75,12 +77,21 @@ export class WebSocketManager {
 
   // 連接 WebSocket（透過 BFF 取得一次性 ticket）
   async connect(roomId: string): Promise<void> {
+    const requestId = ++this.connectRequestId;
+
     // 先透過 BFF 取得一次性 ticket
     const ticket = await apiClient.wsTicket.create(roomId);
 
+    // 等待 ticket 期間已有較新的 connect() 或 disconnect()（例如快速切換房間）：
+    // 這次請求作廢，否則較晚回來的舊房間 ticket 會把連線換回舊房間
+    if (requestId !== this.connectRequestId) {
+      return;
+    }
+
     return new Promise((resolve, reject) => {
-      // 先斷舊連線再設新 roomId，避免 disconnect() 同步清除剛設好的值
-      if (this.ws?.readyState === WebSocket.OPEN) {
+      // 先斷舊連線再設新 roomId，避免 disconnect() 同步清除剛設好的值；
+      // 仍在連線中的舊連線也要關閉，否則它開啟後會一直留在背景
+      if (this.ws?.readyState === WebSocket.OPEN || this.ws?.readyState === WebSocket.CONNECTING) {
         this.disconnect();
       }
       this.roomId = roomId;
@@ -120,6 +131,7 @@ export class WebSocketManager {
           this.isReconnecting = false;
           this.clearReconnectTimeout();
           this.startHeartbeat();
+          this.scheduleRetryFailedMessages();
           this.emit('connected');
           resolve();
         };
@@ -144,6 +156,7 @@ export class WebSocketManager {
             return;
           }
 
+          this.failPendingAcks();
           this.setConnectionState('disconnected');
           this.stopHeartbeat();
           this.emit('disconnected', { code: event.code, reason: event.reason });
@@ -157,6 +170,12 @@ export class WebSocketManager {
         this.ws.onerror = (error) => {
           console.error('[WebSocket] 連接錯誤:', error);
 
+          // 已被取代的連線（切換房間時關閉）：只結束自己的請求，不依新連線的狀態判斷
+          if (currentConnectionId !== this.connectionId) {
+            resolve();
+            return;
+          }
+
           if (this.connectionState === 'connecting') {
             console.error('[WebSocket] 初始連接失敗');
             reject(new Error('WebSocket connection failed'));
@@ -166,6 +185,11 @@ export class WebSocketManager {
         // 連接超時處理
         // 不使用 disconnect()，避免清除 roomId 導致無法自動重連
         setTimeout(() => {
+          // 已被取代的連線：connectionState 與 this.ws 屬於新連線，不能拿來判斷或關閉
+          if (currentConnectionId !== this.connectionId) {
+            resolve();
+            return;
+          }
           if (this.connectionState === 'connecting') {
             console.error('[WebSocket] 連接超時');
             this.setConnectionState('disconnected');
@@ -191,14 +215,10 @@ export class WebSocketManager {
   // 斷開連接
   disconnect() {
     this.connectionId++; // 增加連接 ID，使舊連接失效
+    this.connectRequestId++; // 仍在取得 ticket 的 connect() 也一併作廢
     this.clearReconnectTimeout();
 
-    // 連線中斷：所有等待 ack 的訊息立即標記失敗（重連後由重試機制接手）
-    for (const [clientId, timeoutId] of this.pendingAcks) {
-      clearTimeout(timeoutId);
-      messageStatusStore.setFailed(clientId, '連線中斷，訊息未送達');
-    }
-    this.pendingAcks.clear();
+    this.failPendingAcks();
 
     if (this.ws) {
       this.ws.close(1000, 'Client disconnect');
@@ -452,6 +472,29 @@ export class WebSocketManager {
     this.pendingAcks.set(clientId, timeoutId);
   }
 
+  // 連上後重送失敗的訊息（延遲一點讓連線穩定）。由 manager 自己觸發：登出時實例會被
+  // destroy，外部在模組載入時註冊的監聽不會帶到新實例。動態載入避免循環 import
+  private scheduleRetryFailedMessages() {
+    const failedCount = messageStatusStore.getFailedMessageIds().length;
+    if (failedCount === 0) return;
+    console.log(`[WebSocket] 發現 ${failedCount} 則失敗訊息，連線穩定後重送`);
+    window.setTimeout(() => {
+      void import('$lib/utils/messageRetry').then(({ messageRetryManager }) => {
+        void messageRetryManager.retryAllFailed();
+      });
+    }, 1000);
+  }
+
+  // 連線中斷：等待 ack 的訊息立即標記失敗，重新連上時由重試機制重送。
+  // 不等 ack 逾時：逾時通常在重新連上之後才發生，那時已錯過連上後的自動重送
+  private failPendingAcks() {
+    for (const [clientId, timeoutId] of this.pendingAcks) {
+      clearTimeout(timeoutId);
+      messageStatusStore.setFailed(clientId, '連線中斷，訊息未送達');
+    }
+    this.pendingAcks.clear();
+  }
+
   private clearAckTimeout(clientId: string) {
     const timeoutId = this.pendingAcks.get(clientId);
     if (timeoutId) {
@@ -566,6 +609,10 @@ export class WebSocketManager {
     // 更頻繁的心跳，防止移動設備斷線
     const heartbeatDelay = 20000; // 20秒，比原來的30秒更頻繁
 
+    // 連線開啟與分頁切回前台都會呼叫；先停掉既有的心跳，否則舊的 interval 失去引用，
+    // 之後 stopHeartbeat() 清不掉，換房間後仍對新連線送 ping
+    this.stopHeartbeat();
+
     this.heartbeatInterval = window.setInterval(() => {
       if (this.isConnected()) {
         // 發送 ping
@@ -575,13 +622,31 @@ export class WebSocketManager {
         // 設置超時檢測，如果10秒內沒收到 pong，認為連接斷開
         this.pingTimeout = window.setTimeout(() => {
           console.warn('[WebSocket] Ping 超時，強制重連');
-          // 強制關閉連接並重連
-          if (this.ws) {
-            this.ws.close(4000, 'Ping timeout');
-          }
+          this.handlePingTimeout();
         }, 10000);
       }
     }, heartbeatDelay);
+  }
+
+  // ping 逾時：不等這條連線的 close 事件再重連。由用戶端發起關閉時，伺服器若還在，
+  // 會完成關閉握手（wasClean 為 true，onclose 不重連）；連線若已中斷，close 事件
+  // 要等關閉握手逾時才會來。因此直接作廢這條連線並排程重連
+  private handlePingTimeout() {
+    const staleWs = this.ws;
+    this.connectionId++; // 舊連線之後的 close 事件不再處理
+    this.ws = null;
+    try {
+      staleWs?.close(4000, 'Ping timeout');
+    } catch { /* ignore close errors */ }
+
+    this.failPendingAcks();
+    this.setConnectionState('disconnected');
+    this.stopHeartbeat();
+    this.emit('disconnected', { code: 4000, reason: 'Ping timeout' });
+
+    if (this.shouldReconnect()) {
+      this.scheduleReconnect();
+    }
   }
 
   private stopHeartbeat() {
