@@ -71,7 +71,7 @@ export function handleUserJoined(user: User, eventTimestamp: string | undefined,
 
 // 處理用戶離開
 export function handleUserLeft(data: WSUserLeftMessage, ctx: HandlerContext) {
-  const { user, timestamp: eventTimestamp, removed, kicked } = data;
+  const { user, timestamp: eventTimestamp, removed, kicked, banned } = data;
   const userId = user.id;
   // 後端查不到名稱時只帶 id：改用成員列表裡的名稱，都沒有就不產生系統訊息
   const username = user.username || roomStore.state.users.find(u => u.id === userId)?.username;
@@ -79,7 +79,7 @@ export function handleUserLeft(data: WSUserLeftMessage, ctx: HandlerContext) {
   // 自己的成員資格被移除（房主移除，或在其他分頁離開）：交給頁面離開房間，後端隨後會關閉連線
   if (removed && userId && userId === currentUser()?.id) {
     roomStore.forgetMembership(data.room_id);
-    ctx.emit('removed_from_room', { room_id: data.room_id, kicked: Boolean(kicked) });
+    ctx.emit('removed_from_room', { room_id: data.room_id, kicked: Boolean(kicked), banned: Boolean(banned) });
     return;
   }
 

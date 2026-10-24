@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from bson import ObjectId
+from pymongo import ReturnDocument
 from pymongo.asynchronous.collection import AsyncCollection
 from pymongo.asynchronous.database import AsyncDatabase
 
@@ -94,14 +95,7 @@ class BaseRepository[T](ABC):
         self, query: dict[str, Any], update: dict[str, Any], upsert: bool = False
     ) -> bool:
         """更新單個文檔，回傳是否有文檔被更新"""
-        # 添加更新時間戳（截斷至毫秒，與 MongoDB 儲存精度一致）
-        _now = datetime.now(UTC)
-        now = _now.replace(microsecond=_now.microsecond // 1000 * 1000)
-        if "$set" in update:
-            update["$set"]["updated_at"] = now
-        else:
-            update["$set"] = {"updated_at": now}
-
+        self._stamp_updated_at(update)
         result = await self.collection.update_one(query, update, upsert=upsert)
 
         if result.modified_count > 0:
@@ -115,16 +109,28 @@ class BaseRepository[T](ABC):
 
         return False
 
-    async def update_many(self, query: dict[str, Any], update: dict[str, Any]) -> int:
-        """更新多個文檔，回傳更新的文檔數量"""
-        # 添加更新時間戳（截斷至毫秒，與 MongoDB 儲存精度一致）
+    async def find_one_and_update(
+        self, query: dict[str, Any], update: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        """原子更新單個文檔，回傳更新前的文檔（沒有符合的文檔時為 None）"""
+        self._stamp_updated_at(update)
+        document = await self.collection.find_one_and_update(
+            query, update, return_document=ReturnDocument.BEFORE
+        )
+        if document:
+            self._normalize_id(document)
+        return document
+
+    @staticmethod
+    def _stamp_updated_at(update: dict[str, Any]) -> None:
+        """添加更新時間戳（截斷至毫秒，與 MongoDB 儲存精度一致）"""
         _now = datetime.now(UTC)
         now = _now.replace(microsecond=_now.microsecond // 1000 * 1000)
-        if "$set" in update:
-            update["$set"]["updated_at"] = now
-        else:
-            update["$set"] = {"updated_at": now}
+        update.setdefault("$set", {})["updated_at"] = now
 
+    async def update_many(self, query: dict[str, Any], update: dict[str, Any]) -> int:
+        """更新多個文檔，回傳更新的文檔數量"""
+        self._stamp_updated_at(update)
         result = await self.collection.update_many(query, update)
         logger.info(
             f"Documents updated in {self.collection_name}: {result.modified_count}"

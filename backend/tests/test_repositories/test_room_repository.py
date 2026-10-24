@@ -333,6 +333,61 @@ class TestRoomRepository:
         assert owner_id in updated_room.member_roles
 
     @pytest.mark.asyncio
+    async def test_ban_and_unban(self, db_manager):
+        """封鎖時一併移出成員；被封鎖的人加不進來（原子條件），解除後可以"""
+        repo = RoomRepository(db_manager.database)
+        owner_id, member_id, other_id = (str(ObjectId()) for _ in range(3))
+        room = await repo.create(
+            RoomInDB(
+                name="封鎖測試",
+                owner_id=owner_id,
+                members=[owner_id, member_id],
+                member_roles={owner_id: MemberRole.OWNER, member_id: MemberRole.MEMBER},
+            )
+        )
+
+        # 回傳更新前的房間，呼叫端據此判斷對方原本是否為成員
+        before = await repo.ban_user(room.id, member_id)
+        assert member_id in before.members
+        banned = await repo.get_by_id(room.id)
+        assert banned.banned_users == [member_id]
+        assert member_id not in banned.members
+        assert member_id not in banned.member_roles
+
+        # 不是成員也能封鎖；再封鎖一次不重複
+        assert other_id not in (await repo.ban_user(room.id, other_id)).members
+        again = await repo.ban_user(room.id, other_id)
+        assert again.banned_users == [member_id, other_id]
+        assert (await repo.get_by_id(room.id)).banned_users == [member_id, other_id]
+        assert await repo.ban_user(str(ObjectId()), other_id) is None
+
+        assert await repo.add_member(room.id, member_id, MemberRole.MEMBER) is False
+
+        assert await repo.unban_user(room.id, owner_id) is False
+        assert await repo.unban_user(room.id, member_id) is True
+        assert (await repo.get_by_id(room.id)).banned_users == [other_id]
+        assert await repo.add_member(room.id, member_id, MemberRole.MEMBER) is True
+
+    @pytest.mark.asyncio
+    async def test_room_without_ban_field_accepts_members(self, db_manager):
+        """封鎖功能之前建立的房間沒有 banned_users 欄位，照常可加入"""
+        repo = RoomRepository(db_manager.database)
+        owner_id = str(ObjectId())
+        room_id = await repo.insert_one(
+            {
+                "name": "舊房間",
+                "owner_id": owner_id,
+                "members": [owner_id],
+                "max_members": 10,
+            }
+        )
+
+        assert (
+            await repo.add_member(room_id, str(ObjectId()), MemberRole.MEMBER) is True
+        )
+        assert (await repo.get_by_id(room_id)).banned_users == []
+
+    @pytest.mark.asyncio
     async def test_is_member(self, db_manager):
         """測試檢查是否為房間成員"""
         repo = RoomRepository(db_manager.database)

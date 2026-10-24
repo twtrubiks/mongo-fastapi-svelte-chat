@@ -5,6 +5,7 @@
   import { currentUser } from '$lib/stores/auth.svelte';
   import { extractUserId } from '$lib/utils/userIdNormalizer';
   import { apiClient } from '$lib/api/client';
+  import { extractErrorMessage } from '$lib/utils/error';
   import { RoomType, JoinPolicy } from '$lib/types';
   import Loading from '$lib/components/ui/Loading.svelte';
 
@@ -13,6 +14,8 @@
 
   let loading = $state(true);
   let roomsExist = $state(false);
+  // 自動加入被拒的原因（例如被房主封鎖、房間已滿）
+  let notice = $state<string | null>(null);
 
   onMount(async () => {
     // 認證已由 app/+layout.server.js 在 SSR 層保證，不需 client-side 重複檢查
@@ -39,7 +42,14 @@
 
           if (target) {
             if (!target.is_member) {
-              await roomStore.joinRoom(target.id);
+              try {
+                await roomStore.joinRoom(target.id);
+              } catch (error) {
+                // 停在這裡說明原因，讓使用者自己去儀表板選房間
+                notice = extractErrorMessage(error, '加入房間失敗');
+                roomsExist = true;
+                return;
+              }
             }
             goto(`/app/room/${target.id}`, { replaceState: true });
             return;
@@ -62,6 +72,9 @@
     <svg class="w-20 h-20 text-base-content opacity-30 mb-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
       <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
     </svg>
+    {#if notice}
+      <div class="alert alert-warning mb-6 max-w-md" role="alert">{notice}</div>
+    {/if}
     <h2 class="text-2xl font-bold text-base-content mb-2">
       {roomsExist ? '尚未加入任何聊天室' : '目前沒有聊天室'}
     </h2>

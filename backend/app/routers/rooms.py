@@ -8,12 +8,14 @@ from app.auth.dependencies import get_current_active_user, require_room_membersh
 from app.core.fastapi_integration import MessageServiceDep, RoomServiceDep
 from app.models.message import MessageCreate, MessageResponse, MessageWithReply
 from app.models.room import (
+    RoomBanRequest,
     RoomCreate,
     RoomJoinRequest,
     RoomResponse,
     RoomSummary,
     RoomUpdate,
 )
+from app.models.user import UserPublic
 from app.services.message_service import MessageService
 from app.services.room_service import RoomService
 
@@ -200,11 +202,49 @@ async def regenerate_invite_code(
 async def remove_room_member(
     room_id: str,
     user_id: str,
+    ban: bool = Query(False, description="同時封鎖，對方之後不能再加入"),
     current_user: dict = Depends(get_current_active_user),
     room_service: RoomService = RoomServiceDep,
 ):
     """將成員移出聊天室（僅房間擁有者，同時斷開對方在該房的連線）"""
-    message = await room_service.remove_member(room_id, current_user["_id"], user_id)
+    message = await room_service.remove_member(
+        room_id, current_user["_id"], user_id, ban=ban
+    )
+    return {"message": message}
+
+
+@router.get("/{room_id}/bans", response_model=list[UserPublic])
+async def get_banned_users(
+    room_id: str,
+    current_user: dict = Depends(get_current_active_user),
+    room_service: RoomService = RoomServiceDep,
+):
+    """封鎖名單（僅房間擁有者）"""
+    return await room_service.get_banned_users(room_id, current_user["_id"])
+
+
+@router.post("/{room_id}/bans", response_model=UserPublic)
+async def ban_user_by_username(
+    room_id: str,
+    request: RoomBanRequest,
+    current_user: dict = Depends(get_current_active_user),
+    room_service: RoomService = RoomServiceDep,
+):
+    """以使用者名稱封鎖（僅房間擁有者；可封鎖已離開或從未加入的人）"""
+    return await room_service.ban_by_username(
+        room_id, current_user["_id"], request.username
+    )
+
+
+@router.delete("/{room_id}/bans/{user_id}")
+async def unban_user(
+    room_id: str,
+    user_id: str,
+    current_user: dict = Depends(get_current_active_user),
+    room_service: RoomService = RoomServiceDep,
+):
+    """解除封鎖（僅房間擁有者）"""
+    message = await room_service.unban_user(room_id, current_user["_id"], user_id)
     return {"message": message}
 
 

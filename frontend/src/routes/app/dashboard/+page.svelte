@@ -75,8 +75,13 @@
       showToast('此房間已被刪除', 'warning');
       goto('/app/dashboard', { replaceState: true });
     } else if (params.has('removed')) {
-      // 從被移出的房間重導向過來（被房主移出，或在其他分頁離開）
-      showToast(params.get('removed') === 'kicked' ? '你已被房主移出聊天室' : '你已離開此聊天室', 'warning');
+      // 從被移出的房間重導向過來（被房主移出或封鎖，或在其他分頁離開）
+      const removedMessages: Record<string, string> = {
+        banned: '你已被房主移出並封鎖，無法再加入此聊天室',
+        kicked: '你已被房主移出聊天室',
+      };
+      const reason = params.get('removed') ?? '';
+      showToast(Object.hasOwn(removedMessages, reason) ? removedMessages[reason]! : '你已離開此聊天室', 'warning');
       goto('/app/dashboard', { replaceState: true });
     }
   });

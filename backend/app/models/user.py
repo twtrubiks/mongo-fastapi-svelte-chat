@@ -51,6 +51,14 @@ class UserInDB(UserBase):
     model_config = ConfigDict(populate_by_name=True)
 
 
+class UserPublic(BaseModel):
+    """可給非同房使用者看的公開欄位（不含 email 等個人資料）"""
+
+    id: str
+    username: str
+    avatar: str | None = None
+
+
 class UserResponse(UserBase):
     """使用者回應模型"""
 

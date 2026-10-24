@@ -116,12 +116,13 @@ class RoomRepository(BaseRepository[RoomInDB]):
     async def get_rooms_for_user(
         self, user_id: str, skip: int = 0, limit: int = 20
     ) -> list[RoomInDB]:
-        """公開房間 + 用戶已加入的私人房間"""
+        """公開房間 + 用戶已加入的私人房間（不含封鎖了該用戶的房間）"""
         query = {
             "$or": [
                 {"is_public": True},
                 {"members": user_id},
-            ]
+            ],
+            "banned_users": {"$ne": user_id},
         }
         documents = await self.find_many(
             query, skip=skip, limit=limit, sort=[("created_at", -1)]
@@ -131,8 +132,12 @@ class RoomRepository(BaseRepository[RoomInDB]):
     async def get_explore_rooms(
         self, user_id: str, skip: int = 0, limit: int = 20
     ) -> list[RoomInDB]:
-        """公開房間中排除使用者已加入的（探索用）"""
-        query = {"is_public": True, "members": {"$nin": [user_id]}}
+        """公開房間中排除使用者已加入的，以及封鎖了該使用者的（探索用）"""
+        query = {
+            "is_public": True,
+            "members": {"$nin": [user_id]},
+            "banned_users": {"$ne": user_id},
+        }
         documents = await self.find_many(
             query, skip=skip, limit=limit, sort=[("created_at", -1)]
         )
@@ -158,7 +163,9 @@ class RoomRepository(BaseRepository[RoomInDB]):
             query["is_public"] = True
 
         if exclude_user_id:
+            # 探索用：排除已加入的與封鎖了該使用者的（加不進去）
             query["members"] = {"$nin": [exclude_user_id]}
+            query["banned_users"] = {"$ne": exclude_user_id}
 
         documents = await self.find_many(
             query, skip=skip, limit=limit, sort=[("name", 1)]
@@ -169,8 +176,9 @@ class RoomRepository(BaseRepository[RoomInDB]):
         """
         原子添加成員到房間（含 max_members 條件檢查 + 角色設定）
 
-        使用 $expr 條件確保成員數不超過 max_members，並在同一次 update_one 中
-        同時執行 $addToSet members 和 $set member_roles，避免非原子多步寫入。
+        使用 $expr 條件確保成員數不超過 max_members，並排除被封鎖的使用者（與封鎖
+        同時發生時也擋得住），在同一次 update_one 中同時執行 $addToSet members 和
+        $set member_roles，避免非原子多步寫入。
 
         Args:
             room_id: 房間 ID
@@ -178,11 +186,12 @@ class RoomRepository(BaseRepository[RoomInDB]):
             role: 成員角色（由 Service 層決定）
 
         Returns:
-            bool: 是否添加成功（False 表示房間已滿或不存在）
+            bool: 是否添加成功（False 表示房間已滿、不存在或使用者被封鎖）
         """
         success = await self.update_one(
             {
                 "_id": ObjectId(room_id),
+                "banned_users": {"$ne": user_id},
                 "$expr": {"$lt": [{"$size": "$members"}, "$max_members"]},
             },
             {
@@ -222,6 +231,42 @@ class RoomRepository(BaseRepository[RoomInDB]):
         if success:
             logger.info(f"User {user_id} removed from room {room_id}")
         return success
+
+    async def ban_user(self, room_id: str, user_id: str) -> RoomInDB | None:
+        """
+        封鎖使用者：加入封鎖名單，是成員就在同一次更新中一併移除
+
+        不要求是成員（已離開的人也能封鎖）。user_id 會成為 member_roles 的欄位
+        路徑，呼叫端須確認是既有成員或存在的使用者。
+
+        Returns:
+            RoomInDB | None: 更新前的房間（呼叫端據此判斷對方原本是否為成員、
+            是否已被封鎖）；房間不存在時為 None
+        """
+        document = await self.find_one_and_update(
+            {"_id": ObjectId(room_id)},
+            {
+                "$pull": {"members": user_id},
+                "$unset": {f"member_roles.{user_id}": ""},
+                "$addToSet": {"banned_users": user_id},
+            },
+        )
+        if document:
+            logger.info(f"User {user_id} banned from room {room_id}")
+            return self._to_model(document)
+        return None
+
+    async def unban_user(self, room_id: str, user_id: str) -> bool:
+        """
+        從封鎖名單移除使用者
+
+        Returns:
+            bool: 是否移除成功（False 表示房間不存在或不在封鎖名單中）
+        """
+        return await self.update_one(
+            {"_id": ObjectId(room_id), "banned_users": user_id},
+            {"$pull": {"banned_users": user_id}},
+        )
 
     async def is_member(self, room_id: str, user_id: str) -> bool:
         """

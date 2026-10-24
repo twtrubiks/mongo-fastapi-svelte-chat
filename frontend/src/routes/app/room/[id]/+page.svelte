@@ -24,6 +24,7 @@
   import { bffApiClient } from '$lib/bff-api-client';
   import { createMarkAsReadTracker } from '$lib/utils/markAsRead';
   import { processFileUpload } from '$lib/utils/fileUploadHandler';
+  import { extractErrorMessage } from '$lib/utils/error';
   import type { Room, RoomSummary, Message, User, WSErrorMessage } from '$lib/types';
   
   let currentRoom: Room | null = $state(null);
@@ -54,6 +55,8 @@
   let mobileMessageListComponent: any = $state(null);
   let messageIdToScrollTo: string | null = $state(null); // 待定位的訊息 ID
   let isLeavingRoom = false; // 自己按離開時，後端廣播的 user_left 由離開流程處理導向
+  // 離開期間收到的「被移出」事件：按下離開時剛好被房主移出或封鎖
+  let removedWhileLeaving: { kicked: boolean; banned: boolean } | null = null;
   
   // 已讀狀態追蹤器
   const markAsReadTracker = createMarkAsReadTracker();
@@ -152,6 +155,9 @@
       } catch (error) {
         if (isStale()) return;
         console.error('自動加入房間失敗:', error);
+        // 加入被拒（例如被房主封鎖）：說明真正的原因，不被切換房間的提示蓋掉
+        await redirectToAvailableRoom(extractErrorMessage(error, '加入房間失敗'));
+        return;
       }
     }
     
@@ -162,8 +168,8 @@
     await redirectToAvailableRoom();
   }
   
-  // 重定向到可用的房間
-  async function redirectToAvailableRoom() {
+  // 重定向到可用的房間；notice 是無法進入的原因，取代切換房間的提示（同時只顯示一則）
+  async function redirectToAvailableRoom(notice?: string) {
     try {
       // 獲取用戶已加入的房間列表
       const userRooms = await roomStore.loadMyRooms(true);
@@ -171,11 +177,11 @@
       if (userRooms && userRooms.length > 0) {
         // 重定向到第一個可用房間
         const firstRoom = userRooms[0]!;
-        showToast(`已為您切換到「${firstRoom.name}」`, 'info');
+        showToast(notice ?? `已為您切換到「${firstRoom.name}」`, notice ? 'warning' : 'info');
         goto(`/app/room/${firstRoom.id}`);
       } else {
         // 沒有可用房間，導回房間列表顯示空狀態
-        showToast('您還沒有加入任何房間，請先創建或加入一個房間', 'info');
+        showToast(notice ?? '您還沒有加入任何房間，請先創建或加入一個房間', notice ? 'warning' : 'info');
         goto('/app/rooms', { replaceState: true });
       }
     } catch (error) {
@@ -397,10 +403,21 @@
         await redirectToAvailableRoom();
         showToast('已離開聊天室', 'info');
       } catch (error) {
-        console.error('離開聊天室失敗:', error);
-        showToast('離開聊天室失敗', 'error');
+        // 按下離開時剛好被移出或封鎖：後端已不認為他是成員（404），連線也已被關閉。
+        // 當成已不在房間，導回儀表板並說明原因，不停在斷線的房間頁提示「離開失敗」
+        const err = error as { status?: number; response?: { status?: number } };
+        const removed = removedWhileLeaving;
+        if (removed || err.status === 404 || err.response?.status === 404) {
+          roomStore.forgetMembership(room.id);
+          const reason = removed?.banned ? 'banned' : removed?.kicked ? 'kicked' : 'left';
+          goto(`/app/dashboard?removed=${reason}`, { replaceState: true });
+        } else {
+          console.error('離開聊天室失敗:', error);
+          showToast('離開聊天室失敗', 'error');
+        }
       } finally {
         isLeavingRoom = false;
+        removedWhileLeaving = null;
       }
     }
   }
@@ -592,9 +609,14 @@
     };
 
     // 成員資格被移除：被房主移出，或在其他分頁離開了這個房間
-    const handleRemovedFromRoom = (data: { room_id: string; kicked: boolean }) => {
-      if (data.room_id !== roomId || isLeavingRoom) return;
-      goto(`/app/dashboard?removed=${data.kicked ? 'kicked' : 'left'}`, { replaceState: true });
+    const handleRemovedFromRoom = (data: { room_id: string; kicked: boolean; banned: boolean }) => {
+      if (data.room_id !== roomId) return;
+      if (isLeavingRoom) {
+        removedWhileLeaving = { kicked: data.kicked, banned: data.banned };
+        return;
+      }
+      const reason = data.banned ? 'banned' : data.kicked ? 'kicked' : 'left';
+      goto(`/app/dashboard?removed=${reason}`, { replaceState: true });
     };
 
     const handleRoomUpdated = (data: any) => {
