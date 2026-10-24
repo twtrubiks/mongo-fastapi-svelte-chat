@@ -254,7 +254,8 @@ cp .env.example .env
 - `npm run build` - 建構生產版本
 - `npm run check` - TypeScript + Svelte 型別檢查
 - `npm run lint` - ESLint 檢查
-- `npm run check:all` - 型別檢查 + ESLint + 命名衝突檢查
+- `npm run test` - Vitest 單元測試（BFF 路由、stores、WebSocket 事件處理）
+- `npm run check:all` - 型別檢查 + ESLint + 命名衝突檢查 + 單元測試
 
 ## 📁 專案結構
 

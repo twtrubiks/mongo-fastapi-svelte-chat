@@ -36,7 +36,8 @@ ruff check . && ruff format .                 # Lint + Format
 
 # Frontend (from /frontend)
 npm run dev                                   # Dev server on :5173
-npm run check:all                             # Type check + lint + naming check
+npm run test                                  # Vitest unit tests
+npm run check:all                             # Type check + lint + naming check + tests
 ```
 
 ## Conventions
