@@ -122,9 +122,10 @@ describe('斷線重連', () => {
     await vi.advanceTimersByTimeAsync(1);
     expect(ticket).toHaveBeenCalledTimes(3);
 
-    // 連上後重設退避
+    // 連上並收到伺服器訊息（通過驗證）後重設退避
     last().serverOpen();
     await flush();
+    last().serverSend({ type: 'welcome' });
     last().serverClose(1006, false);
     await vi.advanceTimersByTimeAsync(1000);
     expect(ticket).toHaveBeenCalledTimes(4);
@@ -147,6 +148,32 @@ describe('斷線重連', () => {
     await vi.advanceTimersByTimeAsync(1000);
 
     expect(ticket).toHaveBeenCalledTimes(2);
+  });
+
+  // 伺服器先接受連線才驗證：只是連上（onopen）不代表通過驗證。若連上就重設退避，
+  // 驗證時暫時故障而以 4000 關閉的連線會固定每秒重連、永不停止
+  it('連上後在驗證階段就被 4000 關閉：延遲照樣加倍，達到上限後停止並通知', async () => {
+    const ws = await connectOpen('r1');
+    ws.serverSend({ type: 'welcome' });
+    const failed = vi.fn();
+    manager.on('reconnect_failed', failed);
+
+    ws.serverClose(4000, true);
+    for (const delay of [1000, 2000, 4000, 8000, 16000, 30000, 30000, 30000, 30000, 30000]) {
+      const before = ticket.mock.calls.length;
+      await vi.advanceTimersByTimeAsync(delay - 1);
+      expect(ticket.mock.calls.length).toBe(before);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(ticket.mock.calls.length).toBe(before + 1);
+      last().serverOpen();
+      await flush();
+      last().serverClose(4000, true);
+    }
+
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(ticket).toHaveBeenCalledTimes(11);
+    expect(failed).toHaveBeenCalledOnce();
+    expect(failed.mock.calls[0]![0]).toMatchObject({ attempts: 10 });
   });
 
   it.each([1000, 4001, 4003, 1011])('伺服器以 %i 正常關閉時不重連', async (code) => {

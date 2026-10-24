@@ -110,6 +110,10 @@ export class WebSocketManager {
       this.lastConnectTime = Date.now();
       this.connectionId++;
       const currentConnectionId = this.connectionId;
+      // 伺服器先接受連線才驗證：連上（onopen）不代表通過驗證，收到第一則訊息才算。
+      // 驗證時被關閉的連線不能重設退避，否則 4000 的重連會固定每秒一次、永不停止
+      let opened = false;
+      let confirmed = false;
 
       this.setConnectionState('connecting');
 
@@ -129,8 +133,7 @@ export class WebSocketManager {
           }
 
           this.setConnectionState('connected');
-          this.reconnectAttempts = 0;
-          this.currentReconnectDelay = this.baseReconnectDelay;
+          opened = true;
           this.isReconnecting = false;
           this.clearReconnectTimeout();
           this.startHeartbeat();
@@ -145,6 +148,11 @@ export class WebSocketManager {
             if (!isValidWSMessage(raw)) {
               console.error('[WebSocket] 收到不符預期的訊息格式:', raw);
               return;
+            }
+            if (!confirmed) {
+              confirmed = true;
+              this.reconnectAttempts = 0;
+              this.currentReconnectDelay = this.baseReconnectDelay;
             }
             this.handleMessage(raw);
           } catch (error) {
@@ -167,7 +175,16 @@ export class WebSocketManager {
           // 判斷是否需要重連：連線中斷才重連；伺服器以 4000 正常關閉的是暫時錯誤
           // （例如驗證時資料庫故障），也要重連
           if ((!event.wasClean || event.code === SERVER_ERROR_CODE) && this.shouldReconnect(event.code)) {
-            this.scheduleReconnect();
+            if (opened && this.reconnectAttempts >= this.maxReconnectAttempts) {
+              // 每次都連上又在驗證階段被關閉，連續達到上限：停止並通知
+              // （沒連上的由 performReconnect 通知，這裡不重複）
+              this.emit('reconnect_failed', {
+                attempts: this.reconnectAttempts,
+                lastError: new Error(`連線被關閉（${event.code}）`),
+              });
+            } else {
+              this.scheduleReconnect();
+            }
           }
         };
 
