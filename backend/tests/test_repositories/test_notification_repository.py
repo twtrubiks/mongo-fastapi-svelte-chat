@@ -436,6 +436,18 @@ class TestNotificationOrdering:
         assert [n.title for n in notifications] == ["n1", "n0", "n2"]
 
     @pytest.mark.asyncio
+    async def test_same_created_at_pages_by_newest_id(self, db_manager):
+        """created_at 相同時以 _id 新到舊排序，分頁穩定、不重疊也不遺漏"""
+        repo = NotificationRepository(db_manager.database)
+        user_id = str(ObjectId())
+        await _insert_with_created_at(repo.collection, user_id, [0, 0, 0, 0])
+
+        first = await repo.get_by_user(user_id, skip=0, limit=2)
+        second = await repo.get_by_user(user_id, skip=2, limit=2)
+
+        assert [n.title for n in first + second] == ["n3", "n2", "n1", "n0"]
+
+    @pytest.mark.asyncio
     async def test_stats_recent_activity_is_latest_five(self, db_manager):
         repo = NotificationRepository(db_manager.database)
         user_id = str(ObjectId())
