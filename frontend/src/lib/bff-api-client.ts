@@ -9,6 +9,7 @@ import type {
 import type {
   RoomJoinRequest,
 } from './types';
+import { apiClient } from './api/client';
 
 /** checkJoinRequirements 回傳結構 */
 export interface JoinRequirementsData {
@@ -50,6 +51,25 @@ export interface InvitationValidation {
   };
 }
 
+// 非 2xx 回應：沿用 BFF 錯誤信封，不是 JSON 時轉成 HTTP_ERROR
+async function toErrorResponse<T>(response: Response): Promise<BFFResponse<T>> {
+  const body = (await response.json().catch(() => undefined)) as BFFResponse<T> | undefined;
+
+  // 與 apiClient 相同：BFF 的透明 refresh 也失敗（401 UNAUTHORIZED）表示登入已失效，
+  // 導回登入頁；登入帳密錯誤也是 401，但 code 為 AUTH_ERROR，不算
+  if (response.status === 401 && (!body?.error || body.error.code === 'UNAUTHORIZED')) {
+    void apiClient.onAuthFailure?.();
+  }
+
+  return body ?? {
+    success: false,
+    error: {
+      code: 'HTTP_ERROR',
+      message: `HTTP ${response.status}: ${response.statusText}`,
+    },
+  };
+}
+
 export class BFFApiClient {
   private baseUrl: string;
 
@@ -73,19 +93,7 @@ export class BFFApiClient {
     });
     
     if (!response.ok) {
-      // 如果響應不是 JSON，創建基本錯誤
-      try {
-        const errorData = await response.json();
-        return errorData;
-      } catch {
-        return {
-          success: false,
-          error: {
-            code: 'HTTP_ERROR',
-            message: `HTTP ${response.status}: ${response.statusText}`,
-          },
-        };
-      }
+      return toErrorResponse<T>(response);
     }
     
     return await response.json();
@@ -137,14 +145,7 @@ export class BFFApiClient {
       });
 
       if (!response.ok) {
-        try {
-          return await response.json();
-        } catch {
-          return {
-            success: false,
-            error: { code: 'HTTP_ERROR', message: `HTTP ${response.status}: ${response.statusText}` },
-          };
-        }
+        return toErrorResponse<FileUploadData>(response);
       }
 
       return await response.json();

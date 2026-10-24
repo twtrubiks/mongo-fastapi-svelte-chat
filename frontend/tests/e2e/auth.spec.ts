@@ -25,3 +25,24 @@ test('在另一個 session 改密碼後，頁面導回登入頁並清除本地�
   await expect(page).toHaveURL(/\/login/);
   expect(await page.evaluate(() => localStorage.getItem('auth_user'))).toBeNull();
 });
+
+test('在另一個 session 改密碼後，在儀表板按刷新導回登入頁', async ({ page, request }) => {
+  const user = await registerUser(request, 'dash');
+  const login = await page.context().request.post('/api/auth/login', {
+    form: { username: user.username, password: PASSWORD },
+  });
+  expect(login.ok()).toBe(true);
+
+  await page.goto('/app/dashboard');
+  await expect(page.getByText('查看您的聊天室統計資訊和最近活動')).toBeVisible();
+  const refresh = page.getByRole('button', { name: '刷新' });
+  await expect(refresh).toBeEnabled();
+
+  const changed = await request.put('/api/auth/change-password', {
+    data: { current_password: PASSWORD, new_password: 'password456' },
+  });
+  expect(changed.ok()).toBe(true);
+
+  await refresh.click();
+  await expect(page).toHaveURL(/\/login/);
+});
