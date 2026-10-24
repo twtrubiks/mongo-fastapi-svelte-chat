@@ -247,10 +247,10 @@ export interface WSUserLeftMessage {
   banned?: boolean;
 }
 
+// 收件者多半不是對方的同房成員，後端只帶 id 與狀態，不帶使用者資料
 export interface WSUserStatusChangedMessage {
   type: 'user_status_changed';
   user_id: string;
-  user: User;
   is_online: boolean;
   timestamp: string;
 }

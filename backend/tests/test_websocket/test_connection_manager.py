@@ -1084,7 +1084,6 @@ def _offline(user):
     return {
         "type": "user_status_changed",
         "user_id": user["id"],
-        "user": user,
         "is_online": False,
         "timestamp": TS,
     }
@@ -1118,7 +1117,8 @@ class TestEventPayloads:
         bob_ws = _ws()
         await manager.connect(bob_ws, "bob", "r1", dict(BOB))
 
-        # 同房其他人：user_joined；其他房間：上線狀態
+        # 同房其他人：user_joined；其他房間：上線狀態只帶 id，不帶使用者資料
+        # （其他房間的人不是同房成員，不該拿到對方的名稱以外的個人資料）
         assert _received(alice_ws) == [
             {"type": "user_joined", "user": BOB, "timestamp": TS, "room_id": "r1"}
         ]
@@ -1126,7 +1126,6 @@ class TestEventPayloads:
             {
                 "type": "user_status_changed",
                 "user_id": "bob",
-                "user": BOB,
                 "is_online": True,
                 "timestamp": TS,
             }
@@ -1194,7 +1193,6 @@ class TestDebounceTimeline:
             {
                 "type": "user_status_changed",
                 "user_id": "bob",
-                "user": BOB,
                 "is_online": False,
                 "timestamp": TS,
             },

@@ -59,6 +59,24 @@ class UserPublic(BaseModel):
     avatar: str | None = None
 
 
+class RoomMember(BaseModel):
+    """成員列表的欄位：不含 email（公開房任何人都能加入，帶 email 等於公開）"""
+
+    id: str
+    username: str
+    full_name: str | None = None
+    avatar: str | None = None
+    is_active: bool = True
+    created_at: datetime
+
+    @field_serializer("created_at")
+    def serialize_datetime(self, dt: datetime) -> str:
+        """時間以 ISO 格式輸出，並包含時區標記"""
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=UTC)
+        return dt.isoformat()
+
+
 class UserResponse(UserBase):
     """使用者回應模型"""
 

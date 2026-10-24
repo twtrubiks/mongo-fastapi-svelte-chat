@@ -15,7 +15,7 @@ from app.models.room import (
     RoomSummary,
     RoomUpdate,
 )
-from app.models.user import UserPublic
+from app.models.user import RoomMember, UserPublic
 from app.services.message_service import MessageService
 from app.services.room_service import RoomService
 
@@ -248,7 +248,7 @@ async def unban_user(
     return {"message": message}
 
 
-@router.get("/{room_id}/members")
+@router.get("/{room_id}/members", response_model=list[RoomMember])
 async def get_room_members(
     room_id: str,
     skip: int = Query(0, ge=0),

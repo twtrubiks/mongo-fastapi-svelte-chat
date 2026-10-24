@@ -431,6 +431,39 @@ class TestProtocolErrors:
 
 @pytest.mark.asyncio
 @pytest.mark.integration
+class TestPrivacy:
+    async def test_events_do_not_carry_email(self, ctx, async_client):
+        """WS 事件的使用者資料不帶 email：其他房間的人只收到上線狀態，同房也看不到 email"""
+        elsewhere = await _make_user(async_client, "elsewhere")
+        other_room = await async_client.post(
+            "/api/rooms/", json={"name": "other room"}, headers=elsewhere["headers"]
+        )
+        other_ctx = SimpleNamespace(
+            client=async_client, room_id=other_room.json()["id"]
+        )
+        watcher = await _connect(other_ctx, elsewhere)
+        await _connection_preamble(watcher)
+        owner_ws = await _connect(ctx, ctx.owner)
+        await _connection_preamble(owner_ws)
+
+        member_ws = await _connect(ctx, ctx.member)
+        room_users = await member_ws.receive_json()
+        joined = await owner_ws.receive_json()
+        statuses = [await watcher.receive_json() for _ in range(2)]
+
+        assert room_users["type"] == "room_users"
+        assert joined["type"] == "user_joined"
+        for event in (room_users, joined, *statuses):
+            assert "@example.com" not in json.dumps(event, ensure_ascii=False), event
+        assert [set(e) for e in statuses] == [
+            {"type", "user_id", "is_online", "timestamp"}
+        ] * 2
+        for websocket in (member_ws, owner_ws, watcher):
+            await websocket.disconnect()
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
 class TestMembershipRevocation:
     async def test_removed_member_is_told_and_disconnected(self, ctx, manager):
         owner_ws = await _connect(ctx, ctx.owner)

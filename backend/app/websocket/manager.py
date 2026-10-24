@@ -186,9 +186,7 @@ class ConnectionManager:
                 },
             )
 
-        await self._broadcast_user_status(
-            user_id, user_info, True, exclude_room=room_id
-        )
+        await self._broadcast_user_status(user_id, True, exclude_room=room_id)
         return True
 
     async def disconnect(
@@ -330,11 +328,14 @@ class ConnectionManager:
     async def _broadcast_user_status(
         self,
         user_id: str,
-        user_info: dict,
         is_online: bool,
         exclude_room: str | None = None,
     ):
-        """廣播使用者在線狀態變更到所有有活躍連線的房間"""
+        """廣播使用者在線狀態變更到所有有活躍連線的房間
+
+        收件者多半不是對方的同房成員，只帶 user_id 與狀態，不帶使用者資料（含 email、
+        全名）：任何人建房保持連線，就能收集所有上線使用者的資料
+        """
         for rid in list(self.room_users.keys()):
             if rid == exclude_room:
                 continue
@@ -343,7 +344,6 @@ class ConnectionManager:
                 {
                     "type": "user_status_changed",
                     "user_id": user_id,
-                    "user": user_info,
                     "is_online": is_online,
                     "timestamp": datetime.now(UTC).isoformat(),
                 },
@@ -395,7 +395,7 @@ class ConnectionManager:
         if saved_user_info:
             for rid in left_room_ids:
                 await self._broadcast_user_left(rid, saved_user_info)
-            await self._broadcast_user_status(user_id, saved_user_info, False)
+            await self._broadcast_user_status(user_id, False)
 
     def _schedule_room_leave(self, user_id: str, room_id: str):
         """排程延遲的房間離開。必須在持有 self._lock 時呼叫。"""

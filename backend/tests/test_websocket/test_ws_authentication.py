@@ -26,7 +26,8 @@ from app.websocket.auth import (
 from app.websocket.handlers import handle_websocket_connection
 
 FORM = {"Content-Type": "application/x-www-form-urlencoded"}
-USER_INFO_KEYS = {"id", "username", "email", "full_name", "avatar", "is_active"}
+# WS 的使用者資料會廣播給同房成員（公開房任何人都能加入），不帶 email
+USER_INFO_KEYS = {"id", "username", "full_name", "avatar", "is_active"}
 
 
 def fake_ws(query: dict | None = None, headers: dict | None = None):
@@ -164,7 +165,6 @@ class TestAuthenticateWebsocket:
         assert set(info) == USER_INFO_KEYS
         assert info["id"] == ctx["member"]["id"]
         assert info["username"] == "wsmember"
-        assert info["email"] == "wsmember@example.com"
         assert info["full_name"] == "Wsmember"
         assert info["avatar"] == "/api/files/image/me.png"
         assert info["is_active"] is True
@@ -262,7 +262,6 @@ class TestAuthenticateWebsocket:
         assert info == {
             "id": member["id"],
             "username": "wsmember",
-            "email": "wsmember@example.com",
             "full_name": "Wsmember",
             "avatar": None,
             "is_active": True,

@@ -1147,6 +1147,20 @@ class TestRoomBans:
         assert [set(u) for u in listed.json()] == [public_fields]
         assert "outsider@example.com" not in banned.text + listed.text
 
+    # 公開房任何人都能加入：成員列表若帶 email，加入就能收集所有成員的 email
+    async def test_member_list_does_not_expose_email(self, async_client, users):
+        room = await _create_room(async_client, users["owner"])
+        await _join(async_client, room["id"], users["member"])
+
+        members = await async_client.get(
+            f"/api/rooms/{room['id']}/members", headers=users["member"]["headers"]
+        )
+
+        assert members.status_code == 200
+        assert {m["username"] for m in members.json()} == {"owner", "member"}
+        assert all("email" not in m for m in members.json())
+        assert "@example.com" not in members.text
+
     async def test_banning_twice_conflicts(self, async_client, users):
         room = await _create_room(async_client, users["owner"])
         await self._ban_by_name(async_client, room["id"], users["owner"], "outsider")

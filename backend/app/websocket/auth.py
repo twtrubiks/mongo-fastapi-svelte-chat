@@ -17,8 +17,8 @@ from app.utils.ws_ticket import validate_ws_ticket
 
 logger = logging.getLogger(__name__)
 
-# 資料庫 / Redis 暫時故障（含啟動或重連時尚未連線）不是認證失敗：往上拋，由 handler
-# 以 4000 關閉讓前端重連，不能當成認證失敗或不是成員（以 4001 拒絕，前端不重連）
+# 資料庫 / Redis 暫時故障（含關機時連線已關閉）不是認證失敗：往上拋，由 handler 以 4000
+# 關閉讓前端重連（連到重啟後的伺服器），不能當成認證失敗或不是成員（以 4001 拒絕，前端不重連）
 INFRA_ERRORS = (PyMongoError, RedisError, NotConnectedError)
 
 
@@ -56,7 +56,6 @@ async def _get_user_info(
         return {
             "id": user["_id"],
             "username": user["username"],
-            "email": user.get("email"),
             "full_name": user.get("full_name"),
             "avatar": user.get("avatar"),
             "is_active": user.get("is_active", True),
