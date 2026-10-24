@@ -322,7 +322,8 @@
     {#if selectedFiles.length > 0}
       <!-- 檔案預覽列表 -->
       <div class="files-preview">
-        {#each selectedFiles as file (file.name)}
+        <!-- 以檔案本身當 key：同名的不同檔案（例如兩張都叫 image.png 的截圖）不會互相衝突 -->
+        {#each selectedFiles as file (file)}
           <div class="file-item">
             <div class="file-preview">
               {#if previewUrls.has(file)}
@@ -346,10 +347,12 @@
               </div>
             </div>
             
+            <!-- 上傳無法中途取消；上傳中移除只會讓檔案從畫面消失，完成後仍照樣回報 -->
             <Button
               variant="ghost"
               size="sm"
               onclick={(e) => { e.stopPropagation(); removeFile(file); }}
+              disabled={isUploading}
               aria-label="移除檔案"
               class="remove-btn"
             >
