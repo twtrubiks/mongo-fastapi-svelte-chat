@@ -151,6 +151,23 @@ describe('重新連線', () => {
     expect(status('c1')).toBe('sending');
   });
 
+  it('連線意外中斷時，等待確認的訊息在重新連上後自動重送', async () => {
+    const first = await connectOpen();
+    retry.addToRetryQueue({ id: 'c1', content: '嗨', type: 'text' });
+    manager.sendMessage('嗨', 'text', 'c1');
+
+    first.serverClose(1006, false);
+    expect(status('c1')).toBe('failed');
+
+    // 1 秒後重新連線，連上後再 1 秒重送（不必等 10 秒的 ack 逾時）
+    await vi.advanceTimersByTimeAsync(1000);
+    answerPings(last());
+    last().serverOpen();
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(sentWith(last(), 'c1')).toHaveLength(1);
+    expect(status('c1')).toBe('sending');
+  });
+
   it('未連線時手動重試，連上後由計時器重送', async () => {
     const ws = await sendAndTimeOut(await connectOpen(), 'c1');
     ws.serverClose(1006, false);

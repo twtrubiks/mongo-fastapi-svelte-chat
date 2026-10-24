@@ -155,6 +155,7 @@ export class WebSocketManager {
             return;
           }
 
+          this.failPendingAcks();
           this.setConnectionState('disconnected');
           this.stopHeartbeat();
           this.emit('disconnected', { code: event.code, reason: event.reason });
@@ -216,12 +217,7 @@ export class WebSocketManager {
     this.connectRequestId++; // 仍在取得 ticket 的 connect() 也一併作廢
     this.clearReconnectTimeout();
 
-    // 連線中斷：所有等待 ack 的訊息立即標記失敗（重連後由重試機制接手）
-    for (const [clientId, timeoutId] of this.pendingAcks) {
-      clearTimeout(timeoutId);
-      messageStatusStore.setFailed(clientId, '連線中斷，訊息未送達');
-    }
-    this.pendingAcks.clear();
+    this.failPendingAcks();
 
     if (this.ws) {
       this.ws.close(1000, 'Client disconnect');
@@ -475,6 +471,16 @@ export class WebSocketManager {
     this.pendingAcks.set(clientId, timeoutId);
   }
 
+  // 連線中斷：等待 ack 的訊息立即標記失敗，重新連上時由重試機制重送。
+  // 不等 ack 逾時：逾時通常在重新連上之後才發生，那時已錯過連上後的自動重送
+  private failPendingAcks() {
+    for (const [clientId, timeoutId] of this.pendingAcks) {
+      clearTimeout(timeoutId);
+      messageStatusStore.setFailed(clientId, '連線中斷，訊息未送達');
+    }
+    this.pendingAcks.clear();
+  }
+
   private clearAckTimeout(clientId: string) {
     const timeoutId = this.pendingAcks.get(clientId);
     if (timeoutId) {
@@ -619,6 +625,7 @@ export class WebSocketManager {
       staleWs?.close(4000, 'Ping timeout');
     } catch { /* ignore close errors */ }
 
+    this.failPendingAcks();
     this.setConnectionState('disconnected');
     this.stopHeartbeat();
     this.emit('disconnected', { code: 4000, reason: 'Ping timeout' });

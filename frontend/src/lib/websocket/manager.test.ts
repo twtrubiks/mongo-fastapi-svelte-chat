@@ -272,6 +272,26 @@ describe('訊息 ack', () => {
     expect(messageStatusStore.getStatus('c1')).toMatchObject({ status: 'failed', error: '連線中斷，訊息未送達' });
   });
 
+  it('連線意外中斷時，等待 ack 的訊息立即標記失敗', async () => {
+    const ws = await connectOpen('r1');
+    manager.sendMessage('內容', 'text', 'c1');
+
+    ws.serverClose(1006, false);
+
+    expect(messageStatusStore.getStatus('c1')).toMatchObject({ status: 'failed', error: '連線中斷，訊息未送達' });
+  });
+
+  it('ping 逾時時，等待 ack 的訊息立即標記失敗', async () => {
+    await connectOpen('r1');
+    // 第 20 秒送出 ping 後才送訊息：ping 在第 30 秒逾時，早於這則訊息的 ack 逾時（第 31 秒）
+    await vi.advanceTimersByTimeAsync(21_000);
+    manager.sendMessage('內容', 'text', 'c1');
+
+    await vi.advanceTimersByTimeAsync(9_000);
+
+    expect(messageStatusStore.getStatus('c1')).toMatchObject({ status: 'failed', error: '連線中斷，訊息未送達' });
+  });
+
   it('未連線時送出直接失敗', () => {
     expect(manager.sendMessage('內容', 'text', 'c1')).toBe(false);
     expect(messageStatusStore.getStatus('c1')).toMatchObject({ status: 'failed', error: 'WebSocket 未連接' });
