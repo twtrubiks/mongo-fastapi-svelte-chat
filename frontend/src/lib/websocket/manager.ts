@@ -589,6 +589,10 @@ export class WebSocketManager {
     // 更頻繁的心跳，防止移動設備斷線
     const heartbeatDelay = 20000; // 20秒，比原來的30秒更頻繁
 
+    // 連線開啟與分頁切回前台都會呼叫；先停掉既有的心跳，否則舊的 interval 失去引用，
+    // 之後 stopHeartbeat() 清不掉，換房間後仍對新連線送 ping
+    this.stopHeartbeat();
+
     this.heartbeatInterval = window.setInterval(() => {
       if (this.isConnected()) {
         // 發送 ping

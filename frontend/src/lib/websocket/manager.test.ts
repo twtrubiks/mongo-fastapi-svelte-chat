@@ -64,11 +64,15 @@ class FakeWebSocket {
 const last = () => FakeWebSocket.instances.at(-1)!;
 
 let windowListeners: Record<string, () => void>;
+let doc: { hidden: boolean; addEventListener: (event: string, fn: () => void) => void; removeEventListener: () => void };
+let visibilityListener: () => void;
 let ticket: MockInstance<typeof apiClient.wsTicket.create>;
 let manager: WebSocketManager;
 
 // 讓 ticket 等 promise 完成，但不推進計時器
 const flush = () => vi.advanceTimersByTimeAsync(0);
+
+const pings = (ws: FakeWebSocket) => ws.sent.filter((m) => m['type'] === 'ping').length;
 
 async function connectOpen(roomId = 'r1') {
   const done = manager.connect(roomId);
@@ -83,7 +87,12 @@ beforeEach(() => {
   FakeWebSocket.instances = [];
   windowListeners = {};
   vi.stubGlobal('WebSocket', FakeWebSocket);
-  vi.stubGlobal('document', { hidden: false, addEventListener: vi.fn(), removeEventListener: vi.fn() });
+  doc = {
+    hidden: false,
+    addEventListener: (event, fn) => { if (event === 'visibilitychange') visibilityListener = fn; },
+    removeEventListener: vi.fn(),
+  };
+  vi.stubGlobal('document', doc);
   vi.stubGlobal('window', {
     location: { protocol: 'http:', hostname: 'chat.example.com', port: '' },
     setTimeout: (fn: () => void, ms: number) => setTimeout(fn, ms),
@@ -257,6 +266,35 @@ describe('心跳', () => {
     expect(ticket).toHaveBeenCalledTimes(2);
     last().serverOpen();
     expect(manager.isConnected()).toBe(true);
+  });
+
+  it('分頁在背景時建立連線，切回前台後仍是每 20 秒一次 ping', async () => {
+    doc.hidden = true;
+    const ws = await connectOpen('r1');
+
+    await vi.advanceTimersByTimeAsync(5000);
+    doc.hidden = false;
+    visibilityListener();
+
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(pings(ws)).toBe(1);
+    ws.serverSend({ type: 'pong' });
+
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(pings(ws)).toBe(2);
+  });
+
+  it('切回前台後切換房間，新的連線不會收到上一條連線留下的 ping', async () => {
+    doc.hidden = true;
+    await connectOpen('r1');
+    await vi.advanceTimersByTimeAsync(5000);
+    doc.hidden = false;
+    visibilityListener();
+
+    const ws = await connectOpen('r2');
+    await vi.advanceTimersByTimeAsync(20_000);
+
+    expect(pings(ws)).toBe(1);
   });
 });
 
