@@ -698,30 +698,37 @@ class TestRoomRepository:
         assert result is None
 
 
+async def _insert_rooms(collection, owner_id: str, rows):
+    """依序插入房間（_id 遞增）；rows 為 (名稱, created_at 分鐘, updated_at 分鐘)"""
+    base = datetime(2026, 1, 1)
+    await collection.insert_many(
+        [
+            {
+                "_id": ObjectId(),
+                **RoomInDB(
+                    name=name,
+                    owner_id=owner_id,
+                    members=[owner_id],
+                    created_at=base + timedelta(minutes=created),
+                    updated_at=base + timedelta(minutes=updated),
+                ).model_dump(exclude={"id"}),
+            }
+            for name, created, updated in rows
+        ]
+    )
+
+
 @pytest.mark.unit
 class TestRoomListOrdering:
-    """房間列表依 created_at 由新到舊（刻意讓 created_at 與 _id 順序不一致）"""
+    """各房間列表的排序（刻意讓排序欄位與 _id 順序不一致）"""
 
     @pytest.mark.asyncio
     async def test_lists_sorted_by_created_at(self, db_manager):
+        """公開 / 可見 / 探索列表依 created_at 由新到舊"""
         repo = RoomRepository(db_manager.database)
-        owner_id = str(ObjectId())
-        base = datetime(2026, 1, 1)
-        # 依序插入（_id 遞增），created_at：b 最新、a 次之、c 最舊
-        await repo.collection.insert_many(
-            [
-                {
-                    "_id": ObjectId(),
-                    **RoomInDB(
-                        name=name,
-                        owner_id=owner_id,
-                        members=[owner_id],
-                        created_at=base + timedelta(minutes=minute),
-                        updated_at=base,
-                    ).model_dump(exclude={"id"}),
-                }
-                for name, minute in (("a", 1), ("b", 2), ("c", 0))
-            ]
+        # created_at：b 最新、a 次之、c 最舊
+        await _insert_rooms(
+            repo.collection, str(ObjectId()), [("a", 1, 0), ("b", 2, 0), ("c", 0, 0)]
         )
         outsider = str(ObjectId())
 
@@ -731,6 +738,24 @@ class TestRoomListOrdering:
 
         for rooms in (public, for_user, explore):
             assert [room.name for room in rooms] == ["b", "a", "c"]
+
+    @pytest.mark.asyncio
+    async def test_my_rooms_by_updated_at_and_search_by_name(self, db_manager):
+        """「我的房間」依最近更新由新到舊；搜尋結果依名稱字母序"""
+        repo = RoomRepository(db_manager.database)
+        owner_id = str(ObjectId())
+        # updated_at：room c 最新、room b 次之、room a 最舊
+        await _insert_rooms(
+            repo.collection,
+            owner_id,
+            [("room b", 0, 1), ("room a", 0, 0), ("room c", 0, 2)],
+        )
+
+        mine = await repo.get_user_rooms(owner_id)
+        found = await repo.search_rooms("room")
+
+        assert [room.name for room in mine] == ["room c", "room b", "room a"]
+        assert [room.name for room in found] == ["room a", "room b", "room c"]
 
 
 @pytest.mark.unit
