@@ -815,6 +815,39 @@ class TestConnectionManager:
         assert "user1" in connection_manager.room_users[room_id]
 
     @pytest.mark.asyncio
+    async def test_personal_event_avoids_connection_still_confirming(
+        self, connection_manager
+    ):
+        """個人事件不送到還在確認成員資格的連線：確認失敗時事件會跟著連線消失"""
+        info = {"id": "user1", "username": "User1"}
+        await connection_manager.connect(self._ws(), "user1", "room_a", info)
+        in_room_b = self._ws()
+        await connection_manager.connect(in_room_b, "user1", "room_b", info)
+        answer = asyncio.Event()
+
+        async def not_member():
+            await answer.wait()
+            return False
+
+        # 重新連線 room_a：在連線表中排在 room_b 前面，但還在確認
+        confirming = self._ws()
+        reconnecting = asyncio.create_task(
+            connection_manager.connect(
+                confirming, "user1", "room_a", info, still_member=not_member
+            )
+        )
+        await asyncio.sleep(0.01)
+        confirming.send_text.reset_mock()
+        in_room_b.send_text.reset_mock()
+
+        await connection_manager.send_event("user1", {"type": "room_updated"})
+        answer.set()
+
+        assert await reconnecting is False
+        confirming.send_text.assert_not_called()
+        in_room_b.send_text.assert_called_once()
+
+    @pytest.mark.asyncio
     async def test_removed_while_recheck_waits_for_lock(self, connection_manager):
         """再確認通過、排隊等鎖時被移出：房內先看到加入再看到移出，不會移出後又加入"""
         room_id = "room123"

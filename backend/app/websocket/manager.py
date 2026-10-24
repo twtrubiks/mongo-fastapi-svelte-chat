@@ -45,6 +45,9 @@ class ConnectionManager:
         # 房間重新連線 debounce 秒數
         self._room_rejoin_debounce_seconds: float = 5.0
 
+        # 已登記、還在確認成員資格的連線（見 connect 的 still_member）
+        self._confirming: set[WebSocket] = set()
+
         # 連線鎖，確保線程安全
         self._lock = asyncio.Lock()
 
@@ -102,6 +105,7 @@ class ConnectionManager:
             user_rooms = self.active_connections.setdefault(user_id, {})
             replaced = user_rooms.get(room_id)
             user_rooms[room_id] = websocket
+            self._confirming.add(websocket)
 
         # 鎖外關閉舊連線：對端不回關閉握手時 close 會等到逾時，持鎖等會卡住所有人
         # 的連線與斷線。舊連線已不在登記中，它的 disconnect 會因 identity 不符略過
@@ -112,7 +116,11 @@ class ConnectionManager:
                 logger.error(f"Error closing old connection for user {user_id}: {e}")
 
         # 鎖外確認：查資料庫期間撤銷的 force_disconnect 才拿得到鎖
-        if still_member is not None and not await still_member():
+        try:
+            confirmed = still_member is None or await still_member()
+        finally:
+            self._confirming.discard(websocket)
+        if not confirmed:
             # 與連線前驗證失敗相同：撤回登記並以 4001 關閉
             await self.force_disconnect(
                 user_id,
@@ -552,12 +560,12 @@ class ConnectionManager:
             user_id: 使用者 ID
             event_data: 事件資料（必須包含 type 欄位）
         """
-        if user_id not in self.active_connections:
+        rooms = self.active_connections.get(user_id)
+        if not rooms:
             return
 
-        room_ids = list(self.active_connections[user_id].keys())
-        if not room_ids:
-            return
+        # 優先送到已確認成員資格的連線：還在確認的連線若被拒絕，事件會跟著消失
+        room_ids = sorted(rooms, key=lambda rid: rooms[rid] in self._confirming)
 
         # 發送到任意一個房間即可（避免重複）
         room_id = room_ids[0]
