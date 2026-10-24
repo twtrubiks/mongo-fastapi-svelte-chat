@@ -86,6 +86,42 @@ describe('送出', () => {
   });
 });
 
+// 發送鍵只負責送出輸入框的內容；個別訊息的狀態與重試在訊息泡泡與「全部重試」
+describe('發送鍵', () => {
+  async function sendViaButton(type: (value: string) => Promise<unknown>, content: string) {
+    await type(content);
+    await fireEvent.click(screen.getByRole('button', { name: '發送' }));
+  }
+
+  it('上一則還在等伺服器確認時，仍可送出下一則', async () => {
+    const { onSend, type } = setup();
+
+    await sendViaButton(type, '第一則');
+    messageStatusStore.setSending(onSend.mock.calls[0]![0].messageId);
+    await sendViaButton(type, '第二則');
+
+    expect(onSend.mock.calls.map(([sent]) => sent.content)).toEqual(['第一則', '第二則']);
+  });
+
+  it('上一則失敗時，按發送送出的是新打的內容，不是重送上一則', async () => {
+    const manualRetry = vi.spyOn(messageRetryManager, 'manualRetry').mockResolvedValue(true);
+    const { onSend, type } = setup();
+
+    await sendViaButton(type, '第一則');
+    messageStatusStore.setFailed(onSend.mock.calls[0]![0].messageId, '連線中斷，訊息未送達');
+    await sendViaButton(type, '新的訊息');
+
+    expect(onSend.mock.calls.map(([sent]) => sent.content)).toEqual(['第一則', '新的訊息']);
+    expect(manualRetry).not.toHaveBeenCalled();
+  });
+
+  it('輸入框是空的時候不能按', () => {
+    setup();
+
+    expect((screen.getByRole('button', { name: '發送' }) as HTMLButtonElement).disabled).toBe(true);
+  });
+});
+
 describe('失敗的訊息', () => {
   it('顯示失敗數量與原因，全部重試會重送所有失敗訊息', async () => {
     const retryAllFailed = vi.spyOn(messageRetryManager, 'retryAllFailed').mockResolvedValue();

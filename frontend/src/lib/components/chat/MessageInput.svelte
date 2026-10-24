@@ -35,19 +35,6 @@
   let isDragging = $state(false);
   let dragCounter = $state(0);
   let showFileUpload = $state(false);
-  let currentMessageId = $state<string | null>(null);
-  
-  // 監聽當前訊息的發送狀態 - 使用 Svelte 5 $derived.by
-  let sendingStatus = $derived.by(() => {
-    // 確保 store 已初始化
-    const storeValue = messageStatusStore.state;
-    if (currentMessageId && storeValue) {
-      const status = storeValue[currentMessageId];
-      return status?.status || 'idle';
-    }
-    return 'idle';
-  });
-  
   
   // 依輸入內容計算要顯示的提示清單；先 NFKC 正規化以涵蓋全形＠／
   let suggestions = $derived.by<BotCommand[]>(() => {
@@ -123,15 +110,14 @@
   function sendMessage() {
     const content = message.trim();
 
-    // 不以 sending 狀態阻擋：每則訊息有獨立 client_id 追蹤，
-    // 真 ack 機制下 sending 會持續到伺服器確認，不應阻塞連續發送
+    // 發送鍵只送出輸入框的內容，不看上一則的狀態：每則訊息有獨立 client_id 追蹤，
+    // 等待確認或失敗的訊息由訊息泡泡的「重試」與上方的「全部重試」處理
     if (!content || disabled) {
       return;
     }
     
     // 生成訊息 ID
     const messageId = `msg_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-    currentMessageId = messageId;
     
     // 添加到重試佇列
     messageRetryManager.addToRetryQueue({
@@ -152,25 +138,6 @@
     message = '';
     notifyTypingStop();
     adjustTextAreaHeight();
-    
-    // 清除狀態延遲
-    setTimeout(() => {
-      if (sendingStatus === 'sent') {
-        currentMessageId = null;
-      }
-    }, 2000);
-  }
-  
-  // 重試發送
-  async function retryMessage() {
-    if (!currentMessageId) return;
-    
-    const success = await messageRetryManager.manualRetry(currentMessageId);
-    if (success) {
-      setTimeout(() => {
-        currentMessageId = null;
-      }, 1000);
-    }
   }
   
   // 選定提示：填入輸入框並把游標移到末端
@@ -527,45 +494,18 @@
         {/if}
         
         <!-- 發送按鈕 -->
-        {#if sendingStatus === 'failed' && currentMessageId}
-          <Button
-            type="button"
-            variant="error"
-            size="sm"
-            onclick={retryMessage}
-            title="發送失敗，點擊重試"
-          >
-            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-            </svg>
-            重試
-          </Button>
-        {:else}
-          <Button
-            type="button"
-            variant="primary"
-            size="sm"
-            disabled={!message.trim() || disabled || sendingStatus === 'sending'}
-            onclick={sendMessage}
-          >
-            {#if sendingStatus === 'sending'}
-              <svg class="w-4 h-4 animate-spin" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-              </svg>
-              發送中
-            {:else if sendingStatus === 'sent'}
-              <svg class="w-4 h-4 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
-              </svg>
-              已發送
-            {:else}
-              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
-              </svg>
-              發送
-            {/if}
-          </Button>
-        {/if}
+        <Button
+          type="button"
+          variant="primary"
+          size="sm"
+          disabled={!message.trim() || disabled}
+          onclick={sendMessage}
+        >
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
+          </svg>
+          發送
+        </Button>
       </div>
     </div>
     
