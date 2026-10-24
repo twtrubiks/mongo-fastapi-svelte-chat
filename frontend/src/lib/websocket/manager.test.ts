@@ -4,6 +4,7 @@ import { apiClient } from '$lib/api/client';
 import { messageStore } from '$lib/stores/message.svelte';
 import { messageStatusStore } from '$lib/stores/messageStatus.svelte';
 import type { Message } from '$lib/types';
+import { deferred } from '../../tests/deferred';
 import { WebSocketManager } from './manager';
 
 vi.mock('$app/navigation', () => ({ goto: vi.fn() }));
@@ -61,13 +62,6 @@ class FakeWebSocket {
 }
 
 const last = () => FakeWebSocket.instances.at(-1)!;
-
-function deferred<T>() {
-  let resolve!: (value: T) => void;
-  let reject!: (error: unknown) => void;
-  const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej; });
-  return { promise, resolve, reject };
-}
 
 let windowListeners: Record<string, () => void>;
 let ticket: MockInstance<typeof apiClient.wsTicket.create>;

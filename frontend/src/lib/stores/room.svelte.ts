@@ -35,6 +35,9 @@ const initialState: RoomState = {
 // 創建響應式狀態
 let roomState = $state<RoomState>(initialState);
 
+// 每次 loadRoom 遞增；較早發出、較晚回來的回應（例如快速切換房間）不覆蓋目前房間
+let loadRoomGeneration = 0;
+
 // 輔助函數：更新 roomState 的部分屬性
 function updateRoomState(updates: Partial<RoomState>) {
   Object.assign(roomState, updates);
@@ -283,6 +286,7 @@ export const roomStore = {
 
   // 載入特定聊天室
   loadRoom: async (roomId: string) => {
+    const generation = ++loadRoomGeneration;
     updateRoomState({ loading: true });
 
     try {
@@ -293,6 +297,8 @@ export const roomStore = {
 
       // API 的 is_active 代表帳號啟用，非在線狀態；預設離線，等 WebSocket room_users 修正
       const users = rawUsers.map(u => ({ ...u, is_active: false }));
+
+      if (generation !== loadRoomGeneration) return { room, users };
 
       updateRoomState({
         currentRoom: room,
@@ -306,7 +312,9 @@ export const roomStore = {
       return { room, users };
     } catch (error) {
       console.error('[RoomStore] 載入房間失敗:', error);
-      updateRoomState({ loading: false });
+      if (generation === loadRoomGeneration) {
+        updateRoomState({ loading: false });
+      }
       throw error;
     }
   },

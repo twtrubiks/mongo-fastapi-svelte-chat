@@ -11,6 +11,10 @@ const initialState: MessageState = {
 // 創建響應式狀態
 let messageState = $state<MessageState>(initialState);
 
+// 每次 loadMessages / clearMessages 遞增；較早發出、較晚回來的回應（例如快速切換房間）
+// 不寫入狀態，否則會蓋掉目前房間的訊息
+let loadGeneration = 0;
+
 export const messageStore = {
   // 暴露狀態的 getter
   get state() {
@@ -31,6 +35,7 @@ export const messageStore = {
   
   // 載入訊息
   loadMessages: async (roomId: string, limit: number = 50) => {
+    const generation = ++loadGeneration;
     messageState = {
       messages: messageState.messages,
       loading: true,
@@ -39,6 +44,7 @@ export const messageStore = {
 
     try {
       const messages = await apiClient.messages.list(roomId, limit);
+      if (generation !== loadGeneration) return messages;
       messageState = {
         messages: messages, // 後端已經按正確順序返回（最舊到最新）
         loading: false,
@@ -47,11 +53,13 @@ export const messageStore = {
       return messages;
     } catch (error) {
       console.error('[MessageStore] 載入訊息失敗:', error);
-      messageState = {
-        messages: messageState.messages,
-        loading: false,
-        hasMore: messageState.hasMore
-      };
+      if (generation === loadGeneration) {
+        messageState = {
+          messages: messageState.messages,
+          loading: false,
+          hasMore: messageState.hasMore
+        };
+      }
       throw error;
     }
   },
@@ -64,6 +72,7 @@ export const messageStore = {
     const oldestMessage = currentMessages[0];
     if (messageState.loading || !messageState.hasMore || !oldestMessage) return;
 
+    const generation = loadGeneration;
     messageState = {
       messages: messageState.messages,
       loading: true,
@@ -77,6 +86,8 @@ export const messageStore = {
       const messages = await apiClient.messages.list(
         roomId, limit, skip, oldestMessage.seq
       );
+      // 等待期間已切換房間（重新載入或清空）：舊房間的較早訊息不併入
+      if (generation !== loadGeneration) return [];
 
       // 過濾掉已經存在的訊息
       const newMessages = messages.filter(msg =>
@@ -91,11 +102,13 @@ export const messageStore = {
       
       return newMessages;
     } catch (error) {
-      messageState = {
-        messages: messageState.messages,
-        loading: false,
-        hasMore: messageState.hasMore
-      };
+      if (generation === loadGeneration) {
+        messageState = {
+          messages: messageState.messages,
+          loading: false,
+          hasMore: messageState.hasMore
+        };
+      }
       throw error;
     }
   },
@@ -282,6 +295,7 @@ export const messageStore = {
 
   // 清除訊息 (切換聊天室時)
   clearMessages: () => {
+    loadGeneration++;
     messageState = initialState;
   },
 

@@ -125,25 +125,30 @@
   // 響應式檢查 WebSocket 連接狀態 - 已在第28行定義
   
   // 處理房間訪問權限
-  async function handleRoomAccess(roomId: string, requirements: any) {
+  async function handleRoomAccess(roomId: string, requirements: any, isStale: () => boolean) {
     const room = requirements.room;
-    
+
     // 如果房間可以直接加入
     if (requirements.requirements.canDirectJoin) {
       try {
         await roomStore.joinRoom(roomId);
+        if (isStale()) return;
         // 成功加入後重新載入房間
         const { room } = await roomStore.loadRoom(roomId);
+        if (isStale()) return;
         await messageStore.loadMessages(roomId);
+        if (isStale()) return;
         currentRoom = room;
 
         // 建立 WebSocket 連接（透過 BFF ticket 認證）
         await wsManager.getInstance().connect(roomId);
+        if (isStale()) return;
         isWebSocketConnected = true;
 
         showToast('成功加入房間', 'success');
         return;
       } catch (error) {
+        if (isStale()) return;
         console.error('自動加入房間失敗:', error);
       }
     }
@@ -179,65 +184,80 @@
     }
   }
   
+  // 每次 loadRoom 遞增。快速切換房間時，較早開始的載入可能比新的載入晚完成，
+  // 每次 await 後都要確認是否已過時，過時就停止，否則會把畫面與 WebSocket 換回前一個房間
+  let loadSeq = 0;
+
   // 載入聊天室
   async function loadRoom(id: string) {
     // 防止重複載入同一個房間
     if (currentLoadingRoomId === id) {
       return;
     }
-    
+
     currentLoadingRoomId = id;
-    
+    const seq = ++loadSeq;
+    const isStale = () => seq !== loadSeq;
+
     try {
       // 斷開當前連接
       if (currentRoom && currentRoom.id !== id) {
         typingIndicatorStore.clearRoom(currentRoom.id);
         wsManager.getInstance().disconnect();
       }
-      
+
       // 先檢查房間權限和加入要求
       try {
         const joinRequirements = await roomStore.checkJoinRequirements(id);
+        if (isStale()) return;
         // 如果用戶不是成員且房間需要特殊權限，處理加入流程
         if (!joinRequirements.isMember) {
-          await handleRoomAccess(id, joinRequirements);
+          await handleRoomAccess(id, joinRequirements, isStale);
           return; // 處理完成後返回，避免繼續載入
         }
       } catch (error: any) {
+        if (isStale()) return;
         console.error('[Room] 檢查房間權限失敗:', error);
         // 如果房間不存在或無法訪問，重定向到房間列表
         await redirectToAvailableRoom();
         return;
       }
-      
+
       // 載入聊天室資料
       const { room } = await roomStore.loadRoom(id);
-      
+      if (isStale()) return;
+
       // 立即設置 currentRoom，讓 UI 可以開始渲染內容
       currentRoom = room;
-      
+
       await messageStore.loadMessages(id);
-      
+      if (isStale()) return;
+
       // 重要！在訊息載入後立即初始化已讀追蹤器的訊息計數
       markAsReadTracker.initMessageCount(messages.length);
-      
+
       // 建立 WebSocket 連接（透過 BFF ticket 認證）
       // WebSocket 失敗不應影響房間內容顯示，分開處理
       try {
         await wsManager.getInstance().connect(id);
+        if (isStale()) return;
         isWebSocketConnected = true;
       } catch (wsError) {
+        if (isStale()) return;
         console.warn('[Room] WebSocket 連接失敗，稍後會自動重連:', wsError);
         isWebSocketConnected = false;
       }
 
     } catch (error) {
+      if (isStale()) return;
       console.error('[Room] 載入聊天室失敗:', error);
       showToast('載入聊天室失敗', 'error');
       // 不跳轉，讓用戶可以從側邊欄選擇其他房間
       currentRoom = null;
     } finally {
-      currentLoadingRoomId = null;
+      if (!isStale()) {
+        currentLoadingRoomId = null;
+      }
     }
   }
   

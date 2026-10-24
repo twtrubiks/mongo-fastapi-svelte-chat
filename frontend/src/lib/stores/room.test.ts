@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { apiClient } from '../api/client';
 import type { Room, RoomSummary, User } from '../types';
 import { roomStore } from './room.svelte';
+import { deferred } from '../../tests/deferred';
 
 function summary(id: string, extra: Partial<RoomSummary> = {}): RoomSummary {
   return {
@@ -186,6 +187,22 @@ describe('房間與成員', () => {
     expect(roomStore.currentRoom?.id).toBe('r1');
     expect(roomStore.users.map((u) => u.is_active)).toEqual([false, false]);
     expect(roomStore.hasMoreMembers).toBe(false);
+  });
+
+  // 快速切換房間：A 的回應比 B 晚回來
+  it('較早發出、較晚回來的房間不覆蓋目前房間與成員', async () => {
+    const roomA = deferred<Room>();
+    vi.spyOn(apiClient.rooms, 'get').mockImplementation((id) => (id === 'A' ? roomA.promise : Promise.resolve(room('B'))));
+    vi.spyOn(apiClient.rooms, 'getMembers').mockImplementation(async (id) => [user(`${id}-member`)]);
+
+    const loadA = roomStore.loadRoom('A');
+    await roomStore.loadRoom('B');
+    roomA.resolve(room('A'));
+    await loadA;
+
+    expect(roomStore.currentRoom?.id).toBe('B');
+    expect(roomStore.users.map((u) => u.id)).toEqual(['B-member']);
+    expect(roomStore.loading).toBe(false);
   });
 
   it('載入更多成員時去重並保留已知在線狀態', async () => {
