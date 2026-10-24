@@ -1,5 +1,5 @@
 // 訊息重試：搭配真的 WebSocketManager 與假的 WebSocket，驗證 ack 逾時、手動重試、
-// 重新連線後自動重送
+// 重新連線後自動重送與檔案訊息重試
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { FakeWebSocket } from '../../tests/fakeWebSocket';
 
@@ -9,6 +9,7 @@ type ManagerModule = typeof import('$lib/websocket/manager');
 
 let retry: (typeof import('./messageRetry'))['messageRetryManager'];
 let statusStore: (typeof import('$lib/stores/messageStatus.svelte'))['messageStatusStore'];
+let processFileUpload: (typeof import('./fileUploadHandler'))['processFileUpload'];
 let wsManager: ManagerModule['wsManager'];
 let manager: ReturnType<ManagerModule['wsManager']['getInstance']>;
 
@@ -71,6 +72,7 @@ beforeEach(async () => {
   // messageRetry 在模組載入時才註冊「連線成功就重送」的監聽，須在 stub window 之後匯入
   ({ messageRetryManager: retry } = await import('./messageRetry'));
   ({ messageStatusStore: statusStore } = await import('$lib/stores/messageStatus.svelte'));
+  ({ processFileUpload } = await import('./fileUploadHandler'));
   ({ wsManager } = await import('$lib/websocket/manager'));
   const { apiClient } = await import('$lib/api/client');
   vi.spyOn(apiClient.wsTicket, 'create').mockResolvedValue('ticket');
@@ -160,5 +162,34 @@ describe('重新連線', () => {
     last().serverOpen();
     await vi.advanceTimersByTimeAsync(5000);
     expect(sentWith(last(), 'c1')).toHaveLength(1);
+  });
+});
+
+describe('檔案訊息', () => {
+  it('重試時帶上原本的檔案資訊', async () => {
+    const ws = await connectOpen();
+    const file = new File(['x'.repeat(2048)], 'photo.png', { type: 'image/png' });
+
+    await processFileUpload({
+      file,
+      url: '/uploads/photo.png',
+      filename: 'photo.png',
+      roomId: 'r1',
+      isWsConnected: true,
+      sendWsMessage: (content, type, id, metadata) => manager.sendMessage(content, type, id, metadata),
+      sendHttpMessage: vi.fn(),
+    });
+    const [original] = ws.sent.filter((m) => m['type'] === 'message');
+    const clientId = original!['client_id'] as string;
+    expect(original!['metadata']).toMatchObject({ filename: 'photo.png', fileSize: 2048, mimeType: 'image/png' });
+
+    await vi.advanceTimersByTimeAsync(10_000);
+    const done = retry.retryAllFailed();
+    await vi.advanceTimersByTimeAsync(100);
+    await done;
+
+    const retried = sentWith(ws, clientId);
+    expect(retried).toHaveLength(2);
+    expect(retried[1]).toMatchObject({ message_type: 'image', metadata: original!['metadata'] });
   });
 });

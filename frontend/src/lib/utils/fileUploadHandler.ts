@@ -69,7 +69,8 @@ export async function processFileUpload(
     messageRetryManager.addToRetryQueue({
       id: messageId,
       content: url,
-      type: messageType as 'text' | 'image',
+      type: messageType,
+      metadata: fileMetadata,
     });
 
     // 發送檔案訊息

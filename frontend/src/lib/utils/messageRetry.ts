@@ -4,7 +4,9 @@ import { wsManager } from '$lib/websocket/manager';
 export interface RetryableMessage {
   id: string;
   content: string;
-  type: 'text' | 'image';
+  type: 'text' | 'image' | 'file';
+  // 檔案訊息的檔名、大小等資訊；重送時須一併帶上，否則存下的訊息沒有檔名與大小
+  metadata?: Record<string, unknown>;
   maxRetries?: number;
 }
 
@@ -57,7 +59,7 @@ class MessageRetryManager {
     try {
       // 嘗試重新發送
       console.debug(`[MessageRetry] 正在重試訊息 ${messageId}, 第 ${retryCount + 1} 次`);
-      const success = wsInstance.sendMessage(message.content, message.type, messageId);
+      const success = wsInstance.sendMessage(message.content, message.type, messageId, message.metadata);
       
       if (success) {
         // 只代表已寫入 socket；留在佇列直到收到 ack（handleAck 移除），
