@@ -255,6 +255,36 @@ class TestGlobalErrorHandlerContract:
             "client_ip": "203.0.113.9",
         }
 
+    @pytest.mark.parametrize(
+        "exc",
+        [
+            pytest.param(
+                DuplicateKeyError('E11000 dup key: { email: "alice@example.com" }'),
+                id="duplicate-key",
+            ),
+            pytest.param(
+                BulkWriteError(
+                    {"writeErrors": [{"index": 0, "code": 11000, "errmsg": "dup"}]}
+                ),
+                id="bulk-write",
+            ),
+        ],
+    )
+    def test_production_hides_details_and_traceback(self, caplog, exc):
+        """生產模式：錯誤即使帶細節（如重複的鍵值）也不放進回應，也不記 traceback"""
+        client = TestClient(_app_raising(exc, debug=False))
+
+        with caplog.at_level(logging.DEBUG, logger="app.middleware.error_handler"):
+            response = client.get("/boom")
+
+        assert "details" not in response.json()["error"]
+        assert "alice@example.com" not in response.text
+        assert not any(
+            r.getMessage().startswith("Traceback:")
+            for r in caplog.records
+            if r.name == "app.middleware.error_handler"
+        )
+
     def test_debug_logs_traceback_for_unexpected_errors(self, caplog):
         client = TestClient(_app_raising(ValueError("boom"), debug=True))
 

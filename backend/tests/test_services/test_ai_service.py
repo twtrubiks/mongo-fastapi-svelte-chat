@@ -3,6 +3,8 @@
 行為測試以 TestModel / FunctionModel override agent，全程不打外部 API。
 """
 
+import asyncio
+
 import pytest
 from pydantic_ai.messages import UserPromptPart
 from pydantic_ai.models.function import FunctionModel
@@ -142,6 +144,22 @@ class TestStreamReplyBehavior:
 
         assert deltas  # 至少產出一段
         assert all(isinstance(delta, str) for delta in deltas)
+        assert "".join(deltas) == "你好，世界"
+
+    async def test_spaced_chunks_arrive_as_increments(self, configured_nvidia):
+        """模型輸出有間隔時會分成多段送出；每段只含新增的文字，不是累積全文"""
+
+        async def stream_fn(messages, info):
+            for chunk in ("你好", "，", "世界"):
+                # 超過 stream_text 預設 0.1 秒的合併間隔，確保分段送出
+                await asyncio.sleep(0.15)
+                yield chunk
+
+        agent = _get_chat_agent()
+        with agent.override(model=FunctionModel(stream_function=stream_fn)):
+            deltas = [delta async for delta in AIService().stream_reply("hi")]
+
+        assert len(deltas) > 1
         assert "".join(deltas) == "你好，世界"
 
     async def test_streams_with_test_model(self, configured_nvidia):

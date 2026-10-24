@@ -12,6 +12,7 @@ from app.core.fastapi_integration import (
     NotificationServiceDep,
     RoomServiceDep,
     UserServiceDep,
+    create_file_service,
     create_message_service,
     create_notification_service,
     create_room_service,
@@ -22,6 +23,8 @@ from app.services.message_service import MessageService
 from app.services.notification_service import NotificationService
 from app.services.room_service import RoomService
 from app.services.user_service import UserService
+from app.utils.file_upload import file_upload_manager
+from app.utils.image_processor import image_processor
 
 
 class TestServiceFactories:
@@ -58,6 +61,14 @@ class TestServiceFactories:
         with patch("app.core.fastapi_integration.get_database", return_value=mock_db):
             service = await create_notification_service()
             assert isinstance(service, NotificationService)
+
+    @pytest.mark.asyncio
+    async def test_create_file_service_uses_shared_instances(self):
+        """檔案服務共用全域的上傳管理器與圖片處理器"""
+        service = await create_file_service()
+
+        assert service._file_manager is file_upload_manager
+        assert service._image_processor is image_processor
 
 
 class TestDependsAliases:
@@ -132,6 +143,27 @@ class TestHealthCheck:
             assert result["status"] == "unhealthy"
             assert result["checks"]["mongodb"] == "connected"
             assert result["checks"]["redis"] == "disconnected"
+
+    @pytest.mark.asyncio
+    async def test_ping_failures_after_startup(self):
+        """連線物件還在、但伺服器已斷線（ping 失敗）時要回報 disconnected"""
+        mock_db = AsyncMock()
+        mock_db.command = AsyncMock(side_effect=Exception("mongo gone"))
+        mock_redis = AsyncMock()
+        mock_redis.ping = AsyncMock(side_effect=Exception("redis gone"))
+
+        with (
+            patch("app.core.fastapi_integration.get_database", return_value=mock_db),
+            patch("app.core.fastapi_integration.get_redis", return_value=mock_redis),
+        ):
+            result = await get_health_check_info()
+
+        assert result == {
+            "status": "unhealthy",
+            "checks": {"mongodb": "disconnected", "redis": "disconnected"},
+            "errors": ["mongodb: mongo gone", "redis: redis gone"],
+        }
+        mock_db.command.assert_awaited_once_with("ping")
 
     @pytest.mark.asyncio
     async def test_both_down(self):

@@ -117,11 +117,12 @@ class TestSecurityHeaders:
                 "max-age=31536000; includeSubDomains; preload"
             ),
         }
-        assert "script-src 'self';" in csp
-        assert "'unsafe-eval'" not in csp
-        assert "frame-ancestors 'none'" in csp
-        assert "upgrade-insecure-requests" in csp
-        assert "report-uri" not in csp
+        assert csp == (
+            "default-src 'self'; script-src 'self'; "
+            "style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; "
+            "font-src 'self' https:; connect-src 'self' wss:; "
+            "frame-ancestors 'none'; upgrade-insecure-requests"
+        )
 
     def test_development_mode_omits_hsts(self):
         headers = SecurityConfig(development_mode=True).get_security_headers()

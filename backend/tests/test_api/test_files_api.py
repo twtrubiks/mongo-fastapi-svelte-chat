@@ -187,3 +187,39 @@ class TestFilesApi:
             )
 
         assert served == DOWNLOAD_CONTRACT
+
+
+@pytest.fixture
+def default_storage(tmp_path, monkeypatch):
+    """以預設目錄建立上傳管理器與圖片處理器（相對路徑，工作目錄切到 tmp_path）"""
+    monkeypatch.chdir(tmp_path)
+    service = FileService(FileUploadManager(), ImageProcessor())
+    app.dependency_overrides[create_file_service] = lambda: service
+    yield
+    app.dependency_overrides.pop(create_file_service, None)
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+class TestDefaultStorageLocations:
+    async def test_default_dirs_are_where_downloads_read(
+        self, async_client, uploader, default_storage
+    ):
+        """預設的上傳與縮圖目錄要與下載端點讀取的目錄一致，否則上傳成功但一律 404"""
+        image = io.BytesIO()
+        Image.new("RGB", (400, 300), "green").save(image, format="PNG")
+
+        response = await async_client.post(
+            "/api/files/upload/image",
+            files={"file": ("photo.png", image.getvalue(), "image/png")},
+            headers=uploader["headers"],
+        )
+
+        assert response.status_code == 201, response.text
+        file_info = response.json()["file"]
+        download = await async_client.get(file_info["url"], headers=uploader["headers"])
+        thumbnail = await async_client.get(
+            file_info["thumbnails"]["small"], headers=uploader["headers"]
+        )
+        assert (download.status_code, thumbnail.status_code) == (200, 200)
+        assert download.content == image.getvalue()
