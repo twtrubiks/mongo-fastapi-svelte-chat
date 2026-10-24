@@ -1,7 +1,8 @@
 """訊息 HTTP API 行為測試（經由完整路由、依賴注入與 middleware）
 
 涵蓋建立訊息的預設值、長度上限與 client_id 冪等重送、列表的引用預覽、
-編輯（去除前後空白、拒絕空白、保留檔案資訊、只改 metadata）與搜尋排除已刪除訊息。
+編輯（去除前後空白、拒絕空白、保留檔案資訊、只改 metadata、不能改狀態、
+不能編輯已刪除訊息）與搜尋排除已刪除訊息。
 授權相關情境見 test_rooms_api.py。
 """
 
@@ -200,6 +201,38 @@ class TestEditMessage:
         edited = response.json()
         assert (edited["content"], edited["metadata"]) == ("附件", FILE_INFO)
         assert edited["edited"] is False
+
+    @pytest.mark.parametrize(
+        "body",
+        [{"status": "deleted"}, {"content": "改寫", "status": "sent"}],
+        ids=["hide", "with-content"],
+    )
+    async def test_status_cannot_be_changed_by_edit(self, async_client, chat, body):
+        owner = chat["owner"]
+        sent = await _send(async_client, owner, chat["room_id"], "原內容")
+
+        response = await self._edit(async_client, owner, sent["id"], body)
+
+        # 刪除只能走 DELETE（會廣播 message_deleted），編輯不能改狀態
+        assert response.status_code == 422
+        stored = await _stored(sent["id"])
+        assert (stored["status"], stored["content"]) == ("sent", "原內容")
+
+    async def test_deleted_message_cannot_be_edited(self, async_client, chat):
+        owner = chat["owner"]
+        sent = await _send(async_client, owner, chat["room_id"], "原內容")
+        deleted = await async_client.delete(
+            f"/api/messages/{sent['id']}", headers=owner["headers"]
+        )
+        assert deleted.status_code == 200
+
+        response = await self._edit(
+            async_client, owner, sent["id"], {"content": "改寫"}
+        )
+
+        assert response.status_code == 404
+        stored = await _stored(sent["id"])
+        assert (stored["status"], stored["content"]) == ("deleted", "此訊息已被刪除")
 
 
 @pytest.mark.asyncio

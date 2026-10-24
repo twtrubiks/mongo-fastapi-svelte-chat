@@ -182,9 +182,6 @@ class MessageRepository(BaseRepository[MessageInDB]):
                 microsecond=_now.microsecond // 1000 * 1000
             )
 
-        if message_update.status is not None:
-            update_data["status"] = message_update.status
-
         if message_update.metadata is not None:
             update_data["metadata"] = message_update.metadata
 
