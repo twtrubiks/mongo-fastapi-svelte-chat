@@ -43,23 +43,12 @@ export const GET: RequestHandler = async ({ cookies }) => {
       notifications: transformNotifications(unread?.notifications ?? []),
     };
 
+    // 每位使用者的資料不同，且「刷新」須取得最新資料：不讓瀏覽器或共用快取存下
     return json(createBFFResponse(dashboardData), {
-      headers: {
-        'Cache-Control': 'max-age=300, s-maxage=600',
-        'ETag': generateETag(dashboardData),
-      },
+      headers: { 'Cache-Control': 'private, no-store' },
     });
   } catch (error: any) {
     return toBffErrorResponse(error, '獲取儀表板資料失敗');
   }
 };
 
-// 生成 ETag 用於快取
-function generateETag(data: DashboardData): string {
-  const hash = btoa(JSON.stringify({
-    userCount: data.rooms.length,
-    unreadCount: data.unreadCount,
-    timestamp: Math.floor(Date.now() / 300000),
-  }));
-  return `"${hash}"`;
-}

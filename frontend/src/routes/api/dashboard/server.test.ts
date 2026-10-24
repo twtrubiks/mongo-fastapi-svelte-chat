@@ -53,6 +53,20 @@ describe('GET /api/dashboard', () => {
     });
   });
 
+  // 「刷新」須拿到最新資料；每位使用者的資料不同，也不能讓共用快取存下
+  it('回應不可快取', async () => {
+    mockBackend({
+      'GET /api/auth/me': () => USER,
+      'GET /api/rooms/my?limit=100': () => MY_ROOMS,
+      'GET /api/notifications/unread': () => UNREAD,
+    });
+
+    const response = await dashboard();
+
+    expect(response.headers.get('Cache-Control')).toBe('private, no-store');
+    expect(response.headers.has('ETag')).toBe(false);
+  });
+
   it('房間或通知載入失敗時以空資料呈現', async () => {
     mockBackend({
       'GET /api/auth/me': () => USER,
