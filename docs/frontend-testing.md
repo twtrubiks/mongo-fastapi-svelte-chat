@@ -1,9 +1,9 @@
 # 前端測試報告
 
 > 對象：`frontend/src`（SvelteKit BFF 路由、`$lib` 的 BFF 模組、API client、stores、WebSocket 事件處理）
-> 日期：2026-10-24　工具：Vitest 5（`npm run test`；`npm run check:all` 最後也會跑）
+> 日期：2026-10-24　工具：Vitest 5（`npm run test`；`npm run check:all` 最後也會跑）、Playwright（`npm run test:e2e`）
 
-在這之前前端沒有任何自動化測試。第一輪從 BFF 路由與 stores 開始補測（16 個測試檔、278 個測試），找到的問題以 10 個 commit 修正（儀表板與日期兩項各含兩個相關問題）。第二輪補上 WebSocket 連線管理的測試，並處理快速切換房間的競態與套件的安全通報，目前共 17 個測試檔、302 個測試。每個修正都有對應的測試，並確認該測試在修正前會失敗；房間頁的修正沒有元件測試，改以瀏覽器端對端驗證。
+在這之前前端沒有任何自動化測試。第一輪從 BFF 路由與 stores 開始補測（16 個測試檔、278 個測試），找到的問題以 10 個 commit 修正（儀表板與日期兩項各含兩個相關問題）。第二輪補上 WebSocket 連線管理的測試，並處理快速切換房間的競態與套件的安全通報。第三輪補上訊息重試與房間已讀的測試，並把瀏覽器端對端驗證整理成 `npm run test:e2e`。目前共 19 個測試檔、320 個單元測試，另有 6 個端對端測試。每個修正都有對應的測試，並確認該測試在修正前會失敗；房間頁的修正沒有元件測試，由端對端測試涵蓋。
 
 ---
 
@@ -16,10 +16,13 @@
 | 瀏覽器端 API client | `src/lib/api/client.test.ts` | 以真實 HTTP server 扮演 BFF，驗證信封解包、BFF 錯誤、401 判斷 |
 | Stores：auth、message、room、notification | `src/lib/stores/*.test.ts` | 直接操作 store，API 以 `vi.spyOn` 取代 |
 | WebSocket 事件處理 | `src/lib/websocket/handlers.test.ts` | 以後端實際推送的 payload 驅動 handler，檢查 store 結果 |
-| WebSocket 連線管理 | `src/lib/websocket/manager.test.ts` | 以假的 WebSocket 與 fake timers 驗證連線、指數退避重連、關閉代碼、重連上限、心跳、ack 逾時與重疊的連線請求 |
+| WebSocket 連線管理 | `src/lib/websocket/manager.test.ts` | 以假的 WebSocket 與 fake timers 驗證連線、指數退避重連、關閉代碼、重連上限、心跳（含分頁切回前台）、ack 逾時與重疊的連線請求 |
+| 訊息重試 | `src/lib/utils/messageRetry.test.ts` | 搭配真的 WebSocketManager 與假的 WebSocket：ack 逾時後重試、重試後再次逾時、重新連線後自動重送、檔案訊息重試 |
+| 房間已讀 | `src/lib/utils/markAsRead.test.ts` | 進房延遲與取消、新訊息 debounce、只標記該房間的未讀通知 |
 | 日期工具 | `src/lib/utils/datetime.test.ts` | 在 `Asia/Taipei` 時區下執行 |
+| 端對端 | `tests/e2e/*.spec.ts` | Playwright 經由 BFF 連到真的後端，見下方「端對端驗證」 |
 
-共用工具在 `src/tests/`：`bff.ts` 提供假 Cookies、未簽章 JWT、RequestEvent 與後端 spy；`deferred.ts` 讓測試決定回應完成的先後。
+共用工具在 `src/tests/`：`bff.ts` 提供假 Cookies、未簽章 JWT、RequestEvent 與後端 spy；`deferred.ts` 讓測試決定回應完成的先後；`fakeWebSocket.ts` 讓測試決定 WebSocket 何時開啟、收到訊息與關閉。
 
 ---
 
@@ -51,11 +54,19 @@
 
 套件升級（`dfff4b7`）：`npm audit fix` 並提高直接相依的最低版本，axios 1.18.1 → 1.20.0、`@sveltejs/kit` 2.67.0 → 2.70.3、devalue 5.8.1 → 5.9.4、vite 8.1.0 → 8.3.5 等，high 等級的通報全部清除。
 
+### 第三輪
+
+| 問題 | 影響 | commit |
+|---|---|---|
+| `startHeartbeat()` 不會先停掉既有的心跳；連線開啟與分頁切回前台都會呼叫它 | 在背景開啟或重連的分頁切回前台後，每 20 秒送兩次 ping，多出的那組在斷線、切換房間後仍在跑。兩次 ping 落在同一個來回時間內時，正常的連線會被當成 ping 逾時強制重連 | `e809cc0` |
+| 重試把訊息寫入 socket 後就移出重試佇列，不等 ack；手動重試沒有真的重置次數 | 重試後仍沒收到 ack 的訊息再次顯示失敗，但按「重試」沒有作用，失敗提示跟著消失，訊息停在傳送中 | `30c8611` |
+| 重試佇列沒有存檔案訊息的 metadata | 上傳後第一次沒送達、經「全部重試」或重新連線重送的檔案訊息，沒有檔名，大小為 0 | `2bbd12d` |
+
 ---
 
 ## 端對端驗證
 
-單元測試把後端 mock 掉，因此另外以真實 MongoDB、Redis、FastAPI 與 `vite dev` 跑一次，經 BFF（Playwright）驗證以上修正，10 項全部通過：
+單元測試把後端 mock 掉，因此第一輪另外以真實 MongoDB、Redis、FastAPI 與 `vite dev` 跑一次腳本（未納入 repo），經 BFF（Playwright）驗證第一輪的修正，10 項全部通過：
 
 - 使用者 `abc?` 連續 5 次請求，後端沒有收到 `/api/auth/refresh`
 - 註冊時 email 格式錯誤回 422，`error.message` 是字串
@@ -66,20 +77,26 @@
 
 套件升級後重跑以上 10 項，全部通過。
 
-第二輪另外以 Playwright 驗證房間頁：
+### 自動化的端對端測試
 
-- 只有 cookie、localStorage 沒有使用者資料時直接開啟房間連結，頁面停在該房間
-- 從房間 P 點房間 A、0.4 秒後切到房間 B，並把 A 的訊息、房間或 ticket 請求延遲 2.5 秒。三種延遲下，網址、標題與訊息都是 B，只有一條連到 B 的 WebSocket，在 B 送出的訊息寫入 B
-- 修正前三種延遲都會重現：WebSocket 連到 A，訊息寫入 A。分別只還原一層修正時：只還原房間頁，仍連到 A；只還原 store，B 的訊息被 A 蓋掉；只還原 WebSocket manager（延遲 ticket），仍連到 A
+房間頁、訊息重試與登入失效的驗證整理成 `frontend/tests/e2e/` 的 Playwright 測試，以 `npm run test:e2e` 執行。需先啟動 MongoDB、Redis 與後端，步驟見 `frontend/tests/e2e/README.md`。
+
+- 只有 cookie、localStorage 沒有使用者資料時直接開啟房間連結，頁面停在該房間，過程中沒有經過 `/login`
+- 從房間 P 點房間 A、0.4 秒後切到房間 B，並把 A 的訊息、房間或 ticket 請求延遲 2.5 秒。三種延遲下，網址、標題與訊息都是 B，只有一條連到 B 的 WebSocket，在 B 送出的訊息存進 B
+- 攔截 WebSocket 丟掉送出的訊息，重試後再丟一次；第二次重試仍送達，且只存一筆
+- 在另一個 session 改密碼後，頁面導回 `/login`，`localStorage` 的使用者資料已清除（即上面手動驗證的那一項）
+
+分別還原對應的修正後重跑，對應的測試都會失敗。快速切換房間的三層修正缺一不可，第二輪手動驗證時分別只還原一層：只還原房間頁，仍連到 A；只還原 store，B 的訊息被 A 蓋掉；只還原 WebSocket manager（延遲 ticket），仍連到 A。
 
 ---
 
 ## 尚未涵蓋
 
-- **Svelte 元件**：沒有元件測試。房間頁的修正只有上述端對端驗證，沒有納入自動化測試。
-- **WebSocket 連線管理**（`websocket/manager.ts`）：頁面可見性變化、`manualReconnect`、已讀請求去重與 `PUBLIC_WS_URL` 分支未測。
+- **Svelte 元件**：沒有元件測試。房間頁的修正由端對端測試涵蓋。
+- **端對端測試**：需要真的後端，目前只能手動執行 `npm run test:e2e`。
+- **WebSocket 連線管理**（`websocket/manager.ts`）：分頁切回前台時的重連、已讀請求去重與 `PUBLIC_WS_URL` 分支未測。
 - **`bff-api-client.ts`**：儀表板、進階加入、上傳與邀請碼驗證使用的 fetch client，約 19%。
-- **工具函式**：`messageRetry`、`markAsRead`、`retry`、`fileUploadHandler`、`notificationSound`、`readStatusSync`、`roomListSync` 等大多未測。
+- **工具函式**：`retry`、`notificationSound`、`readStatusSync`、`roomListSync` 等大多未測。
 - **相依套件的安全通報**：剩下的需要大版本變更才能修。`@sveltejs/kit` 與其相依的 cookie（low）要升到 SvelteKit 3；`@tailwindcss/typography` 相依的 postcss-selector-parser（moderate），audit 建議降回 0.5.4，且只在 build 時處理專案自己的 CSS。
 
-以 `@vitest/coverage-v8` 量測（未加入專案相依）：BFF 路由與 `bff-*` 模組的行覆蓋率多在 80～100%，message store 93%，`websocket/manager.ts` 66%，`utils` 整體約 24%。
+以 `@vitest/coverage-v8` 量測（未加入專案相依）：BFF 路由與 `bff-*` 模組的行覆蓋率多在 80～100%，message store 93%，`websocket/manager.ts` 71%，`messageRetry` 78%，`markAsRead` 100%，`utils` 整體約 54%。
