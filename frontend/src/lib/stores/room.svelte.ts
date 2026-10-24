@@ -57,6 +57,14 @@ function upsertIntoList(list: RoomSummary[], room: RoomSummary, prepend = false)
   return prepend ? [room, ...list] : [...list, room];
 }
 
+// 輔助函數：從探索列表移除房間（加入、刪除或不存在）。
+// 後端探索結果也少了這筆，之後的房間往前移一格；offset 需同步減少，否則下一頁會漏掉一個房間
+function removeFromExplore(roomId: string): Pick<RoomState, 'rooms' | 'roomsOffset'> {
+  const rooms = roomState.rooms.filter(r => r.id !== roomId);
+  const removed = roomState.rooms.length - rooms.length;
+  return { rooms, roomsOffset: Math.max(0, roomState.roomsOffset - removed) };
+}
+
 // 輔助函數：合併房間列表並去重（新房間覆蓋舊房間）
 function mergeRoomLists(existing: RoomSummary[], incoming: RoomSummary[]): RoomSummary[] {
   const roomMap = new Map<string, RoomSummary>();
@@ -381,7 +389,7 @@ export const roomStore = {
             updateRoomState({
               currentRoom: room,
               users,
-              rooms: roomState.rooms.filter(r => r.id !== roomId),
+              ...removeFromExplore(roomId),
               myRooms: upsertIntoList(roomState.myRooms, room, true),
               loading: false,
               membersOffset: users.length,
@@ -414,7 +422,7 @@ export const roomStore = {
         updateRoomState({
           currentRoom: room,
           users,
-          rooms: roomState.rooms.filter(r => r.id !== roomId),
+          ...removeFromExplore(roomId),
           myRooms: upsertIntoList(roomState.myRooms, room, true),
           loading: false,
           membersOffset: users.length,
@@ -430,7 +438,7 @@ export const roomStore = {
       if (err.status === 404 || err.response?.status === 404) {
         console.warn(`[Room Store] 房間 ${roomId} 不存在，從列表中移除`);
         updateRoomState({
-          rooms: roomState.rooms.filter(r => r.id !== roomId),
+          ...removeFromExplore(roomId),
           loading: false
         });
       } else {
@@ -563,7 +571,7 @@ export const roomStore = {
   // 從列表中移除房間（房間刪除事件）
   removeRoom: (roomId: string) => {
     updateRoomState({
-      rooms: roomState.rooms.filter(room => room.id !== roomId),
+      ...removeFromExplore(roomId),
       myRooms: roomState.myRooms.filter(room => room.id !== roomId),
       currentRoom: roomState.currentRoom?.id === roomId ? null : roomState.currentRoom,
       users: roomState.currentRoom?.id === roomId ? [] : roomState.users
