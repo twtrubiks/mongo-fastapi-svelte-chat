@@ -5,6 +5,7 @@
   import PasswordInput from '$lib/components/ui/PasswordInput.svelte';
   import { Toast } from '$lib/components/ui';
   import type { RoomSummary } from '$lib/types';
+  import type { JoinRoomResponse } from '$lib/bff-types';
 
   interface Props {
     open: boolean;
@@ -44,7 +45,13 @@
       const result = await roomStore.validateInvitation(code);
 
       if (result.room) {
-        await roomStore.joinRoom(result.room.id, { invite_code: code });
+        const joined = await roomStore.joinRoom(result.room.id, { invite_code: code });
+        // 邀請碼通過驗證仍可能加入失敗（例如房間已改成需要密碼），不能當作已加入
+        if (!joined.success) {
+          const failed = joined as JoinRoomResponse;
+          toastState = { show: true, message: failed.requiresAction?.message ?? failed.message ?? '加入房間失敗' };
+          return;
+        }
         open = false;
         onSuccess(result.room as unknown as RoomSummary);
       }

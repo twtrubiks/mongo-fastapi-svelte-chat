@@ -393,7 +393,7 @@ export class WebSocketManager {
         break;
 
       case 'user_left':
-        handleUserLeft(data.user, data.timestamp, ctx, data.removed);
+        handleUserLeft(data, ctx);
         break;
 
       case 'room_users':

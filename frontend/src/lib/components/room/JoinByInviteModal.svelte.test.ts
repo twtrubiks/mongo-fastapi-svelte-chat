@@ -1,4 +1,4 @@
-// 以邀請碼加入：先驗證邀請碼再加入
+// 以邀請碼加入：先驗證邀請碼再加入，加入失敗時不能當作已加入
 import { fireEvent, render, screen } from '@testing-library/svelte';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { roomStore } from '$lib/stores';
@@ -32,6 +32,21 @@ describe('以邀請碼加入', () => {
     expect(joinRoom).toHaveBeenCalledWith('r9', { invite_code: 'abc123' });
     expect(onSuccess).toHaveBeenCalledWith(ROOM);
     expect(screen.queryByRole('dialog')).toBeNull();
+  });
+
+  it('邀請碼通過驗證但加入失敗時，留在視窗並顯示原因', async () => {
+    vi.spyOn(roomStore, 'joinRoom').mockResolvedValue({
+      success: false,
+      message: '需要提供密碼',
+      requiresAction: { type: 'password', message: '此聊天室需要密碼才能加入' },
+    });
+    const { onSuccess } = setup();
+
+    await submit('abc123');
+
+    expect(await screen.findByText('此聊天室需要密碼才能加入')).toBeTruthy();
+    expect(onSuccess).not.toHaveBeenCalled();
+    expect(screen.getByRole('dialog')).toBeTruthy();
   });
 
   it('邀請碼驗證失敗時顯示原因，不嘗試加入', async () => {

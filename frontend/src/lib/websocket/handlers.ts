@@ -26,6 +26,7 @@ export interface HandlerEventPayloadMap {
   room_updated: WSRoomUpdatedMessage;
   read_status_updated: NotificationStatusData;
   message_error: WSErrorMessage;
+  removed_from_room: { room_id: string; kicked: boolean };
 }
 
 /** 所有 handler 事件名稱的 union type */

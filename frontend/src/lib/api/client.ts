@@ -270,6 +270,14 @@ export class ApiClient {
       await this.bffRequest<void>('POST', `/api/rooms/${roomId}/leave`);
     },
 
+    removeMember: async (roomId: string, userId: string): Promise<void> => {
+      await this.bffRequest<void>('DELETE', `/api/rooms/${roomId}/members/${userId}`);
+    },
+
+    regenerateInviteCode: async (roomId: string): Promise<{ invite_code: string }> => {
+      return this.bffRequest<{ invite_code: string }>('POST', `/api/rooms/${roomId}/invite-code`);
+    },
+
     getMembers: async (roomId: string, options?: { limit?: number; offset?: number }): Promise<User[]> => {
       const params: Record<string, number> = {};
       if (options?.limit != null) params['limit'] = options.limit;
