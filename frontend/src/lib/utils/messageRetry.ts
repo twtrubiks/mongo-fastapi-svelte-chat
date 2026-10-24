@@ -48,6 +48,9 @@ class MessageRetryManager {
     const wsInstance = wsManager.getInstance();
     if (!wsInstance.isConnected()) {
       console.warn(`[MessageRetry] WebSocket 未連接，延遲重試訊息 ${messageId}`);
+      // 維持失敗狀態：手動重試已清掉狀態，不標回失敗的話訊息看起來像已送出。
+      // 用 setStatus 不累加次數；連上時會重送所有失敗的訊息
+      messageStatusStore.setStatus(messageId, 'failed', '尚未連線，連線恢復後會自動重送');
       // 如果未連接，直接安排下次重試
       this.scheduleRetry(messageId);
       return false;

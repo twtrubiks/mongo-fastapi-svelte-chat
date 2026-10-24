@@ -168,13 +168,14 @@ describe('重新連線', () => {
     expect(status('c1')).toBe('sending');
   });
 
-  it('未連線時手動重試，連上後由計時器重送', async () => {
+  it('未連線時手動重試，訊息維持失敗，連上後自動重送', async () => {
     const ws = await sendAndTimeOut(await connectOpen(), 'c1');
     ws.serverClose(1006, false);
 
     expect(await retry.manualRetry('c1')).toBe(false);
+    // 沒有送出就不能清掉失敗狀態，否則訊息看起來像已送出
+    expect(statusStore.getStatus('c1')).toMatchObject({ status: 'failed', error: '尚未連線，連線恢復後會自動重送' });
 
-    // 1 秒後重新連線；重試計時器在 5 秒後觸發
     await vi.advanceTimersByTimeAsync(1000);
     last().serverOpen();
     await vi.advanceTimersByTimeAsync(5000);

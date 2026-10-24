@@ -7,6 +7,7 @@
   import { browser } from '$app/environment';
   import { roomStore, roomUsers } from '$lib/stores/room.svelte';
   import { messageStore, messageLoading } from '$lib/stores/message.svelte';
+  import { messageStatusStore } from '$lib/stores/messageStatus.svelte';
   import { currentUser, isAuthenticated, authStore } from '$lib/stores/auth.svelte';
   import { wsManager } from '$lib/websocket/manager';
   import { typingIndicatorStore } from '$lib/stores/typingIndicator.svelte';
@@ -294,15 +295,20 @@
       ...(user?.avatar ? { avatar: user.avatar } : {}),
     });
 
+    // 通過 WebSocket 發送（失敗時由 wsManager 標記失敗）
+    if (isWebSocketConnected) {
+      wsManager.getInstance().sendMessage(content, messageType, messageId);
+      return;
+    }
+
     try {
-      // 通過 WebSocket 發送
-      if (isWebSocketConnected) {
-        wsManager.getInstance().sendMessage(content, messageType, messageId);
-      } else {
-        await messageStore.sendMessage(currentRoom!.id, { content, message_type: messageType, client_id: messageId });
-      }
+      await messageStore.sendMessage(currentRoom!.id, { content, message_type: messageType, client_id: messageId });
+      // HTTP 送出不會收到 ack，成功即移出重試佇列
+      messageRetryManager.removeFromQueue(messageId);
     } catch (error) {
       console.error('發送訊息失敗:', error);
+      // 標記失敗：訊息泡泡才會顯示失敗與重試按鈕，重新連上 WebSocket 時也會自動重送
+      messageStatusStore.setFailed(messageId, '訊息未送出，請重試');
       showToast('發送訊息失敗', 'error');
     }
   }
