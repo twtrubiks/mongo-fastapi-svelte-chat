@@ -13,7 +13,9 @@
 		"lint": "eslint .",
 		"lint:fix": "eslint . --fix",
 		"check:naming": "node scripts/check-naming-conflicts.js",
-		"check:all": "npm run check && npm run lint && npm run check:naming"
+		"test": "vitest run",
+		"test:watch": "vitest",
+		"check:all": "npm run check && npm run lint && npm run check:naming && npm run test"
 	},
 	"devDependencies": {
 		"@sveltejs/adapter-auto": "^7.0.1",
@@ -21,6 +23,7 @@
 		"@sveltejs/vite-plugin-svelte": "^7.1.2",
 		"@tailwindcss/typography": "^0.5.20",
 		"@tailwindcss/vite": "^4.3.1",
+		"@types/node": "^22.20.5",
 		"@typescript-eslint/eslint-plugin": "^8.62.0",
 		"@typescript-eslint/parser": "^8.62.0",
 		"daisyui": "^5.5.23",
@@ -32,7 +35,8 @@
 		"svelte-eslint-parser": "^1.8.0",
 		"tailwindcss": "^4.3.1",
 		"typescript": "^6.0.3",
-		"vite": "^8.1.0"
+		"vite": "^8.1.0",
+		"vitest": "^5.0.5"
 	},
 	"dependencies": {
 		"@eslint/js": "^10.0.1",

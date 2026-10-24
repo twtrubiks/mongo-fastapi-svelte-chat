@@ -19,7 +19,7 @@
     onClose?: () => void;
   }>();
   
-  let timeoutId: number;
+  let timeoutId: ReturnType<typeof setTimeout>;
   
   let typeClasses: Record<string, string> = {
     success: 'alert-success',
