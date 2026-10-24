@@ -23,6 +23,8 @@ from app.repositories.user_repository import UserRepository
 
 logger = logging.getLogger(__name__)
 
+BANNED_MESSAGE = "你已被房主禁止加入此聊天室"
+
 
 class RoomService:
     """房間服務類別"""
@@ -450,6 +452,10 @@ class RoomService:
         if user_id in room.members:
             return "您已經是該房間的成員"
 
+        # 被封鎖的人知道密碼或邀請碼也不能加入
+        if user_id in room.banned_users:
+            raise ForbiddenError(BANNED_MESSAGE)
+
         # 檢查房間是否已滿
         if len(room.members) >= room.max_members:
             raise AppError("房間已滿")
@@ -497,9 +503,13 @@ class RoomService:
             if self._invite_code_expired(room):
                 raise AppError("邀請碼已過期")
 
-        # 原子加入房間（含 max_members 條件檢查 + 角色設定）
+        # 原子加入房間（含 max_members 與封鎖條件檢查 + 角色設定）
         success = await self.room_repo.add_member(room_id, user_id, MemberRole.MEMBER)
         if not success:
+            # 檢查後剛好被封鎖時，加入會被原子條件擋下，說明真正的原因
+            latest = await self.room_repo.get_by_id(room_id)
+            if latest and user_id in latest.banned_users:
+                raise ForbiddenError(BANNED_MESSAGE)
             raise AppError("房間已滿")
         logger.info(f"User {user_id} joined room {room_id}")
 
@@ -525,12 +535,9 @@ class RoomService:
             ForbiddenError: 非房間擁有者時
             AppError: 房間不使用邀請碼時
         """
-        room = await self.room_repo.get_by_id(room_id)
-        if not room:
-            raise NotFoundError("聊天室不存在")
-
-        if room.owner_id != owner_id:
-            raise ForbiddenError("只有房間擁有者可以重新產生邀請碼")
+        room = await self._get_owned_room(
+            room_id, owner_id, "只有房間擁有者可以重新產生邀請碼"
+        )
 
         if not room.invite_code and room.join_policy != JoinPolicy.INVITE:
             raise AppError("此聊天室沒有使用邀請碼")
@@ -611,7 +618,9 @@ class RoomService:
 
         return "成功離開房間"
 
-    async def remove_member(self, room_id: str, owner_id: str, member_id: str) -> str:
+    async def remove_member(
+        self, room_id: str, owner_id: str, member_id: str, ban: bool = False
+    ) -> str:
         """
         房間擁有者將成員移出房間
 
@@ -619,6 +628,7 @@ class RoomService:
             room_id: 房間 ID
             owner_id: 發出請求的使用者 ID（須為房間擁有者）
             member_id: 要移除的成員 ID
+            ban: 同時封鎖，對方之後不能再加入（直到房主解除）
 
         Returns:
             str: 操作結果訊息
@@ -627,12 +637,9 @@ class RoomService:
             NotFoundError: 房間不存在或對方不是成員時
             ForbiddenError: 非房間擁有者，或要移除的是擁有者本人時
         """
-        room = await self.room_repo.get_by_id(room_id)
-        if not room:
-            raise NotFoundError("聊天室不存在")
-
-        if room.owner_id != owner_id:
-            raise ForbiddenError("只有房間擁有者可以移除成員")
+        room = await self._get_owned_room(
+            room_id, owner_id, "只有房間擁有者可以移除成員"
+        )
 
         if member_id == room.owner_id:
             raise ForbiddenError("不能移除房間擁有者")
@@ -641,15 +648,59 @@ class RoomService:
         if member_id not in room.members:
             raise NotFoundError("該使用者不是房間成員")
 
-        success = await self.room_repo.remove_member(room_id, member_id)
+        success = await self.room_repo.remove_member(room_id, member_id, ban=ban)
         if not success:
             # 檢查後對方剛好自己離開
             raise NotFoundError("該使用者不是房間成員")
 
-        logger.info(f"User {member_id} removed from room {room_id} by owner {owner_id}")
+        logger.info(
+            f"User {member_id} removed from room {room_id} by owner {owner_id} (ban={ban})"
+        )
         await self._revoke_member_access(room_id, member_id, kicked=True)
 
-        return "已將成員移出房間"
+        return "已將成員移出並封鎖" if ban else "已將成員移出房間"
+
+    async def get_banned_users(self, room_id: str, owner_id: str) -> list[UserResponse]:
+        """
+        封鎖名單（僅房間擁有者）
+
+        Raises:
+            NotFoundError: 房間不存在時
+            ForbiddenError: 非房間擁有者時
+        """
+        room = await self._get_owned_room(
+            room_id, owner_id, "只有房間擁有者可以查看封鎖名單"
+        )
+        if not room.banned_users:
+            return []
+        users = await self.user_repo.get_by_ids(room.banned_users)
+        return [self._to_user_response(user) for user in users]
+
+    async def unban_user(self, room_id: str, owner_id: str, user_id: str) -> str:
+        """
+        解除封鎖，對方可以再依房間的加入方式加入
+
+        Raises:
+            NotFoundError: 房間不存在，或對方不在封鎖名單中時
+            ForbiddenError: 非房間擁有者時
+        """
+        await self._get_owned_room(room_id, owner_id, "只有房間擁有者可以解除封鎖")
+        if not await self.room_repo.unban_user(room_id, user_id):
+            raise NotFoundError("該使用者不在封鎖名單中")
+
+        logger.info(f"User {user_id} unbanned from room {room_id} by owner {owner_id}")
+        return "已解除封鎖"
+
+    async def _get_owned_room(
+        self, room_id: str, owner_id: str, forbidden_message: str
+    ) -> RoomInDB:
+        """取得房間並確認是房主本人"""
+        room = await self.room_repo.get_by_id(room_id)
+        if not room:
+            raise NotFoundError("聊天室不存在")
+        if room.owner_id != owner_id:
+            raise ForbiddenError(forbidden_message)
+        return room
 
     async def _revoke_member_access(
         self, room_id: str, user_id: str, kicked: bool
@@ -717,14 +768,14 @@ class RoomService:
         # 批量查詢取代 N+1
         users = await self.user_repo.get_by_ids(member_ids_page)
 
-        members = []
-        for user in users:
-            # 確保正確映射 _id 到 id
-            user_dict = user.model_dump()
-            if "_id" in user_dict:
-                user_dict["id"] = user_dict.pop("_id")
-            elif user.id:
-                user_dict["id"] = str(user.id)
-            members.append(UserResponse(**user_dict))
+        return [self._to_user_response(user) for user in users]
 
-        return members
+    @staticmethod
+    def _to_user_response(user) -> UserResponse:
+        """UserInDB 轉成 UserResponse（確保 _id 映射到 id）"""
+        user_dict = user.model_dump()
+        if "_id" in user_dict:
+            user_dict["id"] = user_dict.pop("_id")
+        elif user.id:
+            user_dict["id"] = str(user.id)
+        return UserResponse(**user_dict)

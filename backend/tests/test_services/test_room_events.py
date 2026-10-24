@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from app.core.exceptions import NotFoundError
+from app.core.exceptions import ForbiddenError, NotFoundError
 from app.models.room import RoomCreate, RoomUpdate
 from app.models.user import UserInDB
 from app.repositories.message_repository import MessageRepository
@@ -188,3 +188,17 @@ class TestRoomUpdatedEvents:
             await service.remove_member(room.id, users["owner"], users["member"])
 
         assert recorder.room_broadcasts == []
+
+    async def test_banned_while_joining_is_told_about_ban(self, service, users):
+        """檢查時還沒被封鎖、寫入前剛好被封鎖：原子條件擋下，並說明是被封鎖而非房間已滿"""
+        room = await service.create_room(users["owner"], RoomCreate(name="lobby"))
+        before_ban = await service.room_repo.get_by_id(room.id)
+        await service.join_room(room.id, users["member"])
+        await service.remove_member(room.id, users["owner"], users["member"], ban=True)
+        latest = service.room_repo.get_by_id
+        service.room_repo.get_by_id = AsyncMock(
+            side_effect=[before_ban, await latest(room.id)]
+        )
+
+        with pytest.raises(ForbiddenError, match="你已被房主禁止加入此聊天室"):
+            await service.join_room(room.id, users["member"])

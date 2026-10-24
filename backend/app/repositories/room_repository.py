@@ -169,8 +169,9 @@ class RoomRepository(BaseRepository[RoomInDB]):
         """
         原子添加成員到房間（含 max_members 條件檢查 + 角色設定）
 
-        使用 $expr 條件確保成員數不超過 max_members，並在同一次 update_one 中
-        同時執行 $addToSet members 和 $set member_roles，避免非原子多步寫入。
+        使用 $expr 條件確保成員數不超過 max_members，並排除被封鎖的使用者（與封鎖
+        同時發生時也擋得住），在同一次 update_one 中同時執行 $addToSet members 和
+        $set member_roles，避免非原子多步寫入。
 
         Args:
             room_id: 房間 ID
@@ -178,11 +179,12 @@ class RoomRepository(BaseRepository[RoomInDB]):
             role: 成員角色（由 Service 層決定）
 
         Returns:
-            bool: 是否添加成功（False 表示房間已滿或不存在）
+            bool: 是否添加成功（False 表示房間已滿、不存在或使用者被封鎖）
         """
         success = await self.update_one(
             {
                 "_id": ObjectId(room_id),
+                "banned_users": {"$ne": user_id},
                 "$expr": {"$lt": [{"$size": "$members"}, "$max_members"]},
             },
             {
@@ -197,7 +199,9 @@ class RoomRepository(BaseRepository[RoomInDB]):
             )
         return success
 
-    async def remove_member(self, room_id: str, user_id: str) -> bool:
+    async def remove_member(
+        self, room_id: str, user_id: str, ban: bool = False
+    ) -> bool:
         """
         從房間移除成員（純資料操作，商業邏輯驗證由 Service 層負責）
 
@@ -207,21 +211,36 @@ class RoomRepository(BaseRepository[RoomInDB]):
         Args:
             room_id: 房間 ID
             user_id: 使用者 ID
+            ban: 同時加入封鎖名單（同一次更新）
 
         Returns:
             bool: 是否移除成功（False 表示房間不存在或已不是成員）
         """
+        update: dict = {
+            "$pull": {"members": user_id},
+            "$unset": {f"member_roles.{user_id}": ""},
+        }
+        if ban:
+            update["$addToSet"] = {"banned_users": user_id}
         success = await self.update_one(
-            {"_id": ObjectId(room_id), "members": user_id},
-            {
-                "$pull": {"members": user_id},
-                "$unset": {f"member_roles.{user_id}": ""},
-            },
+            {"_id": ObjectId(room_id), "members": user_id}, update
         )
 
         if success:
-            logger.info(f"User {user_id} removed from room {room_id}")
+            logger.info(f"User {user_id} removed from room {room_id} (ban={ban})")
         return success
+
+    async def unban_user(self, room_id: str, user_id: str) -> bool:
+        """
+        從封鎖名單移除使用者
+
+        Returns:
+            bool: 是否移除成功（False 表示房間不存在或不在封鎖名單中）
+        """
+        return await self.update_one(
+            {"_id": ObjectId(room_id), "banned_users": user_id},
+            {"$pull": {"banned_users": user_id}},
+        )
 
     async def is_member(self, room_id: str, user_id: str) -> bool:
         """

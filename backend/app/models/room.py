@@ -53,6 +53,8 @@ class RoomInDB(RoomBase):
     owner_name: str | None = None
     members: list[str] = Field(default_factory=list)
     member_roles: dict[str, MemberRole] = Field(default_factory=dict)  # user_id -> role
+    # 被房主封鎖、不能再加入的使用者（只給房主看，回應模型不帶）
+    banned_users: list[str] = Field(default_factory=list)
     password_hash: str | None = None
     invite_code: str | None = None
     invite_code_expires_at: datetime | None = None

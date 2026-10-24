@@ -870,6 +870,156 @@ class TestOwnerAccessRevocation:
 
 @pytest.mark.asyncio
 @pytest.mark.integration
+class TestRoomBans:
+    """房主封鎖成員：移出並封鎖後不能再加入，解除封鎖後可以"""
+
+    async def _remove(
+        self, client, room_id: str, actor: dict, target_id: str, **params
+    ):
+        return await client.delete(
+            f"/api/rooms/{room_id}/members/{target_id}",
+            params=params,
+            headers=actor["headers"],
+        )
+
+    async def _bans(self, client, room_id: str, actor: dict):
+        return await client.get(f"/api/rooms/{room_id}/bans", headers=actor["headers"])
+
+    async def _unban(self, client, room_id: str, actor: dict, target_id: str):
+        return await client.delete(
+            f"/api/rooms/{room_id}/bans/{target_id}", headers=actor["headers"]
+        )
+
+    @pytest.mark.parametrize("policy", ["direct", "password", "invite"])
+    async def test_banned_member_cannot_rejoin_until_unbanned(
+        self, async_client, users, policy
+    ):
+        fields = {
+            "direct": {},
+            "password": {"password": "secret123"},
+            "invite": {"room_type": "private"},
+        }[policy]
+        room = await _create_room(async_client, users["owner"], **fields)
+        credentials = {
+            "direct": None,
+            "password": {"password": "secret123"},
+            "invite": {"invite_code": room.get("invite_code")},
+        }[policy]
+        joined = await _join(async_client, room["id"], users["member"], credentials)
+        assert joined.status_code == 200
+
+        banned = await self._remove(
+            async_client, room["id"], users["owner"], users["member"]["id"], ban="true"
+        )
+        assert banned.status_code == 200
+
+        # 知道密碼或邀請碼也不能再加入
+        rejoin = await _join(async_client, room["id"], users["member"], credentials)
+        assert rejoin.status_code == 403
+        assert rejoin.json()["detail"] == "你已被房主禁止加入此聊天室"
+
+        unbanned = await self._unban(
+            async_client, room["id"], users["owner"], users["member"]["id"]
+        )
+        assert unbanned.status_code == 200
+        rejoin = await _join(async_client, room["id"], users["member"], credentials)
+        assert rejoin.status_code == 200
+
+    async def test_removing_without_ban_allows_rejoin(self, async_client, users):
+        room = await _create_room(async_client, users["owner"])
+        await _join(async_client, room["id"], users["member"])
+
+        removed = await self._remove(
+            async_client, room["id"], users["owner"], users["member"]["id"]
+        )
+        rejoin = await _join(async_client, room["id"], users["member"])
+        bans = await self._bans(async_client, room["id"], users["owner"])
+
+        assert removed.status_code == 200
+        assert rejoin.status_code == 200
+        assert bans.json() == []
+
+    async def test_owner_sees_banned_users(self, async_client, users):
+        room = await _create_room(async_client, users["owner"])
+        for name in ("member", "outsider"):
+            await _join(async_client, room["id"], users[name])
+        await self._remove(
+            async_client, room["id"], users["owner"], users["member"]["id"], ban="true"
+        )
+
+        response = await self._bans(async_client, room["id"], users["owner"])
+
+        assert response.status_code == 200
+        assert [(u["id"], u["username"]) for u in response.json()] == [
+            (users["member"]["id"], "member")
+        ]
+
+    async def test_only_owner_manages_bans(self, async_client, users):
+        room = await _create_room(async_client, users["owner"])
+        for name in ("member", "outsider"):
+            await _join(async_client, room["id"], users[name])
+        await self._remove(
+            async_client,
+            room["id"],
+            users["owner"],
+            users["outsider"]["id"],
+            ban="true",
+        )
+
+        listed = await self._bans(async_client, room["id"], users["member"])
+        unbanned = await self._unban(
+            async_client, room["id"], users["member"], users["outsider"]["id"]
+        )
+        rejoin = await _join(async_client, room["id"], users["outsider"])
+
+        assert listed.status_code == 403
+        assert unbanned.status_code == 403
+        assert rejoin.status_code == 403
+
+    async def test_unban_user_not_banned(self, async_client, users):
+        room = await _create_room(async_client, users["owner"])
+
+        response = await self._unban(
+            async_client, room["id"], users["owner"], users["member"]["id"]
+        )
+
+        assert response.status_code == 404
+        assert response.json()["detail"] == "該使用者不在封鎖名單中"
+
+    async def test_bans_of_missing_room(self, async_client, users):
+        missing = str(ObjectId())
+
+        listed = await self._bans(async_client, missing, users["owner"])
+        unbanned = await self._unban(
+            async_client, missing, users["owner"], users["member"]["id"]
+        )
+
+        assert (listed.status_code, unbanned.status_code) == (404, 404)
+
+    async def test_ban_list_not_exposed_in_room_responses(self, async_client, users):
+        """封鎖名單只給房主看，房間詳情與列表都不帶"""
+        room = await _create_room(async_client, users["owner"])
+        for name in ("member", "outsider"):
+            await _join(async_client, room["id"], users[name])
+        await self._remove(
+            async_client,
+            room["id"],
+            users["owner"],
+            users["outsider"]["id"],
+            ban="true",
+        )
+
+        for viewer in ("owner", "member", "outsider"):
+            for path in (f"/api/rooms/{room['id']}", "/api/rooms/", "/api/rooms/my"):
+                response = await async_client.get(
+                    path, headers=users[viewer]["headers"]
+                )
+                assert response.status_code == 200
+                assert "banned_users" not in response.text, (viewer, path)
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
 class TestMessageAuthorization:
     """訊息的發送、讀取、修改、刪除授權"""
 
