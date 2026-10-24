@@ -535,6 +535,49 @@ class TestJoinPolicies:
 
         assert ok.status_code == 200
 
+    # 房間設定頁對公開房的說明：「有密碼時需要密碼才能加入，無密碼時可直接加入」
+    @pytest.mark.parametrize("via", ["create", "update"])
+    async def test_setting_password_on_open_room_requires_it(
+        self, async_client, users, via
+    ):
+        if via == "create":
+            room = await _create_room(
+                async_client, users["owner"], join_policy="direct", password="secret123"
+            )
+        else:
+            room = await _create_room(async_client, users["owner"])
+            updated = await async_client.put(
+                f"/api/rooms/{room['id']}",
+                json={"password": "secret123"},
+                headers=users["owner"]["headers"],
+            )
+            assert updated.json()["join_policy"] == "password"
+
+        without = await _join(async_client, room["id"], users["member"])
+        wrong = await _join(
+            async_client, room["id"], users["member"], {"password": "wrong-pass"}
+        )
+        ok = await _join(
+            async_client, room["id"], users["member"], {"password": "secret123"}
+        )
+
+        assert (without.status_code, without.json()["detail"]) == (400, "需要提供密碼")
+        assert wrong.status_code == 400
+        assert ok.status_code == 200
+
+    async def test_password_on_invite_room_keeps_invite_policy(
+        self, async_client, users
+    ):
+        room = await _create_room(async_client, users["owner"], room_type="private")
+
+        updated = await async_client.put(
+            f"/api/rooms/{room['id']}",
+            json={"password": "secret123"},
+            headers=users["owner"]["headers"],
+        )
+
+        assert updated.json()["join_policy"] == "invite"
+
 
 @pytest.mark.asyncio
 @pytest.mark.integration

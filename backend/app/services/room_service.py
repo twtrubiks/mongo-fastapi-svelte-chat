@@ -171,6 +171,10 @@ class RoomService:
             # 公開房間但選擇邀請制
             invite_code = room_data.invite_code or secrets.token_urlsafe(16)
 
+        # 公開房設了密碼就要密碼才能加入；加入方式仍是直接加入的話密碼不會被檢查
+        if room_data.password and room_data.join_policy == JoinPolicy.DIRECT:
+            room_data.join_policy = JoinPolicy.PASSWORD
+
         # 強制 is_public 與 room_type 一致，避免 DB 出現矛盾狀態
         is_public = room_data.room_type == RoomType.PUBLIC
 
@@ -339,6 +343,13 @@ class RoomService:
             update_data.join_policy = JoinPolicy.INVITE
             if not room.invite_code:
                 invite_code = secrets.token_urlsafe(16)
+
+        # 公開房設了密碼就要密碼才能加入（與 create_room 相同）
+        if (
+            update_data.password is not None
+            and (update_data.join_policy or room.join_policy) == JoinPolicy.DIRECT
+        ):
+            update_data.join_policy = JoinPolicy.PASSWORD
 
         # 密碼雜湊（加密邏輯，由 Service 層負責）
         password_hash = None
