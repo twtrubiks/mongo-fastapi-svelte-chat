@@ -15,9 +15,11 @@
 		"check:naming": "node scripts/check-naming-conflicts.js",
 		"test": "vitest run",
 		"test:watch": "vitest",
+		"test:e2e": "playwright test",
 		"check:all": "npm run check && npm run lint && npm run check:naming && npm run test"
 	},
 	"devDependencies": {
+		"@playwright/test": "^1.56.1",
 		"@sveltejs/adapter-auto": "^7.0.1",
 		"@sveltejs/kit": "^2.70.3",
 		"@sveltejs/vite-plugin-svelte": "^7.1.2",
