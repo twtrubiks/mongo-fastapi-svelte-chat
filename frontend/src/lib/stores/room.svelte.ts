@@ -507,8 +507,12 @@ export const roomStore = {
   // 封鎖名單（僅房主）
   getBannedUsers: (roomId: string) => apiClient.rooms.getBannedUsers(roomId),
 
-  // 以使用者名稱封鎖（可封鎖已離開或從未加入的人）；對方若是成員，成員列表由 user_left 事件同步
-  banUser: (roomId: string, username: string) => apiClient.rooms.banUser(roomId, username),
+  // 以使用者名稱封鎖（可封鎖已離開或從未加入的人）；對方若是成員，先從成員列表移除讓畫面立即反映
+  banUser: async (roomId: string, username: string) => {
+    const banned = await apiClient.rooms.banUser(roomId, username);
+    updateRoomState({ users: roomState.users.filter(u => u.id !== banned.id) });
+    return banned;
+  },
 
   unbanUser: (roomId: string, userId: string) => apiClient.rooms.unbanUser(roomId, userId),
 

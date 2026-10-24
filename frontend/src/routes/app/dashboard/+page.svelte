@@ -80,7 +80,8 @@
         banned: '你已被房主移出並封鎖，無法再加入此聊天室',
         kicked: '你已被房主移出聊天室',
       };
-      showToast(removedMessages[params.get('removed') ?? ''] ?? '你已離開此聊天室', 'warning');
+      const reason = params.get('removed') ?? '';
+      showToast(Object.hasOwn(removedMessages, reason) ? removedMessages[reason]! : '你已離開此聊天室', 'warning');
       goto('/app/dashboard', { replaceState: true });
     }
   });

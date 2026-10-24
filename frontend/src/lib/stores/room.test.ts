@@ -255,6 +255,19 @@ describe('房間與成員', () => {
   });
 });
 
+describe('封鎖', () => {
+  // 成員列表平常由 user_left 事件同步；房主的 WS 剛好斷線時，被封鎖的人會留在可移出的列表
+  it('以名稱封鎖到目前成員時，立即從成員列表移除', async () => {
+    vi.spyOn(apiClient.rooms, 'banUser').mockResolvedValue(user('u2'));
+    roomStore.setUsers([user('u1', true), user('u2', true)]);
+
+    const banned = await roomStore.banUser('r1', 'user-u2');
+
+    expect(banned.id).toBe('u2');
+    expect(roomStore.users.map((u) => u.id)).toEqual(['u1']);
+  });
+});
+
 describe('即時房間事件', () => {
   it('新房間加到探索列表最前面且不重複', () => {
     Object.assign(roomStore.state, { rooms: [summary('a')] });

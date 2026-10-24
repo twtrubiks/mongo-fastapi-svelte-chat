@@ -189,7 +189,7 @@ describe('成員管理', () => {
     await fireEvent.click(screen.getByRole('button', { name: '移出並封鎖 bob' }));
 
     expect(removeMember).toHaveBeenCalledWith('r1', 'u2', true);
-    expect(await screen.findByText('已將 bob 移出並封鎖')).toBeTruthy();
+    expect(await screen.findByText('已封鎖 bob')).toBeTruthy();
     const banned = screen.getByRole('list', { name: '封鎖名單' });
     expect(within(banned).getByText('bob')).toBeTruthy();
   });

@@ -87,7 +87,7 @@ test('移出並封鎖：公開房也不能再加入、探索也看不到，解�
   await expect(settings).toContainText('沒有封鎖的使用者');
   await settings.getByRole('listitem').filter({ hasText: member.username }).getByRole('button', { name: '移出' }).click();
   await settings.getByRole('button', { name: `移出並封鎖 ${member.username}` }).click();
-  await expect(settings).toContainText(`已將 ${member.username} 移出並封鎖`);
+  await expect(settings).toContainText(`已封鎖 ${member.username}`);
   await expect(settings.getByRole('list', { name: '封鎖名單' })).toContainText(member.username);
   await expect(memberPage).toHaveURL(/\/app\/dashboard$/);
   await expect(memberPage.getByText('你已被房主移出並封鎖，無法再加入此聊天室')).toBeVisible();

@@ -140,7 +140,8 @@
     try {
       await roomStore.removeMember(room.id, member.id, ban);
       if (ban) {
-        successMessage = `已將 ${member.username} 移出並封鎖`;
+        // 按下時對方可能剛好已自己離開，後端仍會封鎖：提示只說結果
+        successMessage = `已封鎖 ${member.username}`;
         if (bannedUsers === null) {
           // 名單還在載入：那次回應可能是封鎖前的，重新載入
           loadBannedUsers();
