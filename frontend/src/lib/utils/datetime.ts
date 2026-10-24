@@ -7,8 +7,9 @@
 function normalizeTimeString(dateStr: string): string {
   if (!dateStr) return dateStr;
   
-  // 如果已經有時區標識，直接返回
-  if (dateStr.includes('+') || dateStr.includes('-') || dateStr.endsWith('Z')) {
+  // 如果已經有時區標識（Z 或 ±HH:MM），直接返回；
+  // 不能只看是否含 '-'，日期部分 2026-01-01 本身就有
+  if (/(Z|[+-]\d{2}:?\d{2})$/i.test(dateStr)) {
     return dateStr;
   }
   
@@ -88,7 +89,14 @@ export function groupMessagesByDate<T extends { created_at: string }>(
       return; // 跳過這個訊息
     }
     
-    const date = message.created_at.split('T')[0]!; // 取日期部分
+    // 以本地日期分組（與訊息旁顯示的本地時間一致）；直接切 'T' 取到的是 UTC 日期，
+    // 台灣凌晨 0～8 點的訊息會被分到前一天
+    const local = new Date(normalizeTimeString(message.created_at));
+    const date = [
+      local.getFullYear(),
+      String(local.getMonth() + 1).padStart(2, '0'),
+      String(local.getDate()).padStart(2, '0'),
+    ].join('-');
     if (!groups[date]) {
       groups[date] = [];
     }
