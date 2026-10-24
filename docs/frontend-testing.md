@@ -3,7 +3,7 @@
 > 對象：`frontend/src`（SvelteKit BFF 路由、`$lib` 的 BFF 模組、API client、stores、WebSocket 事件處理、Svelte 元件）
 > 日期：2026-10-24　工具：Vitest 5（`npm run test`；`npm run check:all` 最後也會跑）、@testing-library/svelte + jsdom（元件）、Playwright（`npm run test:e2e`）
 
-在這之前前端沒有任何自動化測試。第一輪從 BFF 路由與 stores 開始補測（16 個測試檔、278 個測試），找到的問題以 10 個 commit 修正（儀表板與日期兩項各含兩個相關問題）。第二輪補上 WebSocket 連線管理的測試，並處理快速切換房間的競態與套件的安全通報。第三輪補上訊息重試與房間已讀的測試，並把瀏覽器端對端驗證整理成 `npm run test:e2e`。第四輪處理斷線與離線時送出的訊息、補上 `bff-api-client` 的測試，並加入元件測試環境。目前共 23 個測試檔、359 個單元與元件測試，另有 11 個端對端測試。每個修正都有對應的測試，並確認該測試在修正前會失敗；房間頁本身沒有元件測試，由端對端測試涵蓋。
+在這之前前端沒有任何自動化測試。第一輪從 BFF 路由與 stores 開始補測（16 個測試檔、278 個測試），找到的問題以 10 個 commit 修正（儀表板與日期兩項各含兩個相關問題）。第二輪補上 WebSocket 連線管理的測試，並處理快速切換房間的競態與套件的安全通報。第三輪補上訊息重試與房間已讀的測試，並把瀏覽器端對端驗證整理成 `npm run test:e2e`。第四輪處理斷線與離線時送出的訊息、補上 `bff-api-client` 的測試，並加入元件測試環境。第五輪加入房主撤銷權限（重新產生邀請碼、移出成員），把發送鍵改成一律送出輸入框的內容，並補上 5 個元件的測試。目前共 28 個測試檔、434 個單元與元件測試，另有 13 個端對端測試。每個修正都有對應的測試，並確認該測試在修正前會失敗；房間頁本身沒有元件測試，由端對端測試涵蓋。
 
 ---
 
@@ -12,7 +12,7 @@
 | 範圍 | 測試檔 | 作法 |
 |---|---|---|
 | BFF 核心：`bff-utils`、`bff-client`、`bff-auth` | `src/lib/bff-*.test.ts` | `bff-client` 以真實 HTTP server 扮演後端；`bff-auth` 驗證透明換發 token、401 重試、並行去重 |
-| BFF 路由：29 個 `+server.ts` 全部 | `src/routes/api/**/server.test.ts` | 直接呼叫 handler；以 spy 取代 `bffBackendClient.request`，依 `METHOD endpoint` 分派，未列出的端點一律 404 |
+| BFF 路由：31 個 `+server.ts` 全部 | `src/routes/api/**/server.test.ts` | 直接呼叫 handler；以 spy 取代 `bffBackendClient.request`，依 `METHOD endpoint` 分派，未列出的端點一律 404 |
 | 瀏覽器端 API client | `src/lib/api/client.test.ts` | 以真實 HTTP server 扮演 BFF，驗證信封解包、BFF 錯誤、401 判斷 |
 | Stores：auth、message、room、notification | `src/lib/stores/*.test.ts` | 直接操作 store，API 以 `vi.spyOn` 取代 |
 | WebSocket 事件處理 | `src/lib/websocket/handlers.test.ts` | 以後端實際推送的 payload 驅動 handler，檢查 store 結果 |
@@ -21,7 +21,7 @@
 | 房間已讀 | `src/lib/utils/markAsRead.test.ts` | 進房延遲與取消、新訊息 debounce、只標記該房間的未讀通知 |
 | 日期工具 | `src/lib/utils/datetime.test.ts` | 在 `Asia/Taipei` 時區下執行 |
 | 儀表板、加入房間與上傳的 fetch client | `src/lib/bff-api-client.test.ts` | 以 stub 的 `fetch` 驗證請求格式、錯誤信封、非 JSON 錯誤與登入失效 |
-| 元件：`MessageItem`、`MessageInput`、`JoinByInviteModal` | `src/lib/components/**/*.svelte.test.ts` | jsdom 中 render 元件、操作畫面：發送狀態與重試、編輯與刪除、送出與輸入法選字、失敗訊息的重試與清除、以邀請碼加入 |
+| 元件：`MessageItem`、`MessageInput`、`MessageList`、`JoinByInviteModal`、`JoinRoomModal`、`RoomSettings`、`FileUpload`、`NotificationPanel` | `src/lib/components/**/*.svelte.test.ts` | jsdom 中 render 元件、操作畫面：發送狀態與重試、編輯與刪除、送出與輸入法選字、失敗訊息的重試與清除、新訊息的自動捲動與預覽卡、依加入方式加入房間、房間設定與房主撤銷權限、選檔與上傳、通知的已讀與清除 |
 | 端對端 | `tests/e2e/*.spec.ts` | Playwright 經由 BFF 連到真的後端，見下方「端對端驗證」 |
 
 共用工具在 `src/tests/`：`bff.ts` 提供假 Cookies、未簽章 JWT、RequestEvent 與後端 spy；`deferred.ts` 讓測試決定回應完成的先後；`fakeWebSocket.ts` 讓測試決定 WebSocket 何時開啟、收到訊息與關閉；`setup-client.ts` 為 jsdom 補上 Svelte 轉場需要的 `element.animate`。
@@ -83,6 +83,21 @@ Vitest 分成兩個 project：`server`（node 環境，其餘測試）與 `clien
 
 元件測試環境在 `f0a7d43` 加入。
 
+### 第五輪
+
+新功能 `bd70fc8`：房主可在房間設定重新產生邀請碼（舊碼立即失效），並在「成員管理」移出成員。移出與離開房間共用同一段撤銷邏輯，廣播 `user_left(kicked=true)` 後以 4003 斷開對方在該房的 WebSocket；被移出者的頁面導回儀表板並提示。
+
+| 問題 | 影響 | commit |
+|---|---|---|
+| 房間設定開著時，`room` 一更新就把表單重置（建 E2E 時發現） | 有人加入房間（`room_updated`）時，房主正在輸入的名稱、描述被清掉；剛重新產生的邀請碼又被遮住 | `bd70fc8` |
+| 發送鍵依上一則訊息的狀態切換：等待確認時停用，失敗時變成「重試上一則」 | 打好新訊息按發送，送出的其實是舊的那則；網路慢時發送鍵最多停用 10 秒，主要靠按鈕送出的手機使用者被擋住 | `1ed2e20` |
+| 公開房只設定密碼時，加入方式仍是直接加入，後端不檢查密碼（寫 `RoomSettings` 測試時發現，修在後端） | 房間設定說「有密碼時需要密碼才能加入」，房主設了密碼後任何人仍可直接加入；建立房間時只帶密碼也一樣 | `b7097dc` |
+| `MessageList` 只在訊息數量超過上次記錄時處理新訊息，數量變少時記錄不跟著降 | 訊息被刪除（或 bot 回覆失敗收掉預覽）後，下一則新訊息不會自動捲到最新，往上看舊訊息時也不會出現預覽卡與未讀數 | `96fadfd` |
+| `FileUpload` 上傳中仍可按「移除檔案」；多檔模式以檔名當列表 key | 上傳無法中途取消，移除後檔案訊息照樣送出；加入兩個同名的不同檔案時元件壞掉（目前只用單檔模式） | `89b65d1` |
+| 通知「全部已讀」先在畫面上標成已讀，API 失敗時沒有還原 | 畫面顯示已讀、未讀數歸零，伺服器上仍是未讀，重新整理後才又出現 | `aaa6799` |
+
+`JoinRoomModal`（直接加入、已是成員、房間已滿、密碼錯誤後改對、邀請碼無效）沒有發現問題。
+
 ---
 
 ## 端對端驗證
@@ -110,6 +125,8 @@ Vitest 分成兩個 project：`server`（node 環境，其餘測試）與 `clien
 - 在儀表板按刷新：加入新房間後顯示最新的房間數；在另一個 session 改密碼後導回 `/login`
 - 從探索加入邀請制房間時輸入錯誤的邀請碼，顯示「邀請碼無效」
 - 房主把房間改成需要密碼後，用原本的邀請碼加入：視窗說明需要密碼，不會切到該房間
+- 房主在房間設定移出成員：成員那邊的頁面導回儀表板並提示「你已被房主移出聊天室」，不能再讀取房間訊息；房主看到「已被移出聊天室」的系統訊息
+- 房主重新產生邀請碼：設定裡顯示新的邀請碼，用舊的邀請碼加入失敗，新的成功
 
 分別還原對應的修正後重跑，對應的測試都會失敗。快速切換房間的三層修正缺一不可，第二輪手動驗證時分別只還原一層：只還原房間頁，仍連到 A；只還原 store，B 的訊息被 A 蓋掉；只還原 WebSocket manager（延遲 ticket），仍連到 A。
 
@@ -117,11 +134,12 @@ Vitest 分成兩個 project：`server`（node 環境，其餘測試）與 `clien
 
 ## 尚未涵蓋
 
-- **Svelte 元件**：只有 `MessageItem`、`MessageInput`、`JoinByInviteModal`。房間頁、`MessageList`、`RoomList`、`JoinRoomModal`、`FileUpload` 等沒有元件測試，房間頁由端對端測試涵蓋。
-- **發送鍵的行為**（未修改）：上一則訊息還在等待確認時發送鍵停用；上一則失敗時發送鍵變成「重試上一則」。Enter 不受影響，屬設計取捨。
+- **Svelte 元件**：房間頁、`RoomList`、`CreateRoomModal`、`UserList`、`MessageSearch`、`NotificationButton` 等沒有元件測試，房間頁由端對端測試涵蓋。`MessageList` 的捲動在 jsdom 中以模擬的高度與捲動位置測試，實際瀏覽器的捲動仍靠端對端測試。
+- **被移出的人能否再加入**：取決於房間的加入方式。邀請制要重新產生邀請碼、密碼房要變更密碼；公開直接加入的房間沒有封鎖名單，被移出的人仍可再加入（成員管理頁會說明）。
+- **`FileUpload` 的小問題**（未修改）：單檔自動上傳時，上傳中再選另一個檔案，兩個都會送出；類型錯誤的提示直接顯示英文類型代號（例如「支援：image」）。
 - **端對端測試**：需要真的後端，目前只能手動執行 `npm run test:e2e`。
 - **WebSocket 連線管理**（`websocket/manager.ts`）：分頁切回前台時的重連、已讀請求去重與 `PUBLIC_WS_URL` 分支未測。
 - **工具函式**：`retry`、`notificationSound`、`readStatusSync`、`roomListSync` 等大多未測。
 - **相依套件的安全通報**：剩下的需要大版本變更才能修。`@sveltejs/kit` 與其相依的 cookie（low）要升到 SvelteKit 3；`@tailwindcss/typography` 相依的 postcss-selector-parser（moderate），audit 建議降回 0.5.4，且只在 build 時處理專案自己的 CSS。
 
-以 `@vitest/coverage-v8` 量測（未加入專案相依；兩個 project 分開量，合併時數字不正確）：BFF 路由與 `bff-*` 模組的行覆蓋率多在 80～100%，`bff-api-client` 100%，message store 93%，`websocket/manager.ts` 72%，`messageRetry` 78%，`fileUploadHandler` 95%，`markAsRead` 100%，`utils` 整體約 55%。元件：`MessageItem` 68%、`MessageInput` 51%、`JoinByInviteModal` 95%。
+以 `@vitest/coverage-v8` 量測（未加入專案相依；兩個 project 分開量，合併時數字不正確）：BFF 路由與 `bff-*` 模組的行覆蓋率多在 80～100%，`bff-api-client` 100%，message store 93%，`websocket/manager.ts` 72%，`messageRetry` 78%，`fileUploadHandler` 95%，`markAsRead` 100%，`utils` 整體約 55%。元件：`MessageList` 91%、`FileUpload` 93%、`NotificationPanel` 88%、`JoinRoomModal` 88%、`RoomSettings` 86%、`MessageItem` 68%、`MessageInput` 51%、`JoinByInviteModal` 95%。
