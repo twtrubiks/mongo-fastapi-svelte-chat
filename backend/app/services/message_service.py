@@ -14,6 +14,7 @@ from app.models.message import (
     MessageListResponse,
     MessageResponse,
     MessageSearchQuery,
+    MessageStatus,
     MessageType,
     MessageUpdate,
     MessageWithReply,
@@ -372,7 +373,8 @@ class MessageService:
         """
         # 獲取訊息
         message = await self.message_repo.get_by_id(message_id)
-        if not message:
+        # 已刪除的訊息與列表一致視為不存在，不能改寫內容
+        if not message or message.status == MessageStatus.DELETED:
             raise NotFoundError("訊息不存在")
 
         # 檢查權限

@@ -95,6 +95,19 @@ class NotificationListResponse(BaseModel):
     unread_count: int
 
 
+class NotificationActivity(BaseModel):
+    """通知統計中的最近活動"""
+
+    type: NotificationType
+    title: str
+    created_at: datetime
+
+    @field_serializer("created_at")
+    def serialize_datetime(self, dt: datetime) -> str:
+        """序列化日期時間（與通知本身相同，UTC 以 Z 結尾）"""
+        return format_datetime_for_json(dt)
+
+
 class NotificationStats(BaseModel):
     """通知統計模型"""
 
@@ -102,4 +115,4 @@ class NotificationStats(BaseModel):
     unread_count: int
     read_count: int
     type_counts: dict
-    recent_activity: list[dict]
+    recent_activity: list[NotificationActivity]

@@ -331,7 +331,7 @@ class TestPixelLimit:
 
     @pytest.mark.filterwarnings("ignore::PIL.Image.DecompressionBombWarning")
     def test_pixel_limit_boundary_with_real_images(self, tmp_path):
-        """恰好 5 千萬像素可讀取，多 1 像素即在解碼前被拒"""
+        """恰好 5 千萬像素可讀取；多 1 像素時讀取資訊與產生縮圖都在解碼前被拒"""
         processor = ImageProcessor(output_dir=str(tmp_path / "processed"))
         at_limit = tmp_path / "at_limit.png"
         over_limit = tmp_path / "over_limit.png"
@@ -341,6 +341,8 @@ class TestPixelLimit:
         assert processor.get_image_info(str(at_limit))["size"] == (10_000, 5_000)
         with pytest.raises(ImageProcessorError, match="像素數超過上限（14041x3561"):
             processor.get_image_info(str(over_limit))
+        with pytest.raises(ImageProcessorError, match="像素數超過上限（14041x3561"):
+            processor.create_thumbnail(str(over_limit))
 
     def test_pillow_global_limit_configured(self):
         # 第二道防線：Pillow 全域上限已設定

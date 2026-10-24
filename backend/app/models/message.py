@@ -49,13 +49,18 @@ class MessageCreate(MessageBase):
 
 
 class MessageUpdate(BaseModel):
-    """更新訊息模型"""
+    """更新訊息模型
+
+    不含 status：刪除必須走 DELETE（會廣播 message_deleted），
+    不能用編輯隱藏或復原訊息。拒絕未知欄位，避免送出 status 時被靜默忽略。
+    """
 
     content: str | None = Field(
         None, min_length=1, max_length=MAX_CONTENT_LENGTH, description="訊息內容"
     )
-    status: MessageStatus | None = Field(None, description="訊息狀態")
     metadata: dict[str, Any] | None = Field(None, description="訊息元數據")
+
+    model_config = ConfigDict(extra="forbid")
 
 
 class MessageInDB(MessageBase):
@@ -144,6 +149,11 @@ class ReplyToMessage(BaseModel):
     created_at: datetime = Field(..., description="被回覆訊息時間")
 
     model_config = ConfigDict(from_attributes=True)
+
+    @field_serializer("created_at")
+    def serialize_datetime(self, dt: datetime) -> str:
+        """序列化日期時間（與訊息本身相同，UTC 以 Z 結尾）"""
+        return format_datetime_for_json(dt)
 
 
 class MessageWithReply(MessageResponse):

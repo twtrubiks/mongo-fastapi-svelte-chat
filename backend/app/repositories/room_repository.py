@@ -235,29 +235,3 @@ class RoomRepository(BaseRepository[RoomInDB]):
         if room:
             return user_id in room.members
         return False
-
-    async def update_member_role(
-        self, room_id: str, user_id: str, role: MemberRole
-    ) -> bool:
-        """
-        更新成員角色
-
-        Args:
-            room_id: 房間 ID
-            user_id: 使用者 ID
-            role: 新角色
-
-        Returns:
-            bool: 是否更新成功
-        """
-        # 單次原子更新：查詢條件同時確認房間存在且使用者為成員
-        success = await self.update_one(
-            {"_id": ObjectId(room_id), "members": user_id},
-            {"$set": {f"member_roles.{user_id}": role.value}},
-        )
-
-        if success:
-            logger.info(
-                f"User {user_id} role updated to {role.value} in room {room_id}"
-            )
-        return success

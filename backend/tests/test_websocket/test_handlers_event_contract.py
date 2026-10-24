@@ -379,6 +379,37 @@ class TestChatMessageEvents:
             ),
         ]
 
+    @pytest.mark.parametrize(
+        ("message_type", "stored_type"), [("image", "image"), ("FILE", "file")]
+    )
+    async def test_file_message_keeps_type_and_metadata(
+        self, ctx, recorder, message_type, stored_type
+    ):
+        sender = ctx.sender
+        metadata = {"filename": "cat.png", "file_size": 2048, "mime_type": "image/png"}
+
+        await handle_message(
+            sender["id"],
+            ctx.room_id,
+            {
+                "type": "chat_message",
+                "content": "/api/files/cat.png",
+                "message_type": message_type,
+                "metadata": metadata,
+                "client_id": "c-file",
+            },
+            sender["info"],
+        )
+
+        doc = await ctx.db.messages.find_one({"room_id": ctx.room_id})
+        assert (doc["message_type"], doc["metadata"]) == (stored_type, metadata)
+        kind, _, broadcast, _ = recorder.sent[1]
+        assert kind == "message"
+        assert (broadcast["message_type"], broadcast["metadata"]) == (
+            stored_type,
+            metadata,
+        )
+
     async def test_missing_content_rejected_without_persisting(self, ctx, recorder):
         sender = ctx.sender
 

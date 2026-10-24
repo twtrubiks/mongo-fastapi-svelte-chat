@@ -1008,6 +1008,22 @@ class TestDebounceTimeline:
         await _join(manager, BOB, "r1")
         assert _received(alice_ws) == []
 
+    async def test_force_disconnect_from_last_room_goes_offline_after_3s(
+        self, manager, clock
+    ):
+        """被移出唯一所在的房間時比照斷線：3 秒後全域離線並通知其他人"""
+        alice_ws = await _join(manager, ALICE, "r1")
+        await _join(manager, BOB, "r2")
+        _received(alice_ws)
+
+        await manager.force_disconnect("bob", "r2")
+
+        await clock.advance_to(2.999)
+        assert sorted(manager.get_global_online_user_ids()) == ["alice", "bob"]
+        await clock.advance_to(3)
+        assert manager.get_global_online_user_ids() == ["alice"]
+        assert _received(alice_ws) == [_offline(BOB)]
+
     async def test_force_disconnect_discards_pending_rejoin_timer(self, manager, clock):
         """斷線 debounce 中被移出房間，之後重新加入：舊計時器不可再動到新連線的狀態"""
         alice_ws = await _join(manager, ALICE, "r1")

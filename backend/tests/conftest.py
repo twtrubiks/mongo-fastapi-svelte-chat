@@ -231,7 +231,6 @@ def mock_notification_repository():
     mock_repo.mark_as_read = AsyncMock()
     mock_repo.mark_all_as_read = AsyncMock()
     mock_repo.get_unread_count = AsyncMock()
-    mock_repo.delete = AsyncMock()
     mock_repo.delete_by_id = AsyncMock()
     return mock_repo
 
