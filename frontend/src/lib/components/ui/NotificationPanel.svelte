@@ -1,5 +1,4 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
   import { fly } from 'svelte/transition';
   import { notifications, notificationStore } from '$lib/stores/notification.svelte';
@@ -62,7 +61,8 @@
       // 發送 API 請求
       await apiClient.notifications.markAllAsRead();
     } catch {
-      // TODO: 如果 API 失敗，應該回滾樂觀更新
+      // 伺服器上仍是未讀：重新載入，避免畫面停在已讀、未讀數被清掉（與清除全部相同）
+      await loadNotifications();
     }
   }
 
@@ -153,12 +153,7 @@
     }
   }
 
-  onMount(() => {
-    if (isOpen) {
-      loadNotifications();
-    }
-  });
-
+  // 每次開啟時載入（含掛載時已開啟）
   $effect(() => {
     if (isOpen) {
       loadNotifications();
