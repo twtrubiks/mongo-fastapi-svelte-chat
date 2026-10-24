@@ -99,6 +99,20 @@ describe('失敗的訊息', () => {
     expect(retryAllFailed).toHaveBeenCalledOnce();
   });
 
+  it('清除時移出重試佇列，並移除畫面上未送出的訊息', async () => {
+    messageStore.addPendingMessage(pendingMessage('c1'));
+    messageRetryManager.addToRetryQueue({ id: 'c1', content: '訊息 c1', type: 'text' });
+    messageStatusStore.setFailed('c1', '訊息未送出，請重試');
+    setup();
+
+    await fireEvent.click(screen.getByRole('button', { name: '清除' }));
+
+    expect(messageRetryManager.isInQueue('c1')).toBe(false);
+    expect(messageStatusStore.getStatus('c1')).toBeUndefined();
+    // 留著的話沒有任何狀態標示，看起來就像已送出
+    expect(messageList().map((m) => m.client_id)).not.toContain('c1');
+  });
+
   it('清除時保留伺服器其實已收到的訊息', async () => {
     // 廣播或補發已帶回伺服器版本（id 已換成伺服器 id），只是沒收到 ack
     messageStore.addMessage(pendingMessage('c2', { id: 'srv-2' }));

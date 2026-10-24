@@ -4,6 +4,7 @@
   import FileUpload from '$lib/components/ui/FileUpload.svelte';
   import { debounce, isSupportedFileType, isFileSizeValid, getMaxFileSize, getAcceptString } from '$lib/utils';
   import { messageStatusStore } from '$lib/stores/messageStatus.svelte';
+  import { messageStore } from '$lib/stores/message.svelte';
   import { messageRetryManager } from '$lib/utils/messageRetry';
   import { MENTION_SUGGESTIONS, COMMAND_SUGGESTIONS, type BotCommand } from '$lib/constants/botCommands';
   // Svelte 5 callback props - 使用正確的語法
@@ -610,6 +611,8 @@
               onclick={() => {
                 failedMessages.forEach(([id]) => {
                   messageRetryManager.removeFromQueue(id);
+                  // 一併移除畫面上未送出的訊息：留著的話沒有狀態標示，看起來像已送出
+                  messageStore.removePendingMessage(id);
                 });
               }}
             >
