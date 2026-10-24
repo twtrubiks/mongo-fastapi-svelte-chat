@@ -20,6 +20,8 @@ export class WebSocketManager {
   private connectionState: 'disconnected' | 'connecting' | 'connected' = 'disconnected';
   private lastConnectTime = 0;
   private connectionId = 0;
+  // 每次 connect() / disconnect() 遞增；取得 ticket 期間被取代的 connect() 不再建立連線
+  private connectRequestId = 0;
   private pingTimeout: number | null = null; // 添加 ping 超時檢測
   private lastPingTime = 0; // 記錄最後 ping 時間
 
@@ -75,12 +77,21 @@ export class WebSocketManager {
 
   // 連接 WebSocket（透過 BFF 取得一次性 ticket）
   async connect(roomId: string): Promise<void> {
+    const requestId = ++this.connectRequestId;
+
     // 先透過 BFF 取得一次性 ticket
     const ticket = await apiClient.wsTicket.create(roomId);
 
+    // 等待 ticket 期間已有較新的 connect() 或 disconnect()（例如快速切換房間）：
+    // 這次請求作廢，否則較晚回來的舊房間 ticket 會把連線換回舊房間
+    if (requestId !== this.connectRequestId) {
+      return;
+    }
+
     return new Promise((resolve, reject) => {
-      // 先斷舊連線再設新 roomId，避免 disconnect() 同步清除剛設好的值
-      if (this.ws?.readyState === WebSocket.OPEN) {
+      // 先斷舊連線再設新 roomId，避免 disconnect() 同步清除剛設好的值；
+      // 仍在連線中的舊連線也要關閉，否則它開啟後會一直留在背景
+      if (this.ws?.readyState === WebSocket.OPEN || this.ws?.readyState === WebSocket.CONNECTING) {
         this.disconnect();
       }
       this.roomId = roomId;
@@ -157,6 +168,12 @@ export class WebSocketManager {
         this.ws.onerror = (error) => {
           console.error('[WebSocket] 連接錯誤:', error);
 
+          // 已被取代的連線（切換房間時關閉）：只結束自己的請求，不依新連線的狀態判斷
+          if (currentConnectionId !== this.connectionId) {
+            resolve();
+            return;
+          }
+
           if (this.connectionState === 'connecting') {
             console.error('[WebSocket] 初始連接失敗');
             reject(new Error('WebSocket connection failed'));
@@ -166,6 +183,11 @@ export class WebSocketManager {
         // 連接超時處理
         // 不使用 disconnect()，避免清除 roomId 導致無法自動重連
         setTimeout(() => {
+          // 已被取代的連線：connectionState 與 this.ws 屬於新連線，不能拿來判斷或關閉
+          if (currentConnectionId !== this.connectionId) {
+            resolve();
+            return;
+          }
           if (this.connectionState === 'connecting') {
             console.error('[WebSocket] 連接超時');
             this.setConnectionState('disconnected');
@@ -191,6 +213,7 @@ export class WebSocketManager {
   // 斷開連接
   disconnect() {
     this.connectionId++; // 增加連接 ID，使舊連接失效
+    this.connectRequestId++; // 仍在取得 ticket 的 connect() 也一併作廢
     this.clearReconnectTimeout();
 
     // 連線中斷：所有等待 ack 的訊息立即標記失敗（重連後由重試機制接手）
