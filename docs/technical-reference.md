@@ -447,6 +447,7 @@ invite_code 僅在 `RoomResponse` 中回傳，且受角色限制：
 - 封鎖不要求對方是成員（否則成員先離開就能躲過）。`ban_user` 以一次 `find_one_and_update` 完成 `$pull members`、`$unset member_roles.<id>`、`$addToSet banned_users`，依回傳的更新前狀態判斷：寫入當下是成員就廣播 `user_left(kicked=true, banned=true)` 並斷線，不是成員就只加入名單，已在名單中回 409
 - 不是成員時對方必須是存在的使用者：`user_id` 會成為 `member_roles` 的欄位路徑，不能是任意字串
 - 以名稱封鎖時先確認是房主才查使用者，非房主不能藉此探測名稱是否存在
+- 以名稱封鎖與封鎖名單只回 `UserPublic`（`id`、`username`、`avatar`）：任何人都能自己建房當房主，若回完整的 `UserResponse`，就能用名稱查到任何人的 email
 - `add_member` 的條件含 `banned_users: {$ne: user_id}`：`join_room` 檢查後才被封鎖的人，寫入時仍會被擋下；此時重讀房間，回報被封鎖而不是「房間已滿」
 - 探索、搜尋（`exclude_joined`）與房間列表不列出封鎖了自己的房間
 - 被封鎖的人收到 `banned=true` 的 `user_left`，導回儀表板時提示「你已被房主移出並封鎖，無法再加入此聊天室」
@@ -736,7 +737,7 @@ disconnect（房間 A） → 排程 _execute_room_leave（5s）
 - **`remove_member`**（Service 層，`DELETE /rooms/{room_id}/members/{user_id}`，僅房主）：與 `leave_room` 共用 `_revoke_member_access`，斷開被移除者的連線後廣播 `user_left(removed=true, kicked=true)`
 - **`delete_room`**（Service 層）：廣播 `room_deleted` 後呼叫 `force_disconnect_room(room_id)`，關閉該房所有連線（含已登記、還在確認成員資格的連線）
 
-驗證時資料庫或 Redis 故障（`PyMongoError` / `RedisError`）不是認證失敗：認證中介層、成員資格查詢與再確認都讓這類錯誤往上拋，handler 以 4000 關閉；其他例外（例如格式錯誤的 token）才以 4001 拒絕。前端收到 4000 時，即使伺服器完成了關閉握手也會重連（其他正常關閉不重連），重連次數有上限。
+驗證時資料庫或 Redis 故障（`PyMongoError` / `RedisError`，以及啟動或重連空檔的 `NotConnectedError`）不是認證失敗：認證中介層、成員資格查詢與再確認都讓這類錯誤往上拋，handler 以 4000 關閉；其他例外（例如格式錯誤的 token）才以 4001 拒絕。前端收到 4000 時，即使伺服器完成了關閉握手也會重連（其他正常關閉不重連）。後端先接受連線才驗證，所以連上（`onopen`）不代表通過驗證：收到伺服器的第一則訊息才重設退避與次數，否則驗證時被 4000 關閉的連線會固定每秒重連、永不停止；連續達到上限時發出 `reconnect_failed`。
 
 與 `disconnect()`（暫時斷線）的差異：`force_disconnect` **立即**從 `room_users` 移除（不走 rejoin debounce——撤銷是確定事件），並以 close code **4003** 主動關閉 socket。前端的 `noReconnectCodes` 已含 4003，收到後不會嘗試重連，房間頁也不顯示「重新連接」提示。
 
