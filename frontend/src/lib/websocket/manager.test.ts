@@ -231,6 +231,39 @@ describe('心跳', () => {
     await vi.advanceTimersByTimeAsync(10_000);
     expect(ws.closeCalls).toEqual([]);
   });
+
+  it('ping 10 秒沒有回應時重新連線（即使伺服器正常完成關閉握手）', async () => {
+    const ws = await connectOpen('r1');
+
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(ws.closeCalls).toEqual([{ code: 4000, reason: 'Ping timeout' }]);
+
+    // 伺服器回應關閉：wasClean 為 true
+    ws.serverClose(4000, true);
+    await vi.advanceTimersByTimeAsync(1000);
+
+    expect(ticket).toHaveBeenCalledTimes(2);
+    last().serverOpen();
+    expect(manager.isConnected()).toBe(true);
+  });
+
+  it('ping 逾時後即使關閉事件遲遲未到，也立即開始重連', async () => {
+    const ws = await connectOpen('r1');
+    const disconnected = vi.fn();
+    manager.on('disconnected', disconnected);
+
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(disconnected).toHaveBeenCalledTimes(1);
+
+    // 舊連線的關閉事件在重連前才到：不再重複觸發斷線
+    ws.serverClose(1006, false);
+    expect(disconnected).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(ticket).toHaveBeenCalledTimes(2);
+    last().serverOpen();
+    expect(manager.isConnected()).toBe(true);
+  });
 });
 
 describe('訊息 ack', () => {

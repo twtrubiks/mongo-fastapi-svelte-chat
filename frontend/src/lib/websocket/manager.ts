@@ -598,13 +598,30 @@ export class WebSocketManager {
         // 設置超時檢測，如果10秒內沒收到 pong，認為連接斷開
         this.pingTimeout = window.setTimeout(() => {
           console.warn('[WebSocket] Ping 超時，強制重連');
-          // 強制關閉連接並重連
-          if (this.ws) {
-            this.ws.close(4000, 'Ping timeout');
-          }
+          this.handlePingTimeout();
         }, 10000);
       }
     }, heartbeatDelay);
+  }
+
+  // ping 逾時：不等這條連線的 close 事件再重連。由用戶端發起關閉時，伺服器若還在，
+  // 會完成關閉握手（wasClean 為 true，onclose 不重連）；連線若已中斷，close 事件
+  // 要等關閉握手逾時才會來。因此直接作廢這條連線並排程重連
+  private handlePingTimeout() {
+    const staleWs = this.ws;
+    this.connectionId++; // 舊連線之後的 close 事件不再處理
+    this.ws = null;
+    try {
+      staleWs?.close(4000, 'Ping timeout');
+    } catch { /* ignore close errors */ }
+
+    this.setConnectionState('disconnected');
+    this.stopHeartbeat();
+    this.emit('disconnected', { code: 4000, reason: 'Ping timeout' });
+
+    if (this.shouldReconnect()) {
+      this.scheduleReconnect();
+    }
   }
 
   private stopHeartbeat() {
