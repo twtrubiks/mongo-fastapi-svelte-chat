@@ -166,6 +166,3 @@ class BaseRepository[T](ABC):
             if isinstance(val, datetime):
                 entity_dict[key] = val.replace(tzinfo=None)
         return self._to_model(entity_dict)
-
-    async def delete(self, id: str) -> bool:
-        return await self.delete_one({"_id": ObjectId(id)})

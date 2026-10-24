@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 import aiofiles
-from fastapi import HTTPException, UploadFile, status
+from fastapi import UploadFile
 
 logger = logging.getLogger(__name__)
 
@@ -313,41 +313,3 @@ file_upload_manager = FileUploadManager()
 def get_file_upload_manager() -> FileUploadManager:
     """獲取檔案上傳管理器實例"""
     return file_upload_manager
-
-
-async def upload_file(
-    file: UploadFile, allowed_types: list[str] | None = None
-) -> dict[str, Any]:
-    """
-    上傳單個檔案的便捷函數
-
-    Args:
-        file: 上傳的檔案
-        allowed_types: 允許的檔案類型列表
-
-    Returns:
-        Dict[str, Any]: 上傳的檔案資訊
-
-    Raises:
-        HTTPException: 檔案上傳失敗
-    """
-    try:
-        manager = get_file_upload_manager()
-
-        # 如果指定了允許的類型，進行額外檢查
-        if allowed_types:
-            file_type = manager.get_file_type(file)
-            if file_type not in allowed_types:
-                raise FileUploadError(f"不允許的檔案類型: {file_type}")
-
-        return await manager.save_file(file)
-
-    except FileUploadError as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)
-        ) from e
-    except Exception as e:  # intentional catch-all: 未預期的上傳錯誤統一回 500
-        logger.error(f"Unexpected error in upload_file: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="檔案上傳失敗"
-        ) from e
