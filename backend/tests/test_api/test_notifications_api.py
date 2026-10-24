@@ -248,7 +248,11 @@ class TestMarkRead:
         assert (other["status"], other["read_at"]) == ("unread", None)
         assert body["unread_count"] == 1
 
-    @pytest.mark.parametrize("notification_id", [str(ObjectId()), "not-an-id"])
+    @pytest.mark.parametrize(
+        "notification_id",
+        ["5f0000000000000000000000", "not-an-id"],
+        ids=["nonexistent", "malformed"],
+    )
     async def test_missing_notification_is_404(
         self, async_client, users, notification_id
     ):
