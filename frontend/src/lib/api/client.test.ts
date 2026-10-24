@@ -154,6 +154,23 @@ describe('ApiClient 請求', () => {
     ]);
   });
 
+  it('移出成員、移出並封鎖、封鎖名單與解除封鎖', async () => {
+    reply = { status: 200, body: bffOk([{ id: 'u2', username: 'bob' }]) };
+    const client = new ApiClient(baseURL);
+
+    await client.rooms.removeMember('r1', 'u2');
+    await client.rooms.removeMember('r1', 'u2', { ban: true });
+    expect(await client.rooms.getBannedUsers('r1')).toEqual([{ id: 'u2', username: 'bob' }]);
+    await client.rooms.unbanUser('r1', 'u2');
+
+    expect(received.map((r) => [r.method, r.url])).toEqual([
+      ['DELETE', '/api/rooms/r1/members/u2'],
+      ['DELETE', '/api/rooms/r1/members/u2?ban=true'],
+      ['GET', '/api/rooms/r1/bans'],
+      ['DELETE', '/api/rooms/r1/bans/u2'],
+    ]);
+  });
+
   it('WS ticket 只回傳 ticket 字串', async () => {
     reply = { status: 200, body: bffOk({ ticket: 't-1' }) };
 

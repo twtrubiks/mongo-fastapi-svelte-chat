@@ -270,8 +270,18 @@ export class ApiClient {
       await this.bffRequest<void>('POST', `/api/rooms/${roomId}/leave`);
     },
 
-    removeMember: async (roomId: string, userId: string): Promise<void> => {
-      await this.bffRequest<void>('DELETE', `/api/rooms/${roomId}/members/${userId}`);
+    // ban：同時封鎖，對方之後不能再加入
+    removeMember: async (roomId: string, userId: string, options?: { ban?: boolean }): Promise<void> => {
+      const params = options?.ban ? { ban: 'true' } : undefined;
+      await this.bffRequest<void>('DELETE', `/api/rooms/${roomId}/members/${userId}`, params ? { params } : {});
+    },
+
+    getBannedUsers: async (roomId: string): Promise<User[]> => {
+      return this.bffRequest<User[]>('GET', `/api/rooms/${roomId}/bans`);
+    },
+
+    unbanUser: async (roomId: string, userId: string): Promise<void> => {
+      await this.bffRequest<void>('DELETE', `/api/rooms/${roomId}/bans/${userId}`);
     },
 
     regenerateInviteCode: async (roomId: string): Promise<{ invite_code: string }> => {

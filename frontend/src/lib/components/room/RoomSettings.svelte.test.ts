@@ -150,6 +150,10 @@ describe('成員管理', () => {
     return screen.getByRole('list', { name: '房間成員' });
   }
 
+  beforeEach(() => {
+    vi.spyOn(roomStore, 'getBannedUsers').mockResolvedValue([]);
+  });
+
   it('列出房主以外的成員', async () => {
     setup();
 
@@ -171,8 +175,53 @@ describe('成員管理', () => {
     expect(removeMember).not.toHaveBeenCalled();
     await fireEvent.click(screen.getByRole('button', { name: '確定移出 bob' }));
 
-    expect(removeMember).toHaveBeenCalledWith('r1', 'u2');
+    expect(removeMember).toHaveBeenCalledWith('r1', 'u2', false);
     expect(await screen.findByText('已將 bob 移出聊天室')).toBeTruthy();
+  });
+
+  it('移出並封鎖：封鎖後列入封鎖名單', async () => {
+    const removeMember = vi.spyOn(roomStore, 'removeMember').mockResolvedValue();
+    setup();
+    await openMembersTab();
+    expect(await screen.findByText('沒有封鎖的使用者')).toBeTruthy();
+
+    await fireEvent.click(screen.getAllByRole('button', { name: '移出' })[0]!);
+    await fireEvent.click(screen.getByRole('button', { name: '移出並封鎖 bob' }));
+
+    expect(removeMember).toHaveBeenCalledWith('r1', 'u2', true);
+    expect(await screen.findByText('已將 bob 移出並封鎖')).toBeTruthy();
+    const banned = screen.getByRole('list', { name: '封鎖名單' });
+    expect(within(banned).getByText('bob')).toBeTruthy();
+  });
+
+  it('開啟時載入封鎖名單，可解除封鎖', async () => {
+    vi.spyOn(roomStore, 'getBannedUsers').mockResolvedValue([member('u9', 'dave')]);
+    const unbanUser = vi.spyOn(roomStore, 'unbanUser').mockResolvedValue();
+    setup();
+    await openMembersTab();
+
+    const banned = await screen.findByRole('list', { name: '封鎖名單' });
+    await fireEvent.click(within(banned).getByRole('button', { name: '解除封鎖 dave' }));
+
+    expect(unbanUser).toHaveBeenCalledWith('r1', 'u9');
+    expect(await screen.findByText('已解除對 dave 的封鎖')).toBeTruthy();
+    expect(screen.queryByRole('list', { name: '封鎖名單' })).toBeNull();
+    expect(screen.getByText('沒有封鎖的使用者')).toBeTruthy();
+  });
+
+  it('封鎖名單載入失敗時顯示原因，可重試', async () => {
+    const getBannedUsers = vi
+      .spyOn(roomStore, 'getBannedUsers')
+      .mockRejectedValueOnce(new Error('網路連線失敗'))
+      .mockResolvedValueOnce([member('u9', 'dave')]);
+    setup();
+    await openMembersTab();
+
+    expect(await screen.findByText('網路連線失敗')).toBeTruthy();
+    await fireEvent.click(screen.getByRole('button', { name: '重新載入封鎖名單' }));
+
+    expect(await screen.findByRole('list', { name: '封鎖名單' })).toBeTruthy();
+    expect(getBannedUsers).toHaveBeenCalledTimes(2);
   });
 
   it('移出失敗時顯示原因', async () => {
@@ -196,5 +245,6 @@ describe('成員管理', () => {
     await openMembersTab();
 
     expect(screen.getByText(new RegExp(hint))).toBeTruthy();
+    expect(screen.getByText(/要阻止請選「移出並封鎖」/)).toBeTruthy();
   });
 });

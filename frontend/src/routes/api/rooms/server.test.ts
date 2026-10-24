@@ -9,6 +9,8 @@ import * as leave from './[id]/leave/+server';
 import * as members from './[id]/members/+server';
 import * as member from './[id]/members/[userId]/+server';
 import * as inviteCode from './[id]/invite-code/+server';
+import * as bans from './[id]/bans/+server';
+import * as ban from './[id]/bans/[userId]/+server';
 import * as messages from './[id]/messages/+server';
 import {
   backendError,
@@ -314,6 +316,58 @@ describe('房主撤銷權限', () => {
     expect(result).toMatchObject({
       status: 403,
       error: { code: 'REMOVE_MEMBER_ERROR', message: '不能移除房間擁有者' },
+    });
+  });
+
+  it('DELETE /members/[userId]?ban=true 移出並封鎖', async () => {
+    const backend = mockBackend({
+      'DELETE /api/rooms/r1/members/u2?ban=true': () => ({ message: '已將成員移出並封鎖' }),
+    });
+
+    const result = await body(
+      await member.DELETE(event({ params: { id: 'r1', userId: 'u2' }, url: '/api/rooms/r1/members/u2?ban=true' })),
+    );
+
+    expect(result).toMatchObject({ status: 200, data: { message: '已將成員移出並封鎖' } });
+    expect(backend).toHaveBeenCalledOnce();
+  });
+
+  it('GET /bans 回傳封鎖名單', async () => {
+    mockBackend({ 'GET /api/rooms/r1/bans': () => [{ id: 'u2', username: 'bob' }] });
+
+    const result = await body(await bans.GET(event({ params: { id: 'r1' } })));
+
+    expect(result).toMatchObject({ status: 200, data: [{ id: 'u2', username: 'bob' }] });
+  });
+
+  it('非房主查看封鎖名單時沿用後端 403', async () => {
+    mockBackend({ 'GET /api/rooms/r1/bans': throws(403, '只有房間擁有者可以查看封鎖名單') });
+
+    const result = await body(await bans.GET(event({ params: { id: 'r1' } })));
+
+    expect(result).toMatchObject({
+      status: 403,
+      error: { code: 'BANS_ERROR', message: '只有房間擁有者可以查看封鎖名單' },
+    });
+  });
+
+  it('DELETE /bans/[userId] 解除封鎖', async () => {
+    const backend = mockBackend({ 'DELETE /api/rooms/r1/bans/u2': () => ({ message: '已解除封鎖' }) });
+
+    const result = await body(await ban.DELETE(event({ params: { id: 'r1', userId: 'u2' } })));
+
+    expect(result).toMatchObject({ status: 200, data: { message: '已解除封鎖' } });
+    expect(backend).toHaveBeenCalledOnce();
+  });
+
+  it('解除不在封鎖名單中的使用者時沿用後端 404', async () => {
+    mockBackend({ 'DELETE /api/rooms/r1/bans/u3': throws(404, '該使用者不在封鎖名單中') });
+
+    const result = await body(await ban.DELETE(event({ params: { id: 'r1', userId: 'u3' } })));
+
+    expect(result).toMatchObject({
+      status: 404,
+      error: { code: 'UNBAN_ERROR', message: '該使用者不在封鎖名單中' },
     });
   });
 });

@@ -43,6 +43,11 @@
   // 成員管理
   let confirmingRemoveId = $state<string | null>(null);
   let removingId = $state<string | null>(null);
+  // 封鎖名單：null 表示尚未載入（切到成員管理時才載入）
+  let bannedUsers = $state<User[] | null>(null);
+  let bansError = $state<string | null>(null);
+  let loadingBans = $state(false);
+  let unbanningId = $state<string | null>(null);
 
   // 創建本地的響應式變數
   let user = $derived(currentUser());
@@ -96,11 +101,11 @@
   // 可移出的成員（不含房主自己）
   let removableMembers = $derived(roomUsers().filter((member) => member.id && member.id !== room.owner_id));
 
-  // 被移出的人能不能自己再加入，取決於房間的加入方式
+  // 只移出的人能不能自己再加入，取決於房間的加入方式；封鎖則都不能
   let rejoinHint = $derived.by(() => {
-    if (room.invite_code) return '被移出的人仍可用目前的邀請碼重新加入；如需阻止，請到「一般設定」重新產生邀請碼。';
-    if (room.join_policy === JoinPolicy.PASSWORD) return '被移出的人知道密碼仍可重新加入；如需阻止，請變更房間密碼。';
-    return '這是公開房間，被移出的人仍可重新加入。';
+    if (room.invite_code) return '只移出的人仍可用目前的邀請碼重新加入；要阻止請選「移出並封鎖」，或到「一般設定」重新產生邀請碼。';
+    if (room.join_policy === JoinPolicy.PASSWORD) return '只移出的人知道密碼仍可重新加入；要阻止請選「移出並封鎖」，或變更房間密碼。';
+    return '這是公開房間，只移出的人仍可重新加入；要阻止請選「移出並封鎖」。';
   });
 
   // 重新產生邀請碼：舊邀請碼立即失效，已加入的成員不受影響
@@ -123,19 +128,60 @@
     }
   }
 
-  async function removeMember(member: User) {
+  async function removeMember(member: User, ban: boolean) {
     if (!room?.id || !member.id || !canManageRoom) return;
     removingId = member.id;
     error = null;
     successMessage = null;
     try {
-      await roomStore.removeMember(room.id, member.id);
-      successMessage = `已將 ${member.username} 移出聊天室`;
+      await roomStore.removeMember(room.id, member.id, ban);
+      if (ban) {
+        successMessage = `已將 ${member.username} 移出並封鎖`;
+        if (bannedUsers && !bannedUsers.some((u) => u.id === member.id)) {
+          bannedUsers = [...bannedUsers, member];
+        }
+      } else {
+        successMessage = `已將 ${member.username} 移出聊天室`;
+      }
     } catch (err: unknown) {
       error = extractErrorMessage(err, '移除成員失敗');
     } finally {
       removingId = null;
       confirmingRemoveId = null;
+    }
+  }
+
+  function openMembersTab() {
+    activeTab = 'members';
+    if (bannedUsers === null) loadBannedUsers();
+  }
+
+  async function loadBannedUsers() {
+    if (!room?.id || !canManageRoom || loadingBans) return;
+    loadingBans = true;
+    bansError = null;
+    try {
+      bannedUsers = await roomStore.getBannedUsers(room.id);
+    } catch (err: unknown) {
+      bansError = extractErrorMessage(err, '載入封鎖名單失敗');
+    } finally {
+      loadingBans = false;
+    }
+  }
+
+  async function unbanUser(banned: User) {
+    if (!room?.id || !banned.id || !canManageRoom) return;
+    unbanningId = banned.id;
+    error = null;
+    successMessage = null;
+    try {
+      await roomStore.unbanUser(room.id, banned.id);
+      bannedUsers = (bannedUsers ?? []).filter((u) => u.id !== banned.id);
+      successMessage = `已解除對 ${banned.username} 的封鎖`;
+    } catch (err: unknown) {
+      error = extractErrorMessage(err, '解除封鎖失敗');
+    } finally {
+      unbanningId = null;
     }
   }
 
@@ -161,6 +207,8 @@
     inviteCodeCopied = false;
     confirmingRegenerate = false;
     confirmingRemoveId = null;
+    bannedUsers = null;
+    bansError = null;
     if (copyTimerId) { clearTimeout(copyTimerId); copyTimerId = null; }
     onClose();
   }
@@ -191,11 +239,13 @@
       inviteCodeCopied = false;
       confirmingRegenerate = false;
       confirmingRemoveId = null;
+      bannedUsers = null;
+      bansError = null;
     }
   }
 </script>
 
-<Modal bind:open={show} title="房間設定" size="xl" closeable={!isLoading && !regenerating && !removingId} onClose={handleClose}>
+<Modal bind:open={show} title="房間設定" size="xl" closeable={!isLoading && !regenerating && !removingId && !unbanningId} onClose={handleClose}>
   <!-- 分隔線 -->
   <div class="divider mt-0"></div>
 
@@ -213,7 +263,7 @@
       <button
         class="tab"
         class:tab-active={activeTab === 'members'}
-        onclick={() => activeTab = 'members'}
+        onclick={openMembersTab}
       >
         成員管理
       </button>
@@ -455,11 +505,14 @@
                     <button type="button" class="btn btn-ghost btn-xs" aria-label="取消移出 {member.username}" onclick={() => confirmingRemoveId = null} disabled={removingId === member.id}>
                       取消
                     </button>
-                    <button type="button" class="btn btn-error btn-xs" onclick={() => removeMember(member)} disabled={removingId === member.id}>
+                    <button type="button" class="btn btn-error btn-outline btn-xs" onclick={() => removeMember(member, false)} disabled={removingId === member.id}>
+                      確定移出 {member.username}
+                    </button>
+                    <button type="button" class="btn btn-error btn-xs" onclick={() => removeMember(member, true)} disabled={removingId === member.id}>
                       {#if removingId === member.id}
                         <span class="loading loading-spinner loading-xs"></span>
                       {/if}
-                      確定移出 {member.username}
+                      移出並封鎖 {member.username}
                     </button>
                   </div>
                 {:else}
@@ -476,6 +529,37 @@
             </button>
           {/if}
         {/if}
+
+        <!-- 封鎖名單：被封鎖的人不能再加入，解除後可依加入方式再加入 -->
+        <div class="pt-4">
+          <h3 class="font-semibold mb-2">封鎖名單</h3>
+          {#if bansError}
+            <div class="flex items-center gap-2 text-sm text-error">
+              <span>{bansError}</span>
+              <button type="button" class="btn btn-ghost btn-xs" aria-label="重新載入封鎖名單" onclick={loadBannedUsers} disabled={loadingBans}>
+                重試
+              </button>
+            </div>
+          {:else if bannedUsers === null}
+            <span class="loading loading-spinner loading-sm" aria-label="載入封鎖名單中"></span>
+          {:else if bannedUsers.length === 0}
+            <p class="text-sm text-base-content/60">沒有封鎖的使用者</p>
+          {:else}
+            <ul class="divide-y divide-base-200" aria-label="封鎖名單">
+              {#each bannedUsers as banned (banned.id)}
+                <li class="flex items-center justify-between gap-3 py-2">
+                  <span class="truncate">{banned.full_name || banned.username}</span>
+                  <button type="button" class="btn btn-ghost btn-xs shrink-0" aria-label="解除封鎖 {banned.username}" onclick={() => unbanUser(banned)} disabled={unbanningId !== null}>
+                    {#if unbanningId === banned.id}
+                      <span class="loading loading-spinner loading-xs"></span>
+                    {/if}
+                    解除封鎖
+                  </button>
+                </li>
+              {/each}
+            </ul>
+          {/if}
+        </div>
       </div>
     {/if}
   </div>

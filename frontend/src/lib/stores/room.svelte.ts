@@ -498,11 +498,16 @@ export const roomStore = {
     roomStore.loadRooms(true).catch(() => {});
   },
 
-  // 房主移除成員；成員列表另由 user_left 事件同步，這裡先移除讓畫面立即反映
-  removeMember: async (roomId: string, userId: string) => {
-    await apiClient.rooms.removeMember(roomId, userId);
+  // 房主移除成員（ban 時同時封鎖）；成員列表另由 user_left 事件同步，這裡先移除讓畫面立即反映
+  removeMember: async (roomId: string, userId: string, ban = false) => {
+    await apiClient.rooms.removeMember(roomId, userId, { ban });
     updateRoomState({ users: roomState.users.filter(u => u.id !== userId) });
   },
+
+  // 封鎖名單（僅房主）
+  getBannedUsers: (roomId: string) => apiClient.rooms.getBannedUsers(roomId),
+
+  unbanUser: (roomId: string, userId: string) => apiClient.rooms.unbanUser(roomId, userId),
 
   // 房主重新產生邀請碼，舊邀請碼立即失效
   regenerateInviteCode: async (roomId: string) => {
