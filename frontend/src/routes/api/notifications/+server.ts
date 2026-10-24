@@ -14,9 +14,10 @@ export const GET: RequestHandler = async ({ url, cookies }) => {
     const status = url.searchParams.get('status');
     const type = url.searchParams.get('type');
 
+    // 前端用大寫（UNREAD / MESSAGE），後端 enum 是小寫
     const params = new URLSearchParams({ skip: offset, limit });
-    if (status) params.append('status', status);
-    if (type) params.append('type', type);
+    if (status) params.append('status', status.toLowerCase());
+    if (type) params.append('type', type.toLowerCase());
 
     const response = await bffAuthRequest<{ notifications: RawNotification[] }>(cookies, `/api/notifications/?${params.toString()}`);
     const transformedResponse = transformNotificationListResponse(response);

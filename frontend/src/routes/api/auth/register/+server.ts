@@ -50,6 +50,10 @@ export const POST: RequestHandler = async ({ request, cookies, getClientAddress 
     } else if (error.code === 422 || error.code === 'VALIDATION_ERROR') {
       statusCode = 422;
       errorMessage = error.message || '註冊資料格式錯誤';
+    } else if (error.code === 429) {
+      // 後端限流（生產環境登入 5 分鐘 20 次、註冊 1 小時 10 次）
+      statusCode = 429;
+      errorMessage = '嘗試次數過多，請稍後再試';
     }
 
     return json(

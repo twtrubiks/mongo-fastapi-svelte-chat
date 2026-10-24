@@ -2,10 +2,12 @@ import { json, type RequestHandler } from '@sveltejs/kit';
 import {
   createBFFResponse,
   toBffErrorResponse,
+  transformNotifications,
+  type RawNotification,
 } from '$lib/bff-utils';
 import { bffAuthRequest } from '$lib/bff-auth';
 import type { DashboardData } from '$lib/bff-types';
-import type { User, RoomSummary, Notification } from '$lib/types';
+import type { User, RoomSummary } from '$lib/types';
 
 // 單一失敗不影響整體：失敗時回傳 null
 async function safeRequest<T>(promise: Promise<T>): Promise<T | null> {
@@ -21,17 +23,24 @@ async function safeRequest<T>(promise: Promise<T>): Promise<T | null> {
 // 儀表板聚合 API
 export const GET: RequestHandler = async ({ cookies }) => {
   try {
-    const [user, rooms, notifications] = await Promise.all([
+    // /api/rooms 會含未加入的公開房間，儀表板只顯示已加入的；
+    // /unread 回 {notifications, unread_count}，notifications 只到 limit 筆，總數以 unread_count 為準
+    const [user, rooms, unread] = await Promise.all([
       bffAuthRequest<User>(cookies, '/api/auth/me'),
-      safeRequest(bffAuthRequest<RoomSummary[]>(cookies, '/api/rooms/?limit=100')),
-      safeRequest(bffAuthRequest<Notification[]>(cookies, '/api/notifications/unread')),
+      safeRequest(bffAuthRequest<RoomSummary[]>(cookies, '/api/rooms/my?limit=100')),
+      safeRequest(
+        bffAuthRequest<{ notifications: RawNotification[]; unread_count: number }>(
+          cookies,
+          '/api/notifications/unread'
+        )
+      ),
     ]);
 
     const dashboardData: DashboardData = {
       user: user as User,
       rooms: Array.isArray(rooms) ? rooms : [],
-      unreadCount: Array.isArray(notifications) ? notifications.length : 0,
-      notifications: Array.isArray(notifications) ? notifications : [],
+      unreadCount: unread?.unread_count ?? 0,
+      notifications: transformNotifications(unread?.notifications ?? []),
     };
 
     return json(createBFFResponse(dashboardData), {

@@ -50,7 +50,7 @@ export class ApiClient {
   private client: AxiosInstance;
 
   // 認證徹底失敗（BFF refresh 也失敗）後的回調
-  onAuthFailure: (() => void) | null = null;
+  onAuthFailure: (() => void | Promise<void>) | null = null;
 
   constructor(baseURL: string = '') {
     this.client = axios.create({
@@ -92,22 +92,19 @@ export class ApiClient {
         return response;
       },
       async (error) => {
-        // 處理 BFF 錯誤響應
-        if (error.response && this.isBFFResponse(error.response.data)) {
-          const bffResponse = error.response.data as BFFResponse;
-          if (!bffResponse.success && bffResponse.error) {
-            throw createBFFError(
-              bffResponse.error.message,
-              bffResponse.error.code,
-              bffResponse.error.details,
-              error.response
-            );
-          }
+        const data = error.response?.data;
+        const bffError = this.isBFFResponse(data) && !data.success ? data.error : undefined;
+
+        // 401 → BFF 的透明 refresh 已經嘗試過了，還是 401 表示徹底失敗。
+        // 必須在丟出 BFF 錯誤前判斷（受保護路由的 401 都是 BFF 格式）；
+        // 登入帳密錯誤也是 401 但 code 為 AUTH_ERROR，不算登入失效
+        if (error.response?.status === 401 && (!bffError || bffError.code === 'UNAUTHORIZED')) {
+          this.onAuthFailure?.();
         }
 
-        // 401 → BFF 的透明 refresh 已經嘗試過了，還是 401 表示徹底失敗
-        if (error.response?.status === 401) {
-          this.onAuthFailure?.();
+        // 處理 BFF 錯誤響應
+        if (bffError) {
+          throw createBFFError(bffError.message, bffError.code, bffError.details, error.response);
         }
 
         return Promise.reject(error);

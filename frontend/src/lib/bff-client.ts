@@ -61,7 +61,7 @@ export class BFFBackendClient {
       if (axios.isAxiosError(error)) {
         throw {
           code: error.response?.status || 'NETWORK_ERROR',
-          message: error.response?.data?.detail ?? error.response?.data?.error?.message ?? error.message,
+          message: extractErrorMessage(error.response?.data) ?? error.message,
           details: error.response?.data,
         };
       }
@@ -72,6 +72,24 @@ export class BFFBackendClient {
     }
   }
 
+}
+
+// 從後端錯誤回應取出字串訊息（前端只認字串的 error.message）：
+// 業務錯誤 {detail: "..."}、欄位驗證 {detail: [{msg}]}、全域錯誤 {error: {message}}、限流 {message}
+function extractErrorMessage(data: unknown): string | undefined {
+  if (typeof data !== 'object' || data === null) return undefined;
+  const body = data as { detail?: unknown; error?: { message?: unknown }; message?: unknown };
+
+  if (typeof body.detail === 'string') return body.detail;
+  if (Array.isArray(body.detail)) {
+    const messages = body.detail
+      .map((item: { msg?: unknown }) => item?.msg)
+      .filter((msg): msg is string => typeof msg === 'string');
+    if (messages.length > 0) return messages.join('; ');
+  }
+  if (typeof body.error?.message === 'string') return body.error.message;
+  if (typeof body.message === 'string') return body.message;
+  return undefined;
 }
 
 // 全域實例
