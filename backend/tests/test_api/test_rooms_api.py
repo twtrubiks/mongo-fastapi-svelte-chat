@@ -1133,6 +1133,20 @@ class TestRoomBans:
         assert response.status_code == status
         assert response.json()["detail"] == detail
 
+    # 以名稱封鎖可對任何人使用（自己建房就是房主）：回應若帶 email，等於能用名稱查任何人的 email
+    async def test_ban_responses_expose_only_public_fields(self, async_client, users):
+        room = await _create_room(async_client, users["owner"])
+
+        banned = await self._ban_by_name(
+            async_client, room["id"], users["owner"], "outsider"
+        )
+        listed = await self._bans(async_client, room["id"], users["owner"])
+
+        public_fields = {"id", "username", "avatar"}
+        assert set(banned.json()) == public_fields
+        assert [set(u) for u in listed.json()] == [public_fields]
+        assert "outsider@example.com" not in banned.text + listed.text
+
     async def test_banning_twice_conflicts(self, async_client, users):
         room = await _create_room(async_client, users["owner"])
         await self._ban_by_name(async_client, room["id"], users["owner"], "outsider")

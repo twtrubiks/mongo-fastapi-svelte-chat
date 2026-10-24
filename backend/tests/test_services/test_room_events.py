@@ -247,3 +247,16 @@ class TestRoomUpdatedEvents:
 
         assert message == "已將成員移出並封鎖"
         assert recorder.disconnected == [(users["member"], room.id)]
+
+    async def test_leaving_after_being_banned_reports_not_a_member(
+        self, service, users
+    ):
+        """檢查時還是成員、移除前剛好被封鎖：與非成員離開一樣回 404，而不是「離開房間失敗」"""
+        room = await service.create_room(users["owner"], RoomCreate(name="lobby"))
+        await service.join_room(room.id, users["member"])
+        still_member = await service.room_repo.get_by_id(room.id)
+        await service.ban_user(room.id, users["owner"], users["member"])
+        service.room_repo.get_by_id = AsyncMock(return_value=still_member)
+
+        with pytest.raises(NotFoundError, match="房間不存在"):
+            await service.leave_room(room.id, users["member"])

@@ -15,7 +15,7 @@ from app.models.room import (
     RoomSummary,
     RoomUpdate,
 )
-from app.models.user import UserResponse
+from app.models.user import UserPublic
 from app.services.message_service import MessageService
 from app.services.room_service import RoomService
 
@@ -213,7 +213,7 @@ async def remove_room_member(
     return {"message": message}
 
 
-@router.get("/{room_id}/bans", response_model=list[UserResponse])
+@router.get("/{room_id}/bans", response_model=list[UserPublic])
 async def get_banned_users(
     room_id: str,
     current_user: dict = Depends(get_current_active_user),
@@ -223,7 +223,7 @@ async def get_banned_users(
     return await room_service.get_banned_users(room_id, current_user["_id"])
 
 
-@router.post("/{room_id}/bans", response_model=UserResponse)
+@router.post("/{room_id}/bans", response_model=UserPublic)
 async def ban_user_by_username(
     room_id: str,
     request: RoomBanRequest,
