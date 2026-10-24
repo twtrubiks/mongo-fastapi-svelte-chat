@@ -225,16 +225,16 @@ class RoomRepository(BaseRepository[RoomInDB]):
 
     async def is_member(self, room_id: str, user_id: str) -> bool:
         """
-        檢查使用者是否為房間成員
+        檢查使用者是否為房間成員（只計數，不讀出整份房間）
 
         Args:
             room_id: 房間 ID
             user_id: 使用者 ID
 
         Returns:
-            bool: 是否為成員
+            bool: 是否為成員；房間不存在或 ID 格式錯誤時為 False
         """
-        room = await self.get_by_id(room_id)
-        if room:
-            return user_id in room.members
-        return False
+        if not ObjectId.is_valid(room_id):
+            return False
+        query = {"_id": ObjectId(room_id), "members": user_id}
+        return await self.count_documents(query) > 0

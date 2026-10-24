@@ -8,7 +8,6 @@ from fastapi import WebSocket
 from fastapi.security.utils import get_authorization_scheme_param
 
 from app.auth.jwt_handler import decode_access_token
-from app.core.exceptions import NotFoundError
 from app.core.fastapi_integration import create_room_service
 from app.utils.user_cache import fetch_user_with_cache
 from app.utils.ws_ticket import validate_ws_ticket
@@ -142,17 +141,10 @@ async def verify_room_membership(user_id: str, room_id: str) -> bool:
             logger.warning(f"Invalid room ID format: {room_id}")
             return False
 
-        # 使用 RoomService 獲取房間資訊
+        # 統一檢查成員資格（不區分公開/私人房間；房間不存在也不是成員）。
+        # 連線時會驗證兩次（見 ConnectionManager.connect），只查成員資格、不讀整份房間
         room_service = await create_room_service()
-
-        try:
-            room = await room_service.get_room_by_id(room_id)
-        except NotFoundError:
-            logger.warning(f"Room {room_id} not found")
-            return False
-
-        # 統一檢查成員資格（不區分公開/私人房間）
-        if user_id not in room.members:
+        if not await room_service.is_member(room_id, user_id):
             logger.warning(f"User {user_id} is not a member of room {room_id}")
             return False
 

@@ -236,6 +236,10 @@ class RoomService:
             raise NotFoundError("房間不存在")
         return await self._convert_to_response(room, user_id)
 
+    async def is_member(self, room_id: str, user_id: str) -> bool:
+        """使用者是否為房間成員（房間不存在時為 False）"""
+        return await self.room_repo.is_member(room_id, user_id)
+
     async def get_room_for_user(
         self, room_id: str, user_id: str
     ) -> RoomResponse | RoomSummary:
