@@ -11,6 +11,7 @@ from fastapi import WebSocket
 import app.websocket.manager as manager_module
 from app.services.room_service import RoomService
 from app.websocket.manager import ConnectionManager
+from tests.test_websocket.membership_fake import FakeMembership
 
 
 class TestConnectionManager:
@@ -31,7 +32,7 @@ class TestConnectionManager:
     @pytest.fixture
     def connection_manager(self):
         """創建連接管理器實例（測試用，縮短 debounce 時間）"""
-        cm = ConnectionManager()
+        cm = ConnectionManager(membership=FakeMembership().factory())
         cm._disconnect_debounce_seconds = 0.5
         cm._room_rejoin_debounce_seconds = 0.5
         return cm
@@ -1001,6 +1002,7 @@ ALICE = {"id": "alice", "username": "Alice", "avatar": None}
 BOB = {"id": "bob", "username": "Bob", "avatar": None}
 CAROL = {"id": "carol", "username": "Carol", "avatar": None}
 DAVE = {"id": "dave", "username": "Dave", "avatar": None}
+ERIN = {"id": "erin", "username": "Erin", "avatar": None}
 
 
 class _FrozenDatetime(datetime):
@@ -1091,7 +1093,6 @@ def _offline(user):
     return {
         "type": "user_status_changed",
         "user_id": user["id"],
-        "user": user,
         "is_online": False,
         "timestamp": TS,
     }
@@ -1106,9 +1107,16 @@ async def clock(monkeypatch):
     await virtual_clock.shutdown()
 
 
+# r1～r3：四人都是成員；r4：只有 erin（bob 等人不是成員）
+MEMBERSHIP = {
+    **{rid: {"alice", "bob", "carol", "dave"} for rid in ("r1", "r2", "r3")},
+    "r4": {"erin"},
+}
+
+
 @pytest.fixture
 def manager(clock):
-    return ConnectionManager()
+    return ConnectionManager(membership=FakeMembership(MEMBERSHIP).factory())
 
 
 @pytest.mark.unit
@@ -1119,13 +1127,14 @@ class TestEventPayloads:
     async def test_connect_events(self, manager):
         alice_ws = await _join(manager, ALICE, "r1")
         carol_ws = await _join(manager, CAROL, "r2")
-        _received(alice_ws)
-        _received(carol_ws)
+        erin_ws = await _join(manager, ERIN, "r4")
+        for ws in (alice_ws, carol_ws, erin_ws):
+            _received(ws)
 
         bob_ws = _ws()
         await manager.connect(bob_ws, "bob", "r1", dict(BOB))
 
-        # 同房其他人：user_joined；其他房間：上線狀態
+        # 同房其他人：user_joined；bob 所屬的其他房間：上線狀態只帶 id，不帶使用者資料
         assert _received(alice_ws) == [
             {"type": "user_joined", "user": BOB, "timestamp": TS, "room_id": "r1"}
         ]
@@ -1133,12 +1142,13 @@ class TestEventPayloads:
             {
                 "type": "user_status_changed",
                 "user_id": "bob",
-                "user": BOB,
                 "is_online": True,
                 "timestamp": TS,
             }
         ]
-        # 本人：房內在線列表（集合轉 list，順序不固定）
+        # bob 不是 r4 的成員：r4 的人不知道 bob 上線
+        assert _received(erin_ws) == []
+        # 本人：房內在線列表，在線 ID 只列 r1 的成員（集合轉 list，順序不固定）
         [room_users] = _received(bob_ws)
         room_users["users"].sort(key=lambda user: user["id"])
         room_users["global_online_user_ids"].sort()
@@ -1150,6 +1160,102 @@ class TestEventPayloads:
             "room_id": "r1",
             "online_only": True,
         }
+
+    async def test_offline_reaches_only_rooms_the_user_belongs_to(self, manager, clock):
+        alice_ws = await _join(manager, ALICE, "r1")
+        erin_ws = await _join(manager, ERIN, "r4")
+        bob_ws = await _join(manager, BOB, "r2")
+        for ws in (alice_ws, erin_ws):
+            _received(ws)
+
+        await manager.disconnect("bob", "r2", bob_ws)
+        await clock.advance_to(5)
+
+        # bob 是 r1 的成員（即使沒連在 r1）：r1 收到離線；r4 不是 bob 的房間
+        assert _received(alice_ws) == [_offline(BOB)]
+        assert _received(erin_ws) == []
+
+    async def test_membership_lookup_failure_sends_no_status(self, clock):
+        class BrokenMembership(FakeMembership):
+            async def get_member_room_ids(self, user_id, room_ids):
+                raise RuntimeError("db down")
+
+        manager = ConnectionManager(membership=BrokenMembership(MEMBERSHIP).factory())
+        carol_ws = await _join(manager, CAROL, "r2")
+        _received(carol_ws)
+
+        # 查不到成員資格：不退回送給所有房間，也不讓連線失敗
+        assert await manager.connect(_ws(), "bob", "r1", dict(BOB)) is True
+        assert _received(carol_ws) == []
+
+    async def test_member_lookup_failure_on_connect_keeps_connection(self, clock):
+        class BrokenMembership(FakeMembership):
+            async def get_member_ids(self, room_id):
+                raise RuntimeError("db down")
+
+        manager = ConnectionManager(membership=BrokenMembership(MEMBERSHIP).factory())
+        await _join(manager, ALICE, "r1")
+        await _join(manager, CAROL, "r2")
+        bob_ws = _ws()
+
+        assert await manager.connect(bob_ws, "bob", "r1", dict(BOB)) is True
+        # 查不到成員：在線列表退回本房的連線者（都已通過成員驗證），不列 r2 的 carol
+        [room_users] = _received(bob_ws)
+        assert sorted(room_users["global_online_user_ids"]) == ["alice", "bob"]
+
+    async def test_switching_rooms_does_not_reannounce_online(self, manager):
+        carol_ws = await _join(manager, CAROL, "r2")
+        await _join(manager, BOB, "r1")
+        _received(carol_ws)
+
+        await _join(manager, BOB, "r3")
+
+        # bob 本來就在線：其他房間不必再收到一次上線
+        assert _received(carol_ws) == []
+
+    async def test_stale_offline_is_not_sent_after_reconnect(self, clock):
+        class SlowOffline(FakeMembership):
+            """離線那次的成員查詢卡住，直到 release 被設定"""
+
+            def __init__(self, rooms):
+                super().__init__(rooms)
+                self.release = asyncio.Event()
+
+            async def get_member_room_ids(self, user_id, room_ids):
+                if user_id not in self.online:
+                    await self.release.wait()
+                return await super().get_member_room_ids(user_id, room_ids)
+
+        membership = SlowOffline(MEMBERSHIP)
+        manager = ConnectionManager(membership=membership.factory())
+        membership.online = manager.global_online_users
+        alice_ws = await _join(manager, ALICE, "r1")
+        bob_ws = await _join(manager, BOB, "r2")
+        _received(alice_ws)
+
+        await manager.disconnect("bob", "r2", bob_ws)
+        await clock.advance_to(3)  # 離線處理開始，卡在成員查詢
+        await _join(manager, BOB, "r2")  # 這時 bob 重新連線
+        membership.release.set()
+        await clock.advance_to(4)
+
+        # 較晚完成的離線查詢不再送出：alice 看到的最後狀態是在線
+        assert _received(alice_ws) == [
+            {
+                "type": "user_status_changed",
+                "user_id": "bob",
+                "is_online": True,
+                "timestamp": TS,
+            }
+        ]
+
+    async def test_online_member_ids_lists_only_members(self, manager):
+        for user, room in ((ALICE, "r1"), (BOB, "r2"), (ERIN, "r4")):
+            await _join(manager, user, room)
+
+        assert sorted(await manager.get_online_member_ids("r1")) == ["alice", "bob"]
+        assert await manager.get_online_member_ids("r4") == ["erin"]
+        assert await manager.get_online_member_ids("lobby") == []
 
     async def test_notification(self, manager):
         bob_ws = await _join(manager, BOB, "r1")
@@ -1193,7 +1299,7 @@ class TestDebounceTimeline:
 
         await clock.advance_to(2.999)
         assert _received(alice_ws) == []
-        assert sorted(manager.get_global_online_user_ids()) == ["alice", "bob"]
+        assert sorted(list(manager.global_online_users)) == ["alice", "bob"]
 
         await clock.advance_to(3)
         assert _received(alice_ws) == [
@@ -1201,12 +1307,11 @@ class TestDebounceTimeline:
             {
                 "type": "user_status_changed",
                 "user_id": "bob",
-                "user": BOB,
                 "is_online": False,
                 "timestamp": TS,
             },
         ]
-        assert manager.get_global_online_user_ids() == ["alice"]
+        assert list(manager.global_online_users) == ["alice"]
         assert manager.get_room_users("r1") == [ALICE]
         # 計時器跑完後不殘留在 pending 表
         assert manager._pending_offline == {}
@@ -1244,7 +1349,7 @@ class TestDebounceTimeline:
 
         await clock.advance_to(4.999)
         assert _received(alice_ws) == []
-        assert "bob" in manager.get_global_online_user_ids()
+        assert "bob" in list(manager.global_online_users)
 
         await clock.advance_to(5)
         assert _received(alice_ws) == [_left(BOB, "r1"), _offline(BOB)]
@@ -1279,9 +1384,9 @@ class TestDebounceTimeline:
         await manager.force_disconnect("bob", "r2")
 
         await clock.advance_to(2.999)
-        assert sorted(manager.get_global_online_user_ids()) == ["alice", "bob"]
+        assert sorted(list(manager.global_online_users)) == ["alice", "bob"]
         await clock.advance_to(3)
-        assert manager.get_global_online_user_ids() == ["alice"]
+        assert list(manager.global_online_users) == ["alice"]
         assert _received(alice_ws) == [_offline(BOB)]
 
     async def test_force_disconnect_discards_pending_rejoin_timer(self, manager, clock):
@@ -1357,7 +1462,7 @@ class TestDebounceTimeline:
 
         await clock.advance_to(5)
         assert manager.get_room_users("r1") == [ALICE]
-        assert "bob" in manager.get_global_online_user_ids()
+        assert "bob" in list(manager.global_online_users)
 
     async def test_room_switch_race_leftover_offline_timer_is_replaced(
         self, manager, clock
@@ -1395,7 +1500,7 @@ class TestDebounceTimeline:
 
         await clock.advance_to(3.999)
         assert _received(alice_ws) == []
-        assert "bob" in manager.get_global_online_user_ids()
+        assert "bob" in list(manager.global_online_users)
 
         await clock.advance_to(4)
         assert _received(alice_ws) == [_left(BOB, "r1"), _offline(BOB)]

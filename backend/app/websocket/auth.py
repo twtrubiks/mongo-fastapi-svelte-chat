@@ -56,7 +56,6 @@ async def _get_user_info(
         return {
             "id": user["_id"],
             "username": user["username"],
-            "email": user.get("email"),
             "full_name": user.get("full_name"),
             "avatar": user.get("avatar"),
             "is_active": user.get("is_active", True),

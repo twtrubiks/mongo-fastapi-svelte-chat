@@ -449,15 +449,18 @@ class TestWebSocketHandlersAdditional:
 
         with patch("app.websocket.handlers.connection_manager") as mock_cm:
             mock_cm.get_room_users.return_value = mock_users
+            mock_cm.get_online_member_ids = AsyncMock(return_value=["user1"])
             mock_cm.send_personal_message = AsyncMock()
 
             await handle_get_users("user123", "room123")
 
             mock_cm.get_room_users.assert_called_once_with("room123")
+            mock_cm.get_online_member_ids.assert_awaited_once_with("room123")
             mock_cm.send_personal_message.assert_called_once()
             call_args = mock_cm.send_personal_message.call_args[0]
             assert call_args[2]["type"] == "room_users"
             assert call_args[2]["users"] == mock_users
+            assert call_args[2]["global_online_user_ids"] == ["user1"]
 
     @pytest.mark.asyncio
     async def test_handle_notification_read_single_notification(self, mock_user_info):

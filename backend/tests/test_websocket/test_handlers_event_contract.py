@@ -77,7 +77,8 @@ class WsRecorder:
     def __init__(self):
         self.sent: list[tuple] = []
         self.room_users: list[dict] = []
-        self.online_ids: list[str] = []
+        # 房間 ID → 該房成員中在線的 ID
+        self.online_ids: dict[str, list[str]] = {}
 
     async def connect(self, websocket, user_id, room_id, user_info, still_member=None):
         self.sent.append(("connect", user_id, room_id))
@@ -101,8 +102,8 @@ class WsRecorder:
     def get_room_users(self, room_id):
         return self.room_users
 
-    def get_global_online_user_ids(self):
-        return self.online_ids
+    async def get_online_member_ids(self, room_id):
+        return self.online_ids.get(room_id, [])
 
     async def handle_ping(self, user_id, room_id):
         self.sent.append(("ping", user_id, room_id))
@@ -755,7 +756,7 @@ class TestSimpleEvents:
 
     async def test_get_users(self, recorder):
         recorder.room_users = [{"id": "u1", "username": "sender"}]
-        recorder.online_ids = ["u1", "u9"]
+        recorder.online_ids = {"room1": ["u1", "u9"], "room2": ["u5"]}
 
         await handle_message("u1", "room1", {"type": "get_users"}, {"id": "u1"})
 

@@ -7,6 +7,7 @@ import pytest
 from fastapi import WebSocket
 
 from app.websocket.manager import ConnectionManager
+from tests.test_websocket.membership_fake import FakeMembership
 
 
 class TestNotificationValidation:
@@ -15,7 +16,7 @@ class TestNotificationValidation:
     @pytest.fixture
     def connection_manager(self):
         """創建連接管理器實例"""
-        return ConnectionManager()
+        return ConnectionManager(membership=FakeMembership().factory())
 
     @pytest.fixture
     def mock_websocket(self):

@@ -16,7 +16,7 @@ from app.models.room import (
     RoomSummary,
     RoomUpdate,
 )
-from app.models.user import UserInDB, UserPublic, UserResponse
+from app.models.user import RoomMember, UserInDB, UserPublic
 from app.repositories.message_repository import MessageRepository
 from app.repositories.room_repository import RoomRepository
 from app.repositories.user_repository import UserRepository
@@ -227,6 +227,14 @@ class RoomService:
     async def is_member(self, room_id: str, user_id: str) -> bool:
         """使用者是否為房間成員（房間不存在時為 False）"""
         return await self.room_repo.is_member(room_id, user_id)
+
+    async def get_member_ids(self, room_id: str) -> list[str]:
+        """房間的成員 ID（房間不存在時為空列表）"""
+        return await self.room_repo.get_member_ids(room_id)
+
+    async def get_member_room_ids(self, user_id: str, room_ids: list[str]) -> list[str]:
+        """room_ids 之中使用者是成員的房間"""
+        return await self.room_repo.get_room_ids_with_member(user_id, room_ids)
 
     async def get_room_for_user(
         self, room_id: str, user_id: str
@@ -801,7 +809,7 @@ class RoomService:
 
     async def get_room_members(
         self, room_id: str, skip: int = 0, limit: int = 50
-    ) -> list[UserResponse]:
+    ) -> list[RoomMember]:
         """
         獲取房間成員列表（分頁 + 批量查詢）
 
@@ -811,7 +819,7 @@ class RoomService:
             limit: 返回的成員數限制
 
         Returns:
-            list[UserResponse]: 成員列表
+            list[RoomMember]: 成員列表（不含 email）
         """
         # 獲取房間
         room = await self.room_repo.get_by_id(room_id)
@@ -826,18 +834,19 @@ class RoomService:
         # 批量查詢取代 N+1
         users = await self.user_repo.get_by_ids(member_ids_page)
 
-        return [self._to_user_response(user) for user in users]
+        return [self._to_room_member(user) for user in users]
 
     @staticmethod
     def _to_user_public(user: UserInDB) -> UserPublic:
         return UserPublic(id=user.id, username=user.username, avatar=user.avatar)
 
     @staticmethod
-    def _to_user_response(user: UserInDB) -> UserResponse:
-        """UserInDB 轉成 UserResponse（確保 _id 映射到 id）"""
-        user_dict = user.model_dump()
-        if "_id" in user_dict:
-            user_dict["id"] = user_dict.pop("_id")
-        elif user.id:
-            user_dict["id"] = str(user.id)
-        return UserResponse(**user_dict)
+    def _to_room_member(user: UserInDB) -> RoomMember:
+        return RoomMember(
+            id=user.id,
+            username=user.username,
+            full_name=user.full_name,
+            avatar=user.avatar,
+            is_active=user.is_active,
+            created_at=user.created_at,
+        )
