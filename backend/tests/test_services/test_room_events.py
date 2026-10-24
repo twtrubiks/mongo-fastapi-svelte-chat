@@ -28,6 +28,7 @@ class RoomEventRecorder:
         self.events: list[tuple[str, dict]] = []
         self.room_broadcasts: list[tuple[str, dict]] = []
         self.disconnected: list[tuple[str, str]] = []
+        self.notices: list[dict] = []
 
     async def send_event(self, user_id, event):
         self.events.append((user_id, event))
@@ -35,8 +36,9 @@ class RoomEventRecorder:
     async def broadcast_to_room(self, room_id, message, exclude_user=None):
         self.room_broadcasts.append((room_id, message))
 
-    async def force_disconnect(self, user_id, room_id, reason=""):
+    async def force_disconnect(self, user_id, room_id, reason="", notice=None):
         self.disconnected.append((user_id, room_id))
+        self.notices.append(notice)
 
 
 @pytest.fixture
@@ -132,6 +134,8 @@ class TestRoomUpdatedEvents:
             "kicked": True,
         }
         assert recorder.disconnected == [(users["member"], room.id)]
+        # 被移出者在斷線前收到同一則 user_left（前端據此離開房間）
+        assert recorder.notices == [event]
         updates = _room_updates(recorder)
         assert [user_id for user_id, _ in updates] == sorted(users.values())
         assert {summary["member_count"] for _, summary in updates} == {1}
@@ -155,6 +159,7 @@ class TestRoomUpdatedEvents:
             "kicked": False,
         }
         assert recorder.disconnected == [(users["member"], room.id)]
+        assert recorder.notices == [event]
 
     # 不是成員就沒有可離開的：不能藉此在任何房間（含私人房）洗出「離開了聊天室」
     async def test_non_member_cannot_leave(self, service, recorder, users):

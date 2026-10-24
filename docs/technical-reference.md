@@ -717,17 +717,17 @@ disconnect（房間 A） → 排程 _execute_room_leave（5s）
 
 成員資格只在 WS 連線建立時驗證（`verify_room_membership`），之後不重驗。因此撤銷成員資格的業務操作必須主動斷開既有連線，否則離開者已開的分頁會繼續收到房間所有新訊息廣播（對私密房間是機密性缺口）：
 
-- **`leave_room`**（Service 層）：廣播 `user_left(removed=true, kicked=false)` 後呼叫 `force_disconnect(user_id, room_id)`，關閉離開者在該房的 WS 連線
-- **`remove_member`**（Service 層，`DELETE /rooms/{room_id}/members/{user_id}`，僅房主）：與 `leave_room` 共用 `_revoke_member_access`，廣播 `user_left(removed=true, kicked=true)` 後斷開被移除者的連線
-- **`delete_room`**（Service 層）：廣播 `room_deleted` 後呼叫 `force_disconnect_room(room_id)`，關閉該房所有連線
+- **`leave_room`**（Service 層）：呼叫 `force_disconnect(user_id, room_id, notice=user_left)` 關閉離開者在該房的 WS 連線，再廣播 `user_left(removed=true, kicked=false)` 給房間
+- **`remove_member`**（Service 層，`DELETE /rooms/{room_id}/members/{user_id}`，僅房主）：與 `leave_room` 共用 `_revoke_member_access`，斷開被移除者的連線後廣播 `user_left(removed=true, kicked=true)`
+- **`delete_room`**（Service 層）：廣播 `room_deleted` 後呼叫 `force_disconnect_room(room_id)`，關閉該房所有連線（含已登記、還在確認成員資格的連線）
 
 與 `disconnect()`（暫時斷線）的差異：`force_disconnect` **立即**從 `room_users` 移除（不走 rejoin debounce——撤銷是確定事件），並以 close code **4003** 主動關閉 socket。前端的 `noReconnectCodes` 已含 4003，收到後不會嘗試重連，房間頁也不顯示「重新連接」提示。
 
 `user_left` 的 `user` 取自 `connection_manager.user_info`；被移除者不在線時（被移出的多半是這種）改從資料庫補上名稱。`remove_member` 以「仍是成員」為原子條件更新，同時離開與被移出時只有一方成功、只廣播一次；不是成員的人呼叫離開回 404（與房間不存在相同，不透露私人房是否存在）。
 
-連線建立時驗證兩次：認證中介層先驗證一次，`connect` 登記連線後再以 `still_member` 確認一次，通過才加入房間名單、廣播 `user_joined`。`force_disconnect` 只斷得到已登記的連線；若只在登記前驗證，撤銷剛好落在驗證與登記之間時斷不到這條連線，被移除者會持續收到廣播直到自己斷線。先登記再確認後，撤銷不是被再確認發現（撤回登記並以 4001 關閉，與移出後才連線相同），就是斷得到這條連線（4003）；確認期間被撤銷的連線不會再宣告加入，房內不會看到被移出的人又「加入」。
+連線建立時驗證兩次：認證中介層先驗證一次，`connect` 登記連線後再以 `still_member` 確認一次，通過才加入房間名單、廣播 `user_joined`。`force_disconnect` 只斷得到已登記的連線；若只在登記前驗證，撤銷剛好落在驗證與登記之間時斷不到這條連線，被移除者會持續收到廣播直到自己斷線。先登記再確認後，撤銷不是被再確認發現（撤回登記並以 4001 關閉，與移出後才連線相同），就是斷得到這條連線（4003）；確認期間被撤銷的連線不會再宣告加入。撤銷時先斷線、再廣播 `user_left`：反過來的話，再確認已通過、正在等鎖的連線會在廣播之後才宣告加入，房內在「被移出」之後又看到他「加入」，成員列表留著他。
 
-`user_left` 在斷線前廣播，被移除者自己的分頁也會收到。前端看到 `removed` 且是自己時，從「我的房間」移除該房並導回儀表板（`kicked` 時提示「你已被房主移出聊天室」）；自己在本分頁按離開時由離開流程處理導向。被移出的人能否再加入取決於房間的加入方式：邀請制要重新產生邀請碼、密碼房要變更密碼，公開直接加入的房間無法阻擋（房間設定的成員管理頁會說明）。
+被移除者自己的分頁在連線關閉前會收到同一則 `user_left`（`force_disconnect` 的 `notice`）。前端看到 `removed` 且是自己時，從「我的房間」移除該房並導回儀表板（`kicked` 時提示「你已被房主移出聊天室」）；自己在本分頁按離開時由離開流程處理導向。被移出的人能否再加入取決於房間的加入方式：邀請制要重新產生邀請碼、密碼房要變更密碼，公開直接加入的房間無法阻擋（房間設定的成員管理頁會說明）。
 
 ### 客戶端連線管理（一次性 Ticket 機制）
 

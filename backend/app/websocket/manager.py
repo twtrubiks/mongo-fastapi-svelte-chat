@@ -233,6 +233,7 @@ class ConnectionManager:
         reason: str = "已離開房間",
         code: int = 4003,
         websocket: WebSocket | None = None,
+        notice: dict | None = None,
     ):
         """
         強制斷開使用者在指定房間的 WS 連線（成員資格撤銷，非暫時斷線）
@@ -251,6 +252,7 @@ class ConnectionManager:
             code: 關閉代碼（撤銷用 4003）
             websocket: 提供時比對 identity，登記的已不是這條連線（已被撤銷或被新連線
                 取代）就不動任何狀態，比照 disconnect()
+            notice: 關閉前送給被斷開者的最後一則訊息（如 user_left，前端據此離開房間）
         """
         closing = None
         async with self._lock:
@@ -279,6 +281,11 @@ class ConnectionManager:
 
         # 鎖外關閉 socket（close 可能阻塞或拋錯，不可持鎖執行）
         if closing is not None:
+            if notice is not None:
+                try:
+                    await closing.send_text(safe_json_dumps(notice))
+                except Exception:  # intentional: 連線可能已由對端關閉，照常關閉
+                    pass
             try:
                 await closing.close(code=code, reason=reason)
             except Exception:  # intentional: 連線可能已由對端關閉
@@ -294,7 +301,12 @@ class ConnectionManager:
             reason: 關閉原因（帶入 WS close frame）
         """
         async with self._lock:
-            user_ids = list(self.room_users.get(room_id, set()))
+            # 已登記、還在確認成員資格的連線不在 room_users，一併斷開
+            user_ids = self.room_users.get(room_id, set()) | {
+                user_id
+                for user_id, rooms in self.active_connections.items()
+                if room_id in rooms
+            }
         for user_id in user_ids:
             await self.force_disconnect(user_id, room_id, reason=reason)
 

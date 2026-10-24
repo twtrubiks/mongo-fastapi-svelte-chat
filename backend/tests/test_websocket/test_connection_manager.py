@@ -9,6 +9,7 @@ import pytest
 from fastapi import WebSocket
 
 import app.websocket.manager as manager_module
+from app.services.room_service import RoomService
 from app.websocket.manager import ConnectionManager
 
 
@@ -769,6 +770,113 @@ class TestConnectionManager:
         newer.close.assert_not_called()
         assert connection_manager.active_connections["user1"][room_id] is newer
         assert "user1" in connection_manager.room_users[room_id]
+
+    @pytest.mark.asyncio
+    async def test_removed_while_recheck_waits_for_lock(self, connection_manager):
+        """再確認通過、排隊等鎖時被移出：房內先看到加入再看到移出，不會移出後又加入"""
+        room_id = "room123"
+        received = []  # (收件者, 事件類型, 事件中的使用者)
+
+        def recording_ws(name):
+            ws = self._ws()
+
+            async def send_text(text):
+                event = json.loads(text)
+                user = event.get("user") or {}
+                received.append((name, event["type"], user.get("id")))
+
+            ws.send_text = AsyncMock(side_effect=send_text)
+            return ws
+
+        def info(user_id):
+            return {"id": user_id, "username": user_id.title()}
+
+        await connection_manager.connect(
+            recording_ws("owner"), "owner", room_id, info("owner")
+        )
+        # 另一位成員的舊連線關得很慢：他重新連線時，connect 持鎖等舊連線關閉
+        old_closed = asyncio.Event()
+
+        async def slow_close(**_):
+            await old_closed.wait()
+
+        slow = recording_ws("other")
+        slow.close = AsyncMock(side_effect=slow_close)
+        await connection_manager.connect(slow, "other", room_id, info("other"))
+
+        recheck_read = asyncio.Event()
+
+        async def still_member():
+            await recheck_read.wait()
+            return True  # 讀資料庫時還是成員
+
+        member = recording_ws("member")
+        connecting = asyncio.create_task(
+            connection_manager.connect(
+                member, "member", room_id, info("member"), still_member=still_member
+            )
+        )
+        await asyncio.sleep(0.01)  # member 已登記，等再確認
+        reconnecting = asyncio.create_task(
+            connection_manager.connect(
+                recording_ws("other"), "other", room_id, info("other")
+            )
+        )
+        await asyncio.sleep(0.01)  # other 持鎖等舊連線關閉
+        recheck_read.set()
+        await asyncio.sleep(0.01)  # member 再確認通過，排隊等鎖
+
+        service = RoomService(
+            AsyncMock(), AsyncMock(), AsyncMock(), connection_manager=connection_manager
+        )
+        service.user_repo.get_by_id = AsyncMock(return_value=Mock(username="Member"))
+        service._notify_room_change = AsyncMock()
+        revoking = asyncio.create_task(
+            service._revoke_member_access(room_id, "member", kicked=True)
+        )
+        await asyncio.sleep(0.01)
+        old_closed.set()
+        await asyncio.gather(connecting, reconnecting, revoking)
+
+        seen_by_owner = [
+            kind
+            for to, kind, user_id in received
+            if (to, user_id) == ("owner", "member")
+        ]
+        assert seen_by_owner == ["user_joined", "user_left"]
+        assert member.close.call_args.kwargs["code"] == 4003
+        assert "member" not in connection_manager.room_users[room_id]
+
+    @pytest.mark.asyncio
+    async def test_room_deletion_reaches_connection_awaiting_recheck(
+        self, connection_manager
+    ):
+        """刪除房間時還在確認成員資格的連線（不在房間名單）也要斷開，之後不再宣告加入"""
+        room_id = "room123"
+        recheck_read = asyncio.Event()
+
+        async def still_member():
+            await recheck_read.wait()
+            return True  # 讀資料庫時房間還在
+
+        ws = self._ws()
+        connecting = asyncio.create_task(
+            connection_manager.connect(
+                ws,
+                "user1",
+                room_id,
+                {"id": "user1", "username": "User1"},
+                still_member=still_member,
+            )
+        )
+        await asyncio.sleep(0.01)
+        await connection_manager.force_disconnect_room(room_id)
+        recheck_read.set()
+
+        assert await connecting is False
+        assert ws.close.call_args.kwargs["code"] == 4003
+        assert "user1" not in connection_manager.active_connections
+        assert room_id not in connection_manager.room_users
 
     @pytest.mark.asyncio
     async def test_room_leave_debounce_cleans_up_room_users(self, connection_manager):

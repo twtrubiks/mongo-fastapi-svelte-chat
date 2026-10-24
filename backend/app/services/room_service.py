@@ -652,8 +652,8 @@ class RoomService:
     ) -> None:
         """成員資格移除後的通知與撤銷（離開房間與房主移除成員共用）
 
-        廣播 user_left 給房間內所有連線（含被移除者自己的分頁，前端據此離開房間），
-        再斷開被移除者在該房的 WS 連線。
+        斷開被移除者在該房的 WS 連線（關閉前送給他 user_left，前端據此離開房間），
+        再廣播 user_left 給房間。
         """
         if self._connection_manager:
             user_info = self._connection_manager.user_info.get(user_id, {}).copy()
@@ -664,22 +664,25 @@ class RoomService:
                 user_info = {"id": user_id}
                 if user:
                     user_info["username"] = user.username
-            await self._connection_manager.broadcast_to_room(
-                room_id,
-                {
-                    "type": "user_left",
-                    "user": user_info,
-                    "timestamp": datetime.now(UTC).isoformat(),
-                    "room_id": room_id,
-                    "removed": True,
-                    "kicked": kicked,
-                },
-            )
-            # 撤銷被移除者在該房的 WS 讀取權：成員資格只在 WS 連線當下驗證一次，
-            # 不主動斷線的話，已開的分頁會繼續收到房間所有新訊息廣播
+            user_left = {
+                "type": "user_left",
+                "user": user_info,
+                "timestamp": datetime.now(UTC).isoformat(),
+                "room_id": room_id,
+                "removed": True,
+                "kicked": kicked,
+            }
+            # 撤銷被移除者在該房的 WS 讀取權：成員資格只在 WS 連線時驗證，
+            # 不主動斷線的話，已開的分頁會繼續收到房間所有新訊息廣播。
+            # 先斷線再通知房間：他若有連線正在確認成員資格，先通知的話那條連線
+            # 會在「被移出」之後才宣告加入，房內又看到他「加入」
             await self._connection_manager.force_disconnect(
-                user_id, room_id, reason="已被移出房間" if kicked else "已離開房間"
+                user_id,
+                room_id,
+                reason="已被移出房間" if kicked else "已離開房間",
+                notice=user_left,
             )
+            await self._connection_manager.broadcast_to_room(room_id, user_left)
 
         await self._notify_room_change(room_id)
 

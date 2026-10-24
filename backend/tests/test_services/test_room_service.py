@@ -436,9 +436,14 @@ class TestRoomService:
 
         await room_service.leave_room(sample_room.id, user_id)
 
-        # 離開後必須強制斷開 WS，否則已開分頁會繼續收到房間廣播
-        mock_connection_manager.force_disconnect.assert_called_once_with(
-            user_id, sample_room.id, reason="已離開房間"
+        # 離開後必須強制斷開 WS，否則已開分頁會繼續收到房間廣播；
+        # 斷線前送給他的 user_left 就是廣播給房間的那一則
+        args, kwargs = mock_connection_manager.force_disconnect.call_args
+        assert args == (user_id, sample_room.id)
+        assert kwargs["reason"] == "已離開房間"
+        assert kwargs["notice"]["type"] == "user_left"
+        mock_connection_manager.broadcast_to_room.assert_called_once_with(
+            sample_room.id, kwargs["notice"]
         )
 
     @pytest.mark.asyncio

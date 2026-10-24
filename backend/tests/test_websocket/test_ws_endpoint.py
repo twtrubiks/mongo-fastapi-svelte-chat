@@ -513,6 +513,9 @@ class TestMembershipRevocation:
         )
         member_ws = await _connect(ctx, ctx.member)
 
+        # 撤銷斷得到這條連線：和已連上時被移出一樣，先收到 user_left 再以 4003 關閉
+        notice = await member_ws.receive_json()
+        assert (notice["type"], notice["kicked"]) == ("user_left", True)
         assert (await member_ws.receive_close())["code"] == 4003
         await self._assert_owner_saw_only_removal(owner_ws)
         await member_ws.disconnect()
