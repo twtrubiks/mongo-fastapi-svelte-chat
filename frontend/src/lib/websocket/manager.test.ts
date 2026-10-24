@@ -140,11 +140,12 @@ describe('斷線重連', () => {
     expect(ticket).toHaveBeenCalledTimes(1);
   });
 
-  // 伺服器暫時錯誤（例如驗證時資料庫故障）以 4000 完成關閉握手（wasClean）：仍要重連
-  it('伺服器以 4000 正常關閉時仍重連', async () => {
+  // 伺服器暫時錯誤以 4000 完成關閉握手（wasClean）：仍要重連；uvicorn 關機或重啟時用 1012，
+  // 1013 是請稍後再試，部署後也要自動連回
+  it.each([4000, 1012, 1013])('伺服器以 %i 正常關閉時仍重連', async (code) => {
     const ws = await connectOpen('r1');
 
-    ws.serverClose(4000, true);
+    ws.serverClose(code, true);
     await vi.advanceTimersByTimeAsync(1000);
 
     expect(ticket).toHaveBeenCalledTimes(2);
@@ -171,6 +172,36 @@ describe('斷線重連', () => {
     }
 
     await vi.advanceTimersByTimeAsync(120_000);
+    expect(ticket).toHaveBeenCalledTimes(11);
+    expect(failed).toHaveBeenCalledOnce();
+    expect(failed.mock.calls[0]![0]).toMatchObject({ attempts: 10 });
+  });
+
+  // ping 逾時的路徑也要在達到上限時通知：伺服器卡在驗證（例如資料庫逾時）時，
+  // 連上後一直收不到訊息，ping 逾時可能比伺服器的 4000 先發生
+  it('連上後一直收不到伺服器訊息、每次都 ping 逾時：達到上限時停止並通知', async () => {
+    const failed = vi.fn();
+    manager.on('reconnect_failed', failed);
+    await connectOpen('r1');
+    // 退避時間到、取了新 ticket 就讓連線開啟（不送任何訊息）
+    const reconnectAndOpen = async () => {
+      const before = ticket.mock.calls.length;
+      for (let waited = 0; ticket.mock.calls.length === before && waited < 60_000; waited += 500) {
+        await vi.advanceTimersByTimeAsync(500);
+      }
+      await flush();
+      last().serverOpen();
+      await flush();
+    };
+
+    for (let attempt = 0; attempt < 10; attempt++) {
+      await vi.advanceTimersByTimeAsync(30_000); // 20 秒送 ping、10 秒沒有回應
+      await reconnectAndOpen();
+    }
+    expect(failed).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(30_000);
+    await vi.advanceTimersByTimeAsync(60_000);
+
     expect(ticket).toHaveBeenCalledTimes(11);
     expect(failed).toHaveBeenCalledOnce();
     expect(failed.mock.calls[0]![0]).toMatchObject({ attempts: 10 });

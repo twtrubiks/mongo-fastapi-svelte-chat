@@ -7,8 +7,9 @@ import { handleUserJoined, handleUserLeft, handleUserStatusChanged, handleRoomUs
 import { handleNewMessage, handleMessageHistory, handleTypingIndicator, handleError, handleAck, handleMessageEdited, handleMessageDeleted, handleMessageSync, handleBotTyping, handleBotError } from './messageHandlers';
 import { dispatchNotification, handleNotificationStatusChanged, cancelPendingNotificationRefresh } from './notificationHandlers';
 
-// 伺服器暫時錯誤的關閉代碼（與後端 handler 的 4000 一致）
-const SERVER_ERROR_CODE = 4000;
+// 伺服器暫時無法服務的關閉代碼：即使完成關閉握手（wasClean）也要重連
+// 4000：後端 handler 的暫時錯誤（例如驗證時資料庫故障）；1012：伺服器重啟（uvicorn 關機時）；1013：稍後再試
+const TRANSIENT_CLOSE_CODES = new Set([4000, 1012, 1013]);
 
 export class WebSocketManager {
   private ws: WebSocket | null = null;
@@ -172,17 +173,12 @@ export class WebSocketManager {
           this.stopHeartbeat();
           this.emit('disconnected', { code: event.code, reason: event.reason });
 
-          // 判斷是否需要重連：連線中斷才重連；伺服器以 4000 正常關閉的是暫時錯誤
-          // （例如驗證時資料庫故障），也要重連
-          if ((!event.wasClean || event.code === SERVER_ERROR_CODE) && this.shouldReconnect(event.code)) {
-            if (opened && this.reconnectAttempts >= this.maxReconnectAttempts) {
-              // 每次都連上又在驗證階段被關閉，連續達到上限：停止並通知
-              // （沒連上的由 performReconnect 通知，這裡不重複）
-              this.emit('reconnect_failed', {
-                attempts: this.reconnectAttempts,
-                lastError: new Error(`連線被關閉（${event.code}）`),
-              });
+          // 判斷是否需要重連：連線中斷才重連；伺服器暫時無法服務而正常關閉的也要重連
+          if ((!event.wasClean || TRANSIENT_CLOSE_CODES.has(event.code)) && this.shouldReconnect(event.code)) {
+            if (opened) {
+              this.reconnectOrGiveUp(new Error(`連線被關閉（${event.code}）`));
             } else {
+              // 沒連上的由 performReconnect 處理上限與通知
               this.scheduleReconnect();
             }
           }
@@ -582,16 +578,17 @@ export class WebSocketManager {
 
     } catch (error) {
       this.isReconnecting = false;
+      this.reconnectOrGiveUp(error);
+    }
+  }
 
-      // 如果還有重連次數，繼續嘗試
-      if (this.reconnectAttempts < this.maxReconnectAttempts) {
-        this.scheduleReconnect();
-      } else {
-        this.emit('reconnect_failed', {
-          attempts: this.reconnectAttempts,
-          lastError: error
-        });
-      }
+  // 繼續重連；連續失敗達到上限時停止並通知（onclose、ping 逾時、重連失敗共用，只通知一次）
+  private reconnectOrGiveUp(lastError: unknown) {
+    if (this.isReconnecting) return;
+    if (this.reconnectAttempts >= this.maxReconnectAttempts) {
+      this.emit('reconnect_failed', { attempts: this.reconnectAttempts, lastError });
+    } else {
+      this.scheduleReconnect();
     }
   }
 
@@ -666,7 +663,7 @@ export class WebSocketManager {
     this.emit('disconnected', { code: 4000, reason: 'Ping timeout' });
 
     if (this.shouldReconnect()) {
-      this.scheduleReconnect();
+      this.reconnectOrGiveUp(new Error('Ping timeout'));
     }
   }
 
