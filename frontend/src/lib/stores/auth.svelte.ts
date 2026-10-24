@@ -1,4 +1,5 @@
 import { browser } from '$app/environment';
+import { goto } from '$app/navigation';
 import { apiClient } from '../api/client';
 import { wsManager } from '../websocket/manager';
 import { messageRetryManager } from '../utils/messageRetry';
@@ -67,9 +68,7 @@ export const authStore = {
     const restored = restoreFromStorage();
 
     // 認證失敗時的回調（BFF 透明 refresh 也失敗）
-    apiClient.onAuthFailure = () => {
-      authStore.logout();
-    };
+    apiClient.onAuthFailure = handleAuthFailure;
 
     return restored;
   },
@@ -166,10 +165,22 @@ export const authStore = {
 export const isAuthenticated = () => authState.user !== null;
 export const currentUser = () => authState.user;
 
+// 登入徹底失效（BFF 換發也失敗）：登出並回到登入頁。
+// 同一時間多個請求都會 401，只處理一次
+let handlingAuthFailure = false;
+async function handleAuthFailure() {
+  if (handlingAuthFailure) return;
+  handlingAuthFailure = true;
+  try {
+    await authStore.logout();
+    await goto('/login');
+  } finally {
+    handlingAuthFailure = false;
+  }
+}
+
 // 模組載入時自動恢復認證狀態（確保子元件 onMount 前已有 user）
 if (browser) {
   restoreFromStorage();
-  apiClient.onAuthFailure = () => {
-    authStore.logout();
-  };
+  apiClient.onAuthFailure = handleAuthFailure;
 }
