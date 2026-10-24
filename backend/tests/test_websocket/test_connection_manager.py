@@ -704,6 +704,72 @@ class TestConnectionManager:
         assert "user1" not in connection_manager.active_connections
         assert "user1" not in connection_manager.room_users.get(room_id, set())
 
+    @staticmethod
+    def _ws():
+        ws = Mock(spec=WebSocket)
+        ws.accept = AsyncMock()
+        ws.send_text = AsyncMock()
+        ws.close = AsyncMock()
+        return ws
+
+    @pytest.mark.asyncio
+    async def test_failed_recheck_withdraws_registration(self, connection_manager):
+        """登記後再確認已不是成員：撤回登記、以 4001 關閉，房內不會看到他加入"""
+        room_id = "room123"
+        other = self._ws()
+        await connection_manager.connect(
+            other, "user2", room_id, {"id": "user2", "username": "User2"}
+        )
+        other.send_text.reset_mock()
+        ws = self._ws()
+
+        connected = await connection_manager.connect(
+            ws,
+            "user1",
+            room_id,
+            {"id": "user1", "username": "User1"},
+            still_member=AsyncMock(return_value=False),
+        )
+
+        assert connected is False
+        assert ws.close.call_args.kwargs["code"] == 4001
+        ws.send_text.assert_not_called()
+        other.send_text.assert_not_called()
+        assert "user1" not in connection_manager.active_connections
+        assert connection_manager.room_users[room_id] == {"user2"}
+
+    @pytest.mark.asyncio
+    async def test_failed_recheck_leaves_newer_connection_alone(
+        self, connection_manager
+    ):
+        """再確認期間同一使用者的新連線取代了這條：確認失敗只撤回自己，不動新連線"""
+        room_id = "room123"
+        user_info = {"id": "user1", "username": "User1"}
+        answer = asyncio.Event()
+
+        async def not_member_after_newer_connection():
+            await answer.wait()
+            return False
+
+        older, newer = self._ws(), self._ws()
+        older_connect = asyncio.create_task(
+            connection_manager.connect(
+                older,
+                "user1",
+                room_id,
+                user_info,
+                still_member=not_member_after_newer_connection,
+            )
+        )
+        await asyncio.sleep(0)
+        assert await connection_manager.connect(newer, "user1", room_id, user_info)
+        answer.set()
+
+        assert await older_connect is False
+        newer.close.assert_not_called()
+        assert connection_manager.active_connections["user1"][room_id] is newer
+        assert "user1" in connection_manager.room_users[room_id]
+
     @pytest.mark.asyncio
     async def test_room_leave_debounce_cleans_up_room_users(self, connection_manager):
         """測試 debounce 到期後正確清理 room_users"""

@@ -456,6 +456,70 @@ class TestMembershipRevocation:
         await retry_ws.open()
         assert (await retry_ws.receive_close())["code"] == 4001
 
+    async def _remove_member(self, ctx) -> None:
+        removed = await ctx.client.delete(
+            f"/api/rooms/{ctx.room_id}/members/{ctx.member['id']}",
+            headers=ctx.owner["headers"],
+        )
+        assert removed.status_code == 200
+
+    async def _assert_owner_saw_only_removal(self, owner_ws) -> None:
+        """房主只看到移出與房間更新，沒有被移出者又「加入」"""
+        seen = [(await owner_ws.receive_json())["type"] for _ in range(2)]
+        assert seen == ["user_left", "room_updated"]
+        await owner_ws.assert_silent()
+
+    async def test_removed_between_check_and_registration_is_rejected(
+        self, ctx, manager, monkeypatch
+    ):
+        """驗證成員資格之後、登記連線之前被移出：撤銷時連線還沒登記，斷不到它"""
+        owner_ws = await _connect(ctx, ctx.owner)
+        await _connection_preamble(owner_ws)
+        authenticate = handlers.websocket_auth_middleware
+
+        async def removed_right_after_check(websocket, room_id):
+            user_info = await authenticate(websocket, room_id)
+            await self._remove_member(ctx)
+            return user_info
+
+        monkeypatch.setattr(
+            handlers, "websocket_auth_middleware", removed_right_after_check
+        )
+        member_ws = await _connect(ctx, ctx.member)
+
+        # 與移出後才連線相同：以 4001 拒絕，不留下來繼續收房間廣播
+        assert (await member_ws.receive_close())["code"] == 4001
+        await self._assert_owner_saw_only_removal(owner_ws)
+        await member_ws.disconnect()
+        await owner_ws.disconnect()
+        assert ctx.member["id"] not in manager.active_connections
+        assert ctx.member["id"] not in manager.room_users.get(ctx.room_id, set())
+
+    async def test_removed_during_recheck_is_not_announced(
+        self, ctx, manager, monkeypatch
+    ):
+        """登記後再確認時仍是成員，但緊接著被移出：撤銷斷得到這條連線，也不再宣告加入"""
+        owner_ws = await _connect(ctx, ctx.owner)
+        await _connection_preamble(owner_ws)
+        verify = handlers.verify_room_membership
+
+        async def removed_right_after_recheck(user_id, room_id):
+            still_member = await verify(user_id, room_id)
+            await self._remove_member(ctx)
+            return still_member
+
+        monkeypatch.setattr(
+            handlers, "verify_room_membership", removed_right_after_recheck
+        )
+        member_ws = await _connect(ctx, ctx.member)
+
+        assert (await member_ws.receive_close())["code"] == 4003
+        await self._assert_owner_saw_only_removal(owner_ws)
+        await member_ws.disconnect()
+        await owner_ws.disconnect()
+        assert ctx.member["id"] not in manager.active_connections
+        assert ctx.member["id"] not in manager.room_users.get(ctx.room_id, set())
+
 
 @pytest.mark.asyncio
 @pytest.mark.integration

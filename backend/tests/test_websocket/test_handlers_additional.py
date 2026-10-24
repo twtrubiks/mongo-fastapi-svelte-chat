@@ -3,7 +3,7 @@
 """
 
 from datetime import UTC, datetime
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import ANY, AsyncMock, Mock, patch
 
 import pytest
 from fastapi import WebSocketDisconnect
@@ -97,9 +97,9 @@ class TestWebSocketHandlersAdditional:
 
             await handle_websocket_connection(mock_websocket, "room123")
 
-            # 驗證連線建立
+            # 驗證連線建立（登記後再確認成員資格）
             mock_cm.connect.assert_called_once_with(
-                mock_websocket, "user123", "room123", mock_user_info
+                mock_websocket, "user123", "room123", mock_user_info, still_member=ANY
             )
             # 驗證歡迎訊息
             assert mock_cm.send_personal_message.call_count >= 1

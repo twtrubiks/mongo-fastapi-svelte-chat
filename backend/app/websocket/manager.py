@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 
 from fastapi import WebSocket
@@ -48,8 +49,13 @@ class ConnectionManager:
         self._lock = asyncio.Lock()
 
     async def connect(
-        self, websocket: WebSocket, user_id: str, room_id: str, user_info: dict
-    ):
+        self,
+        websocket: WebSocket,
+        user_id: str,
+        room_id: str,
+        user_info: dict,
+        still_member: Callable[[], Awaitable[bool]] | None = None,
+    ) -> bool:
         """
         建立 WebSocket 連線
 
@@ -58,6 +64,13 @@ class ConnectionManager:
             user_id: 使用者 ID
             room_id: 房間 ID
             user_info: 使用者資訊
+            still_member: 登記連線後再確認一次成員資格。連線前雖已驗證過，但撤銷
+                （force_disconnect）只斷得到已登記的連線，驗證之後、登記之前被移出，
+                這條連線就會留下來繼續收房間廣播。先登記再確認：撤銷不是在這裡被發現，
+                就是斷得到這條連線。確認通過前不加入房間名單、不宣告加入
+
+        Returns:
+            bool: 是否建立連線
         """
         # 在測試環境中，WebSocket 可能還未被接受
         # 在生產環境中，WebSocket 已經在 handlers.py 中被接受
@@ -98,8 +111,25 @@ class ConnectionManager:
                         f"Error closing old connection for user {user_id}: {e}"
                     )
 
-            # 儲存連線
+            # 儲存連線（登記後 force_disconnect 才找得到這條連線）
             self.active_connections[user_id][room_id] = websocket
+
+        # 鎖外確認：查資料庫期間撤銷的 force_disconnect 才拿得到鎖
+        if still_member is not None and not await still_member():
+            # 與連線前驗證失敗相同：撤回登記並以 4001 關閉
+            await self.force_disconnect(
+                user_id,
+                room_id,
+                reason="Authentication failed",
+                code=4001,
+                websocket=websocket,
+            )
+            return False
+
+        async with self._lock:
+            # 確認期間這條連線可能已被撤銷，或被同一使用者的新連線取代
+            if self.active_connections.get(user_id, {}).get(room_id) is not websocket:
+                return False
 
             # 初始化房間使用者集合
             if room_id not in self.room_users:
@@ -154,6 +184,7 @@ class ConnectionManager:
         await self._broadcast_user_status(
             user_id, user_info, True, exclude_room=room_id
         )
+        return True
 
     async def disconnect(
         self, user_id: str, room_id: str, websocket: WebSocket | None = None
@@ -196,7 +227,12 @@ class ConnectionManager:
             logger.info(f"User {user_id} disconnected from room {room_id}")
 
     async def force_disconnect(
-        self, user_id: str, room_id: str, reason: str = "已離開房間"
+        self,
+        user_id: str,
+        room_id: str,
+        reason: str = "已離開房間",
+        code: int = 4003,
+        websocket: WebSocket | None = None,
     ):
         """
         強制斷開使用者在指定房間的 WS 連線（成員資格撤銷，非暫時斷線）
@@ -212,12 +248,20 @@ class ConnectionManager:
             user_id: 使用者 ID
             room_id: 房間 ID
             reason: 關閉原因（帶入 WS close frame）
+            code: 關閉代碼（撤銷用 4003）
+            websocket: 提供時比對 identity，登記的已不是這條連線（已被撤銷或被新連線
+                取代）就不動任何狀態，比照 disconnect()
         """
-        websocket = None
+        closing = None
         async with self._lock:
             user_rooms = self.active_connections.get(user_id)
+            if (
+                websocket is not None
+                and (user_rooms or {}).get(room_id) is not websocket
+            ):
+                return
             if user_rooms:
-                websocket = user_rooms.pop(room_id, None)
+                closing = user_rooms.pop(room_id, None)
                 # 使用者沒有其他房間連線時，比照 disconnect() 排程 debounce 離線
                 if not user_rooms:
                     del self.active_connections[user_id]
@@ -234,9 +278,9 @@ class ConnectionManager:
                     del self.room_users[room_id]
 
         # 鎖外關閉 socket（close 可能阻塞或拋錯，不可持鎖執行）
-        if websocket is not None:
+        if closing is not None:
             try:
-                await websocket.close(code=4003, reason=reason)
+                await closing.close(code=code, reason=reason)
             except Exception:  # intentional: 連線可能已由對端關閉
                 pass
             logger.info(f"Force disconnected user {user_id} from room {room_id}")
