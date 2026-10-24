@@ -336,16 +336,17 @@ describe('成員事件', () => {
   });
 
   it.each([
-    ['被房主移出', true],
-    ['在其他分頁離開', false],
-  ])('自己%s：不再是成員，通知頁面離開房間', (_, kicked) => {
+    ['被房主移出', true, false],
+    ['被房主移出並封鎖', true, true],
+    ['在其他分頁離開', false, false],
+  ])('自己%s：不再是成員，通知頁面離開房間', (_, kicked, banned) => {
     const forgetMembership = vi.spyOn(roomStore, 'forgetMembership').mockImplementation(() => {});
     const context = ctx();
 
-    handleUserLeft(userLeft('me', { removed: true, kicked, timestamp: '2026-01-01T00:00:00Z' }), context);
+    handleUserLeft(userLeft('me', { removed: true, kicked, banned, timestamp: '2026-01-01T00:00:00Z' }), context);
 
     expect(forgetMembership).toHaveBeenCalledWith('r1');
-    expect(context.emit).toHaveBeenCalledWith('removed_from_room', { room_id: 'r1', kicked });
+    expect(context.emit).toHaveBeenCalledWith('removed_from_room', { room_id: 'r1', kicked, banned });
     expect(messageStore.messages).toEqual([]);
   });
 

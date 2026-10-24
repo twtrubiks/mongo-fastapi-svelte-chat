@@ -592,9 +592,10 @@
     };
 
     // 成員資格被移除：被房主移出，或在其他分頁離開了這個房間
-    const handleRemovedFromRoom = (data: { room_id: string; kicked: boolean }) => {
+    const handleRemovedFromRoom = (data: { room_id: string; kicked: boolean; banned: boolean }) => {
       if (data.room_id !== roomId || isLeavingRoom) return;
-      goto(`/app/dashboard?removed=${data.kicked ? 'kicked' : 'left'}`, { replaceState: true });
+      const reason = data.banned ? 'banned' : data.kicked ? 'kicked' : 'left';
+      goto(`/app/dashboard?removed=${reason}`, { replaceState: true });
     };
 
     const handleRoomUpdated = (data: any) => {

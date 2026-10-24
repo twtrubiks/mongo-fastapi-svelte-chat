@@ -243,6 +243,8 @@ export interface WSUserLeftMessage {
   removed?: boolean;
   /** 由房主移除 */
   kicked?: boolean;
+  /** 由房主移除並封鎖，不能再加入 */
+  banned?: boolean;
 }
 
 export interface WSUserStatusChangedMessage {
