@@ -145,6 +145,49 @@ class TestConnectionManager:
         mock_ws1.close.assert_called_once()
 
     @pytest.mark.asyncio
+    async def test_slow_close_of_replaced_connection_blocks_no_one_else(
+        self, connection_manager
+    ):
+        """取代舊連線時，舊連線關閉很慢（對端不回關閉握手）：其他人的連線與撤銷不被卡住"""
+        room_id = "room123"
+        old_closed = asyncio.Event()
+
+        async def slow_close(**_):
+            await old_closed.wait()
+
+        def ws():
+            mock = Mock(spec=WebSocket)
+            mock.accept = AsyncMock()
+            mock.send_text = AsyncMock()
+            mock.close = AsyncMock()
+            return mock
+
+        old, new = ws(), ws()
+        old.close = AsyncMock(side_effect=slow_close)
+        info = {"id": "user1", "username": "User1"}
+        await connection_manager.connect(old, "user1", room_id, info)
+        reconnecting = asyncio.create_task(
+            connection_manager.connect(new, "user1", room_id, info)
+        )
+        await asyncio.sleep(0.01)  # 正在等舊連線關閉
+
+        other = ws()
+        await asyncio.wait_for(
+            connection_manager.connect(
+                other, "user2", room_id, {"id": "user2", "username": "User2"}
+            ),
+            timeout=1,
+        )
+        await asyncio.wait_for(
+            connection_manager.force_disconnect("user2", room_id), timeout=1
+        )
+        other.close.assert_called_once()
+
+        old_closed.set()
+        assert await reconnecting is True
+        assert connection_manager.active_connections["user1"][room_id] is new
+
+    @pytest.mark.asyncio
     async def test_stale_disconnect_preserves_new_connection(self, connection_manager):
         """測試舊連線的 disconnect 不會誤刪已取代的新連線（競態修復）
 
@@ -794,16 +837,6 @@ class TestConnectionManager:
         await connection_manager.connect(
             recording_ws("owner"), "owner", room_id, info("owner")
         )
-        # 另一位成員的舊連線關得很慢：他重新連線時，connect 持鎖等舊連線關閉
-        old_closed = asyncio.Event()
-
-        async def slow_close(**_):
-            await old_closed.wait()
-
-        slow = recording_ws("other")
-        slow.close = AsyncMock(side_effect=slow_close)
-        await connection_manager.connect(slow, "other", room_id, info("other"))
-
         recheck_read = asyncio.Event()
 
         async def still_member():
@@ -817,12 +850,8 @@ class TestConnectionManager:
             )
         )
         await asyncio.sleep(0.01)  # member 已登記，等再確認
-        reconnecting = asyncio.create_task(
-            connection_manager.connect(
-                recording_ws("other"), "other", room_id, info("other")
-            )
-        )
-        await asyncio.sleep(0.01)  # other 持鎖等舊連線關閉
+        # 其他操作正持鎖（例如另一條連線宣告加入時，鎖內廣播遇到很慢的連線）
+        await connection_manager._lock.acquire()
         recheck_read.set()
         await asyncio.sleep(0.01)  # member 再確認通過，排隊等鎖
 
@@ -835,8 +864,8 @@ class TestConnectionManager:
             service._revoke_member_access(room_id, "member", kicked=True)
         )
         await asyncio.sleep(0.01)
-        old_closed.set()
-        await asyncio.gather(connecting, reconnecting, revoking)
+        connection_manager._lock.release()
+        await asyncio.gather(connecting, revoking)
 
         seen_by_owner = [
             kind

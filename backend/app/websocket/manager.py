@@ -97,22 +97,19 @@ class ConnectionManager:
                     f"User {user_id} rejoined room {room_id} within debounce window"
                 )
 
-            # 初始化使用者連線字典
-            if user_id not in self.active_connections:
-                self.active_connections[user_id] = {}
+            # 儲存連線（登記後 force_disconnect 才找得到這條連線），
+            # 同一使用者在同一房間的舊連線一併從登記移除
+            user_rooms = self.active_connections.setdefault(user_id, {})
+            replaced = user_rooms.get(room_id)
+            user_rooms[room_id] = websocket
 
-            # 檢查是否已有相同使用者在同一房間的連線
-            if room_id in self.active_connections[user_id]:
-                old_websocket = self.active_connections[user_id][room_id]
-                try:
-                    await old_websocket.close()
-                except Exception as e:  # intentional catch-all
-                    logger.error(
-                        f"Error closing old connection for user {user_id}: {e}"
-                    )
-
-            # 儲存連線（登記後 force_disconnect 才找得到這條連線）
-            self.active_connections[user_id][room_id] = websocket
+        # 鎖外關閉舊連線：對端不回關閉握手時 close 會等到逾時，持鎖等會卡住所有人
+        # 的連線與斷線。舊連線已不在登記中，它的 disconnect 會因 identity 不符略過
+        if replaced is not None:
+            try:
+                await replaced.close()
+            except Exception as e:  # intentional catch-all
+                logger.error(f"Error closing old connection for user {user_id}: {e}")
 
         # 鎖外確認：查資料庫期間撤銷的 force_disconnect 才拿得到鎖
         if still_member is not None and not await still_member():
