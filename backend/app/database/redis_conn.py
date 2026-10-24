@@ -5,6 +5,7 @@ import logging
 import redis.asyncio as redis
 
 from app.config import settings
+from app.database.errors import NotConnectedError
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +44,7 @@ class RedisManager:
     async def get_client(self) -> redis.Redis:
         """獲取 Redis 客戶端實例"""
         if self.redis_client is None:
-            raise RuntimeError("Redis not connected. Call connect() first.")
+            raise NotConnectedError("Redis not connected. Call connect() first.")
         return self.redis_client
 
 
