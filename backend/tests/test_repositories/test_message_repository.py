@@ -13,6 +13,7 @@ from app.models.message import (
     MessageStatus,
     MessageType,
     MessageUpdate,
+    ReplyToMessage,
 )
 from app.repositories.message_repository import MessageRepository
 
@@ -517,6 +518,101 @@ class TestMessageRepositoryContracts:
         assert deleted == 3
         assert await repo.collection.count_documents({"room_id": room_id}) == 0
         assert await repo.collection.count_documents({"room_id": other_room_id}) == 1
+
+
+@pytest.mark.unit
+class TestMessageRepositoryQueries:
+    """序號計數器、斷線補發、單邊日期搜尋與引用預覽"""
+
+    @pytest.mark.asyncio
+    async def test_next_room_seq_counts_per_room(self, db_manager):
+        repo = MessageRepository(db_manager.database)
+        room_id, other_room_id = str(ObjectId()), str(ObjectId())
+
+        seqs = [await repo.next_room_seq(room_id) for _ in range(3)]
+        other = await repo.next_room_seq(other_room_id)
+
+        assert (seqs, other) == ([1, 2, 3], 1)
+        # 計數器文件的位置是上線資料的一部分，改了既有房間的序號會從 1 重來
+        counters = await db_manager.database["counters"].find().to_list()
+        assert sorted(counters, key=lambda c: c["seq"]) == [
+            {"_id": f"room_seq:{other_room_id}", "seq": 1},
+            {"_id": f"room_seq:{room_id}", "seq": 3},
+        ]
+
+    @pytest.mark.asyncio
+    async def test_get_after_seq_skips_deleted(self, db_manager):
+        repo = MessageRepository(db_manager.database)
+        room_id = str(ObjectId())
+        await _insert_with_created_at(repo.collection, room_id, [0, 1, 2, 3])
+        docs = await repo.collection.find({"room_id": room_id}).sort("_id").to_list()
+        for seq, doc in enumerate(docs, start=1):
+            await repo.collection.update_one(
+                {"_id": doc["_id"]}, {"$set": {"seq": seq}}
+            )
+        await repo.delete(str(docs[2]["_id"]))
+
+        after_first = await repo.get_after_seq(room_id, 1)
+
+        assert [(m.seq, m.content) for m in after_first] == [(2, "m1"), (4, "m3")]
+        assert await repo.count_after_seq(room_id, 1) == 2
+
+    @pytest.mark.parametrize(
+        ("bounds", "expected"),
+        [
+            ({"start_date": datetime(2026, 1, 1, 0, 1)}, ["m2", "m1"]),
+            ({"end_date": datetime(2026, 1, 1, 0, 1)}, ["m1", "m0"]),
+            (
+                {
+                    "start_date": datetime(2026, 1, 1, 0, 1),
+                    "end_date": datetime(2026, 1, 1, 0, 1),
+                },
+                ["m1"],
+            ),
+        ],
+        ids=["start-only", "end-only", "both"],
+    )
+    @pytest.mark.asyncio
+    async def test_search_by_date_range(self, db_manager, bounds, expected):
+        repo = MessageRepository(db_manager.database)
+        room_id = str(ObjectId())
+        await _insert_with_created_at(repo.collection, room_id, [0, 1, 2])
+
+        result = await repo.search_messages(room_id, MessageSearchQuery(**bounds))
+
+        assert [m.content for m in result.messages] == expected
+
+    @pytest.mark.asyncio
+    async def test_get_reply_previews(self, db_manager):
+        """去重、略過無效與不存在的 id，一次撈回所有被回覆訊息"""
+        repo = MessageRepository(db_manager.database)
+        room_id = str(ObjectId())
+        await _insert_with_created_at(repo.collection, room_id, [0, 1, 2])
+        docs = await repo.collection.find({"room_id": room_id}).sort("_id").to_list()
+        first, second = str(docs[0]["_id"]), str(docs[1]["_id"])
+
+        previews = await repo.get_reply_previews(
+            [first, second, first, "", "not-an-id", str(ObjectId())]
+        )
+
+        assert previews == {
+            message_id: ReplyToMessage(
+                id=message_id,
+                content=doc["content"],
+                username="testuser",
+                created_at=doc["created_at"],
+            )
+            for message_id, doc in ((first, docs[0]), (second, docs[1]))
+        }
+
+    @pytest.mark.parametrize(
+        "reply_ids", [[], ["", "not-an-id"]], ids=["empty", "all-invalid"]
+    )
+    @pytest.mark.asyncio
+    async def test_get_reply_previews_without_valid_ids(self, db_manager, reply_ids):
+        repo = MessageRepository(db_manager.database)
+
+        assert await repo.get_reply_previews(reply_ids) == {}
 
 
 @pytest.mark.unit

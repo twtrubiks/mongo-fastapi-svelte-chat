@@ -362,6 +362,53 @@ class TestHandleBotMention:
             assert sent["type"] == "error"
             assert "正在回覆中" in sent["message"]
 
+    async def test_second_mention_blocked_while_first_streams(self, allowed_limiter):
+        """第一個 @bot 串流途中，同房另一個 @bot 被擋：鎖在串流期間一直持有"""
+        stream_calls = []
+
+        async def stream_reply(question, history):
+            stream_calls.append(question)
+            yield "你"
+            if len(stream_calls) == 1:
+                await handle_bot_mention("user2", "room_busy", "插隊", "trigger_msg_2")
+            yield "好"
+
+        mock_ai_service = Mock()
+        mock_ai_service.stream_reply = Mock(side_effect=stream_reply)
+        mock_msg_service = Mock()
+        mock_msg_service.create_message = AsyncMock(return_value=_bot_message_stub())
+        mock_msg_service.get_room_messages_for_context = AsyncMock(return_value=[])
+        mock_msg_service.get_message_by_id = AsyncMock(return_value=_bot_reply_stub())
+
+        with (
+            patch("app.websocket.handlers.get_bot_user_id", return_value="bot123"),
+            patch("app.websocket.handlers.get_redis", new=AsyncMock()),
+            patch(
+                "app.websocket.handlers.SlidingWindowRateLimiter",
+                return_value=allowed_limiter,
+            ),
+            patch(
+                "app.websocket.handlers.create_ai_service",
+                new=AsyncMock(return_value=mock_ai_service),
+            ),
+            patch(
+                "app.websocket.handlers.create_message_service",
+                new=AsyncMock(return_value=mock_msg_service),
+            ),
+            patch("app.websocket.handlers.connection_manager") as mock_cm,
+        ):
+            mock_cm.broadcast_to_room = AsyncMock()
+            mock_cm.broadcast_message = AsyncMock()
+            mock_cm.send_personal_message = AsyncMock()
+            await handle_bot_mention("user1", "room_busy", "你好", "trigger_msg_1")
+
+        assert stream_calls == ["你好"]
+        mock_msg_service.create_message.assert_awaited_once()
+        mock_cm.send_personal_message.assert_awaited_once()
+        user_id, room_id, sent = mock_cm.send_personal_message.call_args.args
+        assert (user_id, room_id, sent["type"]) == ("user2", "room_busy", "error")
+        assert sent["message"] == "@bot 正在回覆中，請稍候再問"
+
     async def test_lock_released_after_completion(self, allowed_limiter):
         """streaming 完成後釋放並發鎖（finally），房間不會永久卡死"""
         from app.websocket.handlers import _bot_streaming_rooms
@@ -730,6 +777,21 @@ class TestBuildBotHistoryLimits:
 
         assert build_bot_history(messages, "bot123", now=HISTORY_NOW) == (
             "Bob: 剛好\nAI 助理: 邊界答\nBob: 最近\nAI 助理: 新答"
+        )
+
+    def test_image_between_pairs_does_not_cut_history(self):
+        """圖片訊息夾在兩組往返之間：只略過圖片，之後的往返照常帶入"""
+        image = _stored_msg("Amy", "/api/files/image/cat.png", "u2").model_copy(
+            update={"message_type": MessageType.IMAGE}
+        )
+        messages = [
+            *_qa("Bob", "第一題", "第一答"),
+            image,
+            *_qa("Bob", "第二題", "第二答"),
+        ]
+
+        assert build_bot_history(messages, "bot123", now=HISTORY_NOW) == (
+            "Bob: 第一題\nAI 助理: 第一答\nBob: 第二題\nAI 助理: 第二答"
         )
 
     def test_answer_truncated_to_200_chars(self):
