@@ -1,11 +1,10 @@
 """WebSocket 認證相關測試"""
 
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from bson import ObjectId
 
-from app.core.exceptions import NotFoundError
 from app.websocket.auth import verify_room_membership
 
 
@@ -35,81 +34,21 @@ class TestWebSocketAuth:
         assert result is False
 
     @pytest.mark.asyncio
-    async def test_verify_room_membership_public_room_non_member(self):
-        """測試公開房間非成員 — WS 不自動加入，回傳 False"""
+    @pytest.mark.parametrize("is_member", [True, False])
+    async def test_verify_room_membership_checks_membership_only(self, is_member):
+        """只查成員資格，不讀整份房間；非成員不自動加入（加入必須走 HTTP API）"""
         user_id = str(ObjectId())
         room_id = str(ObjectId())
-
         mock_room_service = AsyncMock()
+        mock_room_service.is_member.return_value = is_member
 
         with patch(
             "app.websocket.auth.create_room_service",
             return_value=mock_room_service,
         ):
-            mock_room = Mock()
-            mock_room.members = []
-            mock_room_service.get_room_by_id.return_value = mock_room
-
             result = await verify_room_membership(user_id, room_id)
 
-            assert result is False
-            # 確認不會調用 join_room（WS 不做自動加入）
-            mock_room_service.join_room.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_verify_room_membership_member(self):
-        """測試房間成員驗證 — 是成員"""
-        user_id = str(ObjectId())
-        room_id = str(ObjectId())
-
-        mock_room_service = AsyncMock()
-
-        with patch(
-            "app.websocket.auth.create_room_service",
-            return_value=mock_room_service,
-        ):
-            mock_room = Mock()
-            mock_room.members = [user_id, str(ObjectId())]
-            mock_room_service.get_room_by_id.return_value = mock_room
-
-            result = await verify_room_membership(user_id, room_id)
-
-            assert result is True
-
-    @pytest.mark.asyncio
-    async def test_verify_room_membership_non_member(self):
-        """測試房間成員驗證 — 非成員"""
-        user_id = str(ObjectId())
-        room_id = str(ObjectId())
-
-        mock_room_service = AsyncMock()
-
-        with patch(
-            "app.websocket.auth.create_room_service",
-            return_value=mock_room_service,
-        ):
-            mock_room = Mock()
-            mock_room.members = [str(ObjectId()), str(ObjectId())]
-            mock_room_service.get_room_by_id.return_value = mock_room
-
-            result = await verify_room_membership(user_id, room_id)
-
-            assert result is False
-
-    @pytest.mark.asyncio
-    async def test_verify_room_membership_room_not_found(self):
-        """測試房間不存在的情況"""
-        user_id = str(ObjectId())
-        room_id = str(ObjectId())
-
-        mock_room_service = AsyncMock()
-
-        with patch(
-            "app.websocket.auth.create_room_service",
-            return_value=mock_room_service,
-        ):
-            mock_room_service.get_room_by_id.side_effect = NotFoundError("房間不存在")
-
-            result = await verify_room_membership(user_id, room_id)
-
-            assert result is False
+        assert result is is_member
+        mock_room_service.is_member.assert_awaited_once_with(room_id, user_id)
+        mock_room_service.get_room_by_id.assert_not_called()
+        mock_room_service.join_room.assert_not_called()

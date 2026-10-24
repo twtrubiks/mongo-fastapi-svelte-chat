@@ -79,8 +79,9 @@ class WsRecorder:
         self.room_users: list[dict] = []
         self.online_ids: list[str] = []
 
-    async def connect(self, websocket, user_id, room_id, user_info):
+    async def connect(self, websocket, user_id, room_id, user_info, still_member=None):
         self.sent.append(("connect", user_id, room_id))
+        return True
 
     async def disconnect(self, user_id, room_id, websocket=None):
         self.sent.append(("disconnect", user_id, room_id))

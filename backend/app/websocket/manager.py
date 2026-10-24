@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 
 from fastapi import WebSocket
@@ -44,12 +45,23 @@ class ConnectionManager:
         # 房間重新連線 debounce 秒數
         self._room_rejoin_debounce_seconds: float = 5.0
 
+        # 已登記、還在確認成員資格的連線（見 connect 的 still_member）
+        self._confirming: set[WebSocket] = set()
+
+        # 背景關閉被取代舊連線的 task（create_task 只保留弱引用，要自己留著）
+        self._closing_tasks: set[asyncio.Task] = set()
+
         # 連線鎖，確保線程安全
         self._lock = asyncio.Lock()
 
     async def connect(
-        self, websocket: WebSocket, user_id: str, room_id: str, user_info: dict
-    ):
+        self,
+        websocket: WebSocket,
+        user_id: str,
+        room_id: str,
+        user_info: dict,
+        still_member: Callable[[], Awaitable[bool]] | None = None,
+    ) -> bool:
         """
         建立 WebSocket 連線
 
@@ -58,6 +70,13 @@ class ConnectionManager:
             user_id: 使用者 ID
             room_id: 房間 ID
             user_info: 使用者資訊
+            still_member: 登記連線後再確認一次成員資格。連線前雖已驗證過，但撤銷
+                （force_disconnect）只斷得到已登記的連線，驗證之後、登記之前被移出，
+                這條連線就會留下來繼續收房間廣播。先登記再確認：撤銷不是在這裡被發現，
+                就是斷得到這條連線。確認通過前不加入房間名單、不宣告加入
+
+        Returns:
+            bool: 是否建立連線
         """
         # 在測試環境中，WebSocket 可能還未被接受
         # 在生產環境中，WebSocket 已經在 handlers.py 中被接受
@@ -84,22 +103,40 @@ class ConnectionManager:
                     f"User {user_id} rejoined room {room_id} within debounce window"
                 )
 
-            # 初始化使用者連線字典
-            if user_id not in self.active_connections:
-                self.active_connections[user_id] = {}
+            # 儲存連線（登記後 force_disconnect 才找得到這條連線），
+            # 同一使用者在同一房間的舊連線一併從登記移除
+            user_rooms = self.active_connections.setdefault(user_id, {})
+            replaced = user_rooms.get(room_id)
+            user_rooms[room_id] = websocket
+            self._confirming.add(websocket)
 
-            # 檢查是否已有相同使用者在同一房間的連線
-            if room_id in self.active_connections[user_id]:
-                old_websocket = self.active_connections[user_id][room_id]
-                try:
-                    await old_websocket.close()
-                except Exception as e:  # intentional catch-all
-                    logger.error(
-                        f"Error closing old connection for user {user_id}: {e}"
-                    )
+        # 背景關閉舊連線：對端不回關閉握手（例如手機切換網路後的半開連線）時，close
+        # 會等到逾時。持鎖等會卡住所有人的連線與斷線；在這裡等則卡住重連的人自己，
+        # 歡迎訊息與歷史要等到逾時才送出。舊連線已不在登記中，收不到房間廣播，
+        # 它的 disconnect 也會因 identity 不符略過
+        if replaced is not None:
+            self._close_in_background(replaced, user_id)
 
-            # 儲存連線
-            self.active_connections[user_id][room_id] = websocket
+        # 鎖外確認：查資料庫期間撤銷的 force_disconnect 才拿得到鎖
+        try:
+            confirmed = still_member is None or await still_member()
+        finally:
+            self._confirming.discard(websocket)
+        if not confirmed:
+            # 與連線前驗證失敗相同：撤回登記並以 4001 關閉
+            await self.force_disconnect(
+                user_id,
+                room_id,
+                reason="Authentication failed",
+                code=4001,
+                websocket=websocket,
+            )
+            return False
+
+        async with self._lock:
+            # 確認期間這條連線可能已被撤銷，或被同一使用者的新連線取代
+            if self.active_connections.get(user_id, {}).get(room_id) is not websocket:
+                return False
 
             # 初始化房間使用者集合
             if room_id not in self.room_users:
@@ -154,6 +191,20 @@ class ConnectionManager:
         await self._broadcast_user_status(
             user_id, user_info, True, exclude_room=room_id
         )
+        return True
+
+    def _close_in_background(self, websocket: WebSocket, user_id: str) -> None:
+        """在背景關閉被同一使用者新連線取代的舊連線（不讓呼叫端等關閉握手）"""
+
+        async def close() -> None:
+            try:
+                await websocket.close()
+            except Exception as e:  # intentional catch-all: 舊連線可能已由對端關閉
+                logger.error(f"Error closing old connection for user {user_id}: {e}")
+
+        task = asyncio.create_task(close())
+        self._closing_tasks.add(task)
+        task.add_done_callback(self._closing_tasks.discard)
 
     async def disconnect(
         self, user_id: str, room_id: str, websocket: WebSocket | None = None
@@ -196,7 +247,13 @@ class ConnectionManager:
             logger.info(f"User {user_id} disconnected from room {room_id}")
 
     async def force_disconnect(
-        self, user_id: str, room_id: str, reason: str = "已離開房間"
+        self,
+        user_id: str,
+        room_id: str,
+        reason: str = "已離開房間",
+        code: int = 4003,
+        websocket: WebSocket | None = None,
+        notice: dict | None = None,
     ):
         """
         強制斷開使用者在指定房間的 WS 連線（成員資格撤銷，非暫時斷線）
@@ -212,12 +269,21 @@ class ConnectionManager:
             user_id: 使用者 ID
             room_id: 房間 ID
             reason: 關閉原因（帶入 WS close frame）
+            code: 關閉代碼（撤銷用 4003）
+            websocket: 提供時比對 identity，登記的已不是這條連線（已被撤銷或被新連線
+                取代）就不動任何狀態，比照 disconnect()
+            notice: 關閉前送給被斷開者的最後一則訊息（如 user_left，前端據此離開房間）
         """
-        websocket = None
+        closing = None
         async with self._lock:
             user_rooms = self.active_connections.get(user_id)
+            if (
+                websocket is not None
+                and (user_rooms or {}).get(room_id) is not websocket
+            ):
+                return
             if user_rooms:
-                websocket = user_rooms.pop(room_id, None)
+                closing = user_rooms.pop(room_id, None)
                 # 使用者沒有其他房間連線時，比照 disconnect() 排程 debounce 離線
                 if not user_rooms:
                     del self.active_connections[user_id]
@@ -234,9 +300,14 @@ class ConnectionManager:
                     del self.room_users[room_id]
 
         # 鎖外關閉 socket（close 可能阻塞或拋錯，不可持鎖執行）
-        if websocket is not None:
+        if closing is not None:
+            if notice is not None:
+                try:
+                    await closing.send_text(safe_json_dumps(notice))
+                except Exception:  # intentional: 連線可能已由對端關閉，照常關閉
+                    pass
             try:
-                await websocket.close(code=4003, reason=reason)
+                await closing.close(code=code, reason=reason)
             except Exception:  # intentional: 連線可能已由對端關閉
                 pass
             logger.info(f"Force disconnected user {user_id} from room {room_id}")
@@ -250,7 +321,12 @@ class ConnectionManager:
             reason: 關閉原因（帶入 WS close frame）
         """
         async with self._lock:
-            user_ids = list(self.room_users.get(room_id, set()))
+            # 已登記、還在確認成員資格的連線不在 room_users，一併斷開
+            user_ids = self.room_users.get(room_id, set()) | {
+                user_id
+                for user_id, rooms in self.active_connections.items()
+                if room_id in rooms
+            }
         for user_id in user_ids:
             await self.force_disconnect(user_id, room_id, reason=reason)
 
@@ -499,12 +575,12 @@ class ConnectionManager:
             user_id: 使用者 ID
             event_data: 事件資料（必須包含 type 欄位）
         """
-        if user_id not in self.active_connections:
+        rooms = self.active_connections.get(user_id)
+        if not rooms:
             return
 
-        room_ids = list(self.active_connections[user_id].keys())
-        if not room_ids:
-            return
+        # 優先送到已確認成員資格的連線：還在確認的連線若被拒絕，事件會跟著消失
+        room_ids = sorted(rooms, key=lambda rid: rooms[rid] in self._confirming)
 
         # 發送到任意一個房間即可（避免重複）
         room_id = room_ids[0]

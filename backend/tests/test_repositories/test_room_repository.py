@@ -358,6 +358,9 @@ class TestRoomRepository:
         assert await repo.is_member(created_room.id, owner_id) is True
         assert await repo.is_member(created_room.id, member_id) is True
         assert await repo.is_member(created_room.id, non_member_id) is False
+        # 房間不存在或 ID 格式錯誤都不是成員
+        assert await repo.is_member(str(ObjectId()), owner_id) is False
+        assert await repo.is_member("not-an-object-id", owner_id) is False
 
     @pytest.mark.asyncio
     async def test_get_public_rooms(self, db_manager):

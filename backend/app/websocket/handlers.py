@@ -32,7 +32,7 @@ from app.models.message import (
     MessageType,
 )
 from app.services.message_service import MessageService
-from app.websocket.auth import websocket_auth_middleware
+from app.websocket.auth import verify_room_membership, websocket_auth_middleware
 from app.websocket.manager import connection_manager
 
 logger = logging.getLogger(__name__)
@@ -129,8 +129,16 @@ async def handle_websocket_connection(websocket: WebSocket, room_id: str):
 
         user_id = user_info["id"]
 
-        # 建立連線
-        await connection_manager.connect(websocket, user_id, room_id, user_info)
+        # 建立連線：登記後再確認一次成員資格，驗證到登記之間被移出時不留下連線
+        connected = await connection_manager.connect(
+            websocket,
+            user_id,
+            room_id,
+            user_info,
+            still_member=lambda: verify_room_membership(user_id, room_id),
+        )
+        if not connected:
+            return
 
         # 發送歡迎訊息
         await connection_manager.send_personal_message(
