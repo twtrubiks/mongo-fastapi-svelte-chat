@@ -1,5 +1,7 @@
 import { getFileType, getFileTypeLabel, inferMimeTypeFromUrl } from '$lib/utils';
 import { messageRetryManager } from '$lib/utils/messageRetry';
+import { messageStatusStore } from '$lib/stores/messageStatus.svelte';
+import type { MessageCreate } from '$lib/types';
 
 export interface FileUploadParams {
   file: File;
@@ -15,10 +17,7 @@ export interface FileUploadParams {
     metadata: Record<string, unknown>
   ) => boolean;
   /** HTTP fallback 發送函式 */
-  sendHttpMessage: (
-    roomId: string,
-    data: { content: string; message_type: 'text' | 'image' | 'file' }
-  ) => Promise<void>;
+  sendHttpMessage: (roomId: string, data: MessageCreate) => Promise<void>;
 }
 
 export interface FileUploadResult {
@@ -77,10 +76,21 @@ export async function processFileUpload(
     if (isWsConnected) {
       sendWsMessage(url, messageType, messageId, fileMetadata);
     } else {
-      await sendHttpMessage(roomId, {
-        content: url,
-        message_type: messageType as 'text' | 'image' | 'file',
-      });
+      // 帶上 client_id：之後以 WebSocket 重送時，後端才能認出是同一則而不重複存
+      try {
+        await sendHttpMessage(roomId, {
+          content: url,
+          message_type: messageType,
+          client_id: messageId,
+          metadata: fileMetadata,
+        });
+      } catch (error) {
+        // 標記失敗才會出現在重試提示，重新連上 WebSocket 時也會自動重送
+        messageStatusStore.setFailed(messageId, '訊息未送出，請重試');
+        throw error;
+      }
+      // HTTP 送出不會收到 ack，成功即移出重試佇列
+      messageRetryManager.removeFromQueue(messageId);
     }
 
     return {

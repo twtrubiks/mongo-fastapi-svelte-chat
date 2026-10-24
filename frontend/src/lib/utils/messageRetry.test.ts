@@ -1,5 +1,5 @@
 // 訊息重試：搭配真的 WebSocketManager 與假的 WebSocket，驗證 ack 逾時、手動重試、
-// 重新連線後自動重送與檔案訊息重試
+// 重新連線後自動重送與檔案訊息重試（含 HTTP 備援）
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { FakeWebSocket } from '../../tests/fakeWebSocket';
 
@@ -209,5 +209,43 @@ describe('檔案訊息', () => {
     const retried = sentWith(ws, clientId);
     expect(retried).toHaveLength(2);
     expect(retried[1]).toMatchObject({ message_type: 'image', metadata: original!['metadata'] });
+  });
+
+  const uploadOverHttp = (sendHttpMessage: () => Promise<void>) =>
+    processFileUpload({
+      file: new File(['x'.repeat(2048)], 'report.pdf', { type: 'application/pdf' }),
+      url: '/uploads/report.pdf',
+      filename: 'report.pdf',
+      roomId: 'r1',
+      isWsConnected: false,
+      sendWsMessage: vi.fn(),
+      sendHttpMessage,
+    });
+
+  it('未連線時改用 HTTP 送出，同樣帶上 client_id 與檔案資訊', async () => {
+    const sendHttpMessage = vi.fn().mockResolvedValue(undefined);
+
+    expect((await uploadOverHttp(sendHttpMessage)).success).toBe(true);
+
+    expect(sendHttpMessage).toHaveBeenCalledWith('r1', {
+      content: '/uploads/report.pdf',
+      message_type: 'file',
+      client_id: expect.stringMatching(/^file_/),
+      metadata: expect.objectContaining({ filename: 'report.pdf', fileSize: 2048, mimeType: 'application/pdf' }),
+    });
+    expect(retry.getQueueSize()).toBe(0);
+  });
+
+  it('HTTP 也送不出去時標記失敗，連上後以 WebSocket 重送', async () => {
+    const sendHttpMessage = vi.fn().mockRejectedValue(new Error('Failed to fetch'));
+
+    expect((await uploadOverHttp(sendHttpMessage)).success).toBe(false);
+    const [clientId] = statusStore.getFailedMessageIds();
+    expect(clientId).toMatch(/^file_/);
+
+    const ws = await connectOpen();
+    await vi.advanceTimersByTimeAsync(1000);
+    const [resent] = sentWith(ws, clientId!);
+    expect(resent).toMatchObject({ message_type: 'file', metadata: { filename: 'report.pdf', fileSize: 2048 } });
   });
 });
