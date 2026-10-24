@@ -283,3 +283,41 @@ class RoomRepository(BaseRepository[RoomInDB]):
             return False
         query = {"_id": ObjectId(room_id), "members": user_id}
         return await self.count_documents(query) > 0
+
+    async def get_member_ids(self, room_id: str) -> list[str]:
+        """
+        取得房間的成員 ID（只讀 members 欄位）
+
+        Args:
+            room_id: 房間 ID
+
+        Returns:
+            list[str]: 成員 ID；房間不存在或 ID 格式錯誤時為空列表
+        """
+        if not ObjectId.is_valid(room_id):
+            return []
+        document = await self.collection.find_one(
+            {"_id": ObjectId(room_id)}, {"members": 1}
+        )
+        return list(document.get("members", [])) if document else []
+
+    async def get_room_ids_with_member(
+        self, user_id: str, room_ids: list[str]
+    ) -> list[str]:
+        """
+        找出 room_ids 之中使用者是成員的房間（只讀 _id）
+
+        Args:
+            user_id: 使用者 ID
+            room_ids: 要檢查的房間 ID
+
+        Returns:
+            list[str]: 使用者是成員的房間 ID；格式錯誤的 ID 略過
+        """
+        object_ids = [ObjectId(rid) for rid in room_ids if ObjectId.is_valid(rid)]
+        if not object_ids:
+            return []
+        found = await self.collection.distinct(
+            "_id", {"_id": {"$in": object_ids}, "members": user_id}
+        )
+        return [str(oid) for oid in found]

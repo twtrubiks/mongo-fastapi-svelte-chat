@@ -4,6 +4,7 @@ import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
+from typing import Protocol
 
 from fastapi import WebSocket
 
@@ -12,10 +13,33 @@ from app.utils.json_encoder import safe_json_dumps
 logger = logging.getLogger(__name__)
 
 
+class RoomMembership(Protocol):
+    """查詢房間成員資格（RoomService 實作）：在線狀態只給同房成員"""
+
+    async def get_member_ids(self, room_id: str) -> list[str]: ...
+
+    async def get_member_room_ids(
+        self, user_id: str, room_ids: list[str]
+    ) -> list[str]: ...
+
+
+async def _create_room_membership() -> RoomMembership:
+    # 延遲 import：建立 RoomService 的工廠會 import 本模組的 connection_manager
+    from app.core.fastapi_integration import create_room_service
+
+    return await create_room_service()
+
+
 class ConnectionManager:
     """WebSocket 連線管理器"""
 
-    def __init__(self):
+    def __init__(
+        self,
+        membership: Callable[[], Awaitable[RoomMembership]] = _create_room_membership,
+    ):
+        # 查詢成員資格：誰在線、誰上下線只告訴同房成員
+        self._membership = membership
+
         # 儲存所有活躍的 WebSocket 連線
         # 格式: {user_id: {room_id: websocket}}
         self.active_connections: dict[str, dict[str, WebSocket]] = {}
@@ -131,6 +155,9 @@ class ConnectionManager:
             )
             return False
 
+        # 鎖外查詢：在線列表只列本房成員
+        member_ids = await self._get_member_ids(room_id)
+
         async with self._lock:
             # 確認期間這條連線可能已被撤銷，或被同一使用者的新連線取代
             if self.active_connections.get(user_id, {}).get(room_id) is not websocket:
@@ -179,7 +206,7 @@ class ConnectionManager:
                 {
                     "type": "room_users",
                     "users": online_users,
-                    "global_online_user_ids": list(self.global_online_users),
+                    "global_online_user_ids": self._online_among(member_ids),
                     "timestamp": datetime.now(UTC).isoformat(),
                     "room_id": room_id,
                     "online_only": True,  # 標記這只是在線用戶列表
@@ -331,13 +358,24 @@ class ConnectionManager:
         is_online: bool,
         exclude_room: str | None = None,
     ):
-        """廣播使用者在線狀態變更到所有有活躍連線的房間
+        """廣播使用者在線狀態變更到對方是成員、且有活躍連線的房間
 
-        收件者多半不是對方的同房成員，只帶 user_id 與狀態，不帶使用者資料（含 email、
-        全名）：任何人建房保持連線，就能收集所有上線使用者的資料
+        只送到對方所屬的房間：送到所有房間的話，任何人建房保持連線，就能記錄所有使用者
+        的上下線時間。只帶 user_id 與狀態，不帶使用者資料（含 email、全名）
         """
-        for rid in list(self.room_users.keys()):
-            if rid == exclude_room:
+        room_ids = [rid for rid in self.room_users if rid != exclude_room]
+        if not room_ids:
+            return
+        try:
+            membership = await self._membership()
+            member_room_ids = set(
+                await membership.get_member_room_ids(user_id, room_ids)
+            )
+        except Exception as e:  # intentional catch-all: 查不到就不送，不能因此斷線
+            logger.error(f"Error looking up rooms of {user_id} for status: {e}")
+            return
+        for rid in room_ids:
+            if rid not in member_room_ids:
                 continue
             await self.broadcast_to_room(
                 rid,
@@ -431,15 +469,23 @@ class ConnectionManager:
                 )
 
             # 不廣播 user_left：使用者只是切換房間，仍在線上
-            # 真正離線時由 _execute_offline 的 user_status_changed 通知所有房間
+            # 真正離線時由 _execute_offline 的 user_status_changed 通知所屬的房間
         finally:
             # 被取消時同一個 key 可能已排入新的計時器，只移除自己的表項
             if self._pending_room_leave.get(room_key) is asyncio.current_task():
                 del self._pending_room_leave[room_key]
 
-    def get_global_online_user_ids(self) -> list[str]:
-        """回傳所有全局在線的使用者 ID 列表"""
-        return list(self.global_online_users)
+    async def _get_member_ids(self, room_id: str) -> set[str]:
+        membership = await self._membership()
+        return set(await membership.get_member_ids(room_id))
+
+    def _online_among(self, member_ids: set[str]) -> list[str]:
+        """成員中在線的使用者 ID"""
+        return [uid for uid in self.global_online_users if uid in member_ids]
+
+    async def get_online_member_ids(self, room_id: str) -> list[str]:
+        """房間成員中在線的使用者 ID（不讓非成員知道誰在線）"""
+        return self._online_among(await self._get_member_ids(room_id))
 
     async def send_personal_message(self, user_id: str, room_id: str, message: dict):
         """

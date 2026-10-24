@@ -152,6 +152,15 @@ async def _connect(ctx, user: dict, **query) -> AsgiWebSocket:
     return websocket
 
 
+async def _own_room(client, owner: dict, name: str) -> SimpleNamespace:
+    """owner 建立公開房，回傳可給 _connect 用的 ctx"""
+    room = await client.post(
+        "/api/rooms/", json={"name": name}, headers=owner["headers"]
+    )
+    assert room.status_code == 201
+    return SimpleNamespace(client=client, room_id=room.json()["id"])
+
+
 async def _post_messages(ctx, user: dict, contents: list[str]) -> None:
     for content in contents:
         response = await ctx.client.post(
@@ -435,12 +444,12 @@ class TestPrivacy:
     async def test_events_do_not_carry_email(self, ctx, async_client):
         """WS 事件的使用者資料不帶 email：其他房間的人只收到上線狀態，同房也看不到 email"""
         elsewhere = await _make_user(async_client, "elsewhere")
-        other_room = await async_client.post(
-            "/api/rooms/", json={"name": "other room"}, headers=elsewhere["headers"]
+        other_ctx = await _own_room(async_client, elsewhere, "other room")
+        # member 也是另一個房間的成員：那裡的人會收到 member 的上線狀態
+        joined_other = await async_client.post(
+            f"/api/rooms/{other_ctx.room_id}/join", headers=ctx.member["headers"]
         )
-        other_ctx = SimpleNamespace(
-            client=async_client, room_id=other_room.json()["id"]
-        )
+        assert joined_other.status_code == 200
         watcher = await _connect(other_ctx, elsewhere)
         await _connection_preamble(watcher)
         owner_ws = await _connect(ctx, ctx.owner)
@@ -449,16 +458,43 @@ class TestPrivacy:
         member_ws = await _connect(ctx, ctx.member)
         room_users = await member_ws.receive_json()
         joined = await owner_ws.receive_json()
-        statuses = [await watcher.receive_json() for _ in range(2)]
+        status = await watcher.receive_json()
 
         assert room_users["type"] == "room_users"
         assert joined["type"] == "user_joined"
-        for event in (room_users, joined, *statuses):
+        for event in (room_users, joined, status):
             assert "@example.com" not in json.dumps(event, ensure_ascii=False), event
-        assert [set(e) for e in statuses] == [
-            {"type", "user_id", "is_online", "timestamp"}
-        ] * 2
+        assert set(status) == {"type", "user_id", "is_online", "timestamp"}
+        assert (status["user_id"], status["is_online"]) == (ctx.member["id"], True)
         for websocket in (member_ws, owner_ws, watcher):
+            await websocket.disconnect()
+
+    async def test_presence_stays_within_shared_rooms(self, ctx, async_client):
+        """不同房的人不知道誰在線：收不到上下線，在線列表也只列本房成員"""
+        stranger = await _make_user(async_client, "stranger")
+        stranger_ws = await _connect(
+            await _own_room(async_client, stranger, "stranger room"), stranger
+        )
+        await _connection_preamble(stranger_ws)
+
+        owner_ws = await _connect(ctx, ctx.owner)
+        room_users = await owner_ws.receive_json()
+        await owner_ws.receive_json()  # welcome
+        await owner_ws.receive_json()  # 歷史
+        member_ws = await _connect(ctx, ctx.member)
+        await _connection_preamble(member_ws)
+        await member_ws.disconnect()
+        events = [await owner_ws.receive_json() for _ in range(3)]
+
+        assert room_users["global_online_user_ids"] == [ctx.owner["id"]]
+        assert [e["type"] for e in events] == [
+            "user_joined",
+            "user_left",
+            "user_status_changed",
+        ]
+        # 上線與離線都只送到 member 所屬的房間
+        await stranger_ws.assert_silent()
+        for websocket in (owner_ws, stranger_ws):
             await websocket.disconnect()
 
 

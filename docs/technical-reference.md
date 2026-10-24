@@ -449,7 +449,9 @@ invite_code 僅在 `RoomResponse` 中回傳，且受角色限制：
 - 以名稱封鎖時先確認是房主才查使用者，非房主不能藉此探測名稱是否存在
 - 以名稱封鎖與封鎖名單只回 `UserPublic`（`id`、`username`、`avatar`）：任何人都能自己建房當房主，若回完整的 `UserResponse`，就能用名稱查到任何人的 email
 
-其他使用者的 email 一律不經 WS 與房間 API 傳出：WS 的使用者資料（`user_joined`、`room_users`、`user_left`）不含 email；上線狀態 `user_status_changed` 會送到使用者所在房間以外的所有連線，只帶 `user_id` 與 `is_online`；成員列表（`GET /rooms/{room_id}/members`）回 `RoomMember`，同樣不含 email（公開房任何人都能加入，帶 email 等於公開）。
+其他使用者的 email 一律不經 WS 與房間 API 傳出：WS 的使用者資料（`user_joined`、`room_users`、`user_left`）不含 email；上線狀態 `user_status_changed` 只帶 `user_id` 與 `is_online`；成員列表（`GET /rooms/{room_id}/members`）回 `RoomMember`，同樣不含 email（公開房任何人都能加入，帶 email 等於公開）。
+
+誰在線也只告訴同房成員：`user_status_changed` 只送到該使用者是成員、且有人連線的房間；`room_users` 的 `global_online_user_ids`（沿用舊欄位名）只列本房成員中在線的人。否則任何人自己建房保持連線，就能記錄所有使用者的上下線時間。成員資格由 `ConnectionManager` 透過注入的 `RoomMembership`（`RoomService` 實作）查詢；上線事件查不到成員資格時不送（不退回送給所有房間，也不中斷連線）。`lobby` 不是資料庫裡的房間、沒有成員，收不到任何人的上線狀態。
 - `add_member` 的條件含 `banned_users: {$ne: user_id}`：`join_room` 檢查後才被封鎖的人，寫入時仍會被擋下；此時重讀房間，回報被封鎖而不是「房間已滿」
 - 探索、搜尋（`exclude_joined`）與房間列表不列出封鎖了自己的房間
 - 被封鎖的人收到 `banned=true` 的 `user_left`，導回儀表板時提示「你已被房主移出並封鎖，無法再加入此聊天室」
@@ -705,7 +707,7 @@ export function groupMessagesByDate<T extends { created_at: string }>(
 
 #### 1. 全域離線 Debounce（3 秒）
 
-使用者從**所有房間**斷開後，不會立即標記為離線。等待 3 秒（`_disconnect_debounce_seconds`），若期間重新連線則取消離線流程。超時後清除 `user_info`、`global_online_users`，對每個房間廣播 `user_left`，再廣播 `user_status_changed(is_online=False)`。
+使用者從**所有房間**斷開後，不會立即標記為離線。等待 3 秒（`_disconnect_debounce_seconds`），若期間重新連線則取消離線流程。超時後清除 `user_info`、`global_online_users`，對每個房間廣播 `user_left`，再對該使用者所屬的房間廣播 `user_status_changed(is_online=False)`。
 
 ```
 disconnect（最後一個房間） → 排程 _execute_offline（3s）
@@ -727,7 +729,7 @@ disconnect（房間 A） → 排程 _execute_room_leave（5s）
                         └─ 超時 → 從 room_users 移除（不廣播 user_left）
 ```
 
-> **在線狀態與成員離開的職責分離**: `_execute_room_leave` 僅處理切換房間的場景（使用者仍在線上），因此不廣播 `user_left`。真正離線由 `_execute_offline` 的 `user_status_changed(is_online=False)` 通知所有房間。成員主動離開房間（API 操作）則由 Service 層 `leave_room` 廣播 `user_left(removed=true)`，前端收到後將該使用者從成員陣列移除，避免後續 `user_status_changed` 誤將其設回在線。
+> **在線狀態與成員離開的職責分離**: `_execute_room_leave` 僅處理切換房間的場景（使用者仍在線上），因此不廣播 `user_left`。真正離線由 `_execute_offline` 的 `user_status_changed(is_online=False)` 通知該使用者所屬的房間。成員主動離開房間（API 操作）則由 Service 層 `leave_room` 廣播 `user_left(removed=true)`，前端收到後將該使用者從成員陣列移除，避免後續 `user_status_changed` 誤將其設回在線。
 
 > **注意**: 全域離線 debounce（3s）觸發時，會一併清理該使用者所有 pending room-leave tasks，避免殘留。
 

@@ -242,6 +242,14 @@ class RoomService:
         """使用者是否為房間成員（房間不存在時為 False）"""
         return await self.room_repo.is_member(room_id, user_id)
 
+    async def get_member_ids(self, room_id: str) -> list[str]:
+        """房間的成員 ID（房間不存在時為空列表）"""
+        return await self.room_repo.get_member_ids(room_id)
+
+    async def get_member_room_ids(self, user_id: str, room_ids: list[str]) -> list[str]:
+        """room_ids 之中使用者是成員的房間"""
+        return await self.room_repo.get_room_ids_with_member(user_id, room_ids)
+
     async def get_room_for_user(
         self, room_id: str, user_id: str
     ) -> RoomResponse | RoomSummary:

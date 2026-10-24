@@ -707,7 +707,7 @@ async def handle_get_users(user_id: str, room_id: str):
         room_id: 房間 ID
     """
     users = connection_manager.get_room_users(room_id)
-    global_online_ids = connection_manager.get_global_online_user_ids()
+    global_online_ids = await connection_manager.get_online_member_ids(room_id)
     await connection_manager.send_personal_message(
         user_id,
         room_id,

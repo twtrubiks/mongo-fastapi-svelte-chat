@@ -163,6 +163,7 @@ export interface WSWelcomeMessage {
 export interface WSRoomUsersMessage {
   type: 'room_users';
   users: User[];
+  /** 本房成員中在線的 ID（沿用舊欄位名；後端不讓非成員知道誰在線） */
   global_online_user_ids?: string[];
   timestamp: string;
   room_id: string;
@@ -247,7 +248,7 @@ export interface WSUserLeftMessage {
   banned?: boolean;
 }
 
-// 收件者多半不是對方的同房成員，後端只帶 id 與狀態，不帶使用者資料
+// 只送到對方所屬的房間，只帶 id 與狀態，不帶使用者資料
 export interface WSUserStatusChangedMessage {
   type: 'user_status_changed';
   user_id: string;

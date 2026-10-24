@@ -418,6 +418,39 @@ class TestRoomRepository:
         assert await repo.is_member("not-an-object-id", owner_id) is False
 
     @pytest.mark.asyncio
+    async def test_member_id_queries(self, db_manager):
+        """成員 ID 與使用者所屬房間：房間不存在或 ID 格式錯誤時略過"""
+        repo = RoomRepository(db_manager.database)
+        alice, bob = str(ObjectId()), str(ObjectId())
+
+        async def make(name: str, members: list[str]) -> str:
+            room = await repo.create(
+                RoomInDB(
+                    name=name,
+                    owner_id=members[0],
+                    members=members,
+                    created_at=datetime.now(UTC),
+                    updated_at=datetime.now(UTC),
+                )
+            )
+            return room.id
+
+        shared = await make("共同房", [alice, bob])
+        alice_only = await make("alice 的房", [alice])
+        missing = str(ObjectId())
+
+        assert sorted(await repo.get_member_ids(shared)) == sorted([alice, bob])
+        assert await repo.get_member_ids(missing) == []
+        assert await repo.get_member_ids("lobby") == []
+
+        rooms = [shared, alice_only, missing, "lobby"]
+        assert sorted(await repo.get_room_ids_with_member(alice, rooms)) == sorted(
+            [shared, alice_only]
+        )
+        assert await repo.get_room_ids_with_member(bob, rooms) == [shared]
+        assert await repo.get_room_ids_with_member(bob, ["lobby"]) == []
+
+    @pytest.mark.asyncio
     async def test_get_public_rooms(self, db_manager):
         """測試獲取公開房間列表"""
         repo = RoomRepository(db_manager.database)

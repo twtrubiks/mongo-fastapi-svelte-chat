@@ -148,7 +148,7 @@ export function handleRoomUsers(data: WSRoomUsersMessage) {
       }
     });
 
-    // 使用全局在線 ID（如有）來判斷在線狀態
+    // 使用本房成員中在線的 ID（如有）來判斷在線狀態
     const globalOnlineIds = data.global_online_user_ids
       ? new Set<string>(data.global_online_user_ids)
       : null;
