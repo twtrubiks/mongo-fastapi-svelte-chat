@@ -139,6 +139,25 @@ describe('斷線重連', () => {
     expect(ticket).toHaveBeenCalledTimes(1);
   });
 
+  // 伺服器暫時錯誤（例如驗證時資料庫故障）以 4000 完成關閉握手（wasClean）：仍要重連
+  it('伺服器以 4000 正常關閉時仍重連', async () => {
+    const ws = await connectOpen('r1');
+
+    ws.serverClose(4000, true);
+    await vi.advanceTimersByTimeAsync(1000);
+
+    expect(ticket).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([1000, 4001, 4003, 1011])('伺服器以 %i 正常關閉時不重連', async (code) => {
+    const ws = await connectOpen('r1');
+
+    ws.serverClose(code, true);
+    await vi.advanceTimersByTimeAsync(60_000);
+
+    expect(ticket).toHaveBeenCalledTimes(1);
+  });
+
   it('連續失敗達上限後發出 reconnect_failed；網路恢復時重新嘗試', async () => {
     const ws = await connectOpen('r1');
     ticket.mockRejectedValue(new Error('網路中斷'));

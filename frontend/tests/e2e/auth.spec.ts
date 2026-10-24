@@ -20,8 +20,9 @@ test('在另一個 session 改密碼後，頁面導回登入頁並清除本地�
   });
   expect(changed.ok()).toBe(true);
 
-  // WebSocket 被後端關閉後重連取 ticket 時就會導回；若還停在房間頁，切到探索觸發一次 API 呼叫
-  await page.getByRole('button', { name: '探索', exact: true }).click({ timeout: 3000 }).catch(() => {});
+  // 切到探索觸發一次 API 呼叫（舊 token 已失效）；探索是 tab 不是 button，
+  // 找錯 role 時點擊逾時被吞掉，只能等背景請求碰巧觸發，冷啟動時會失敗
+  await page.getByRole('tab', { name: '探索' }).click();
   await expect(page).toHaveURL(/\/login/);
   expect(await page.evaluate(() => localStorage.getItem('auth_user'))).toBeNull();
 });

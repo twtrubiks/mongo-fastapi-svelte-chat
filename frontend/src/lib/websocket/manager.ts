@@ -7,6 +7,9 @@ import { handleUserJoined, handleUserLeft, handleUserStatusChanged, handleRoomUs
 import { handleNewMessage, handleMessageHistory, handleTypingIndicator, handleError, handleAck, handleMessageEdited, handleMessageDeleted, handleMessageSync, handleBotTyping, handleBotError } from './messageHandlers';
 import { dispatchNotification, handleNotificationStatusChanged, cancelPendingNotificationRefresh } from './notificationHandlers';
 
+// 伺服器暫時錯誤的關閉代碼（與後端 handler 的 4000 一致）
+const SERVER_ERROR_CODE = 4000;
+
 export class WebSocketManager {
   private ws: WebSocket | null = null;
   private reconnectAttempts = 0;
@@ -161,8 +164,9 @@ export class WebSocketManager {
           this.stopHeartbeat();
           this.emit('disconnected', { code: event.code, reason: event.reason });
 
-          // 判斷是否需要重連
-          if (!event.wasClean && this.shouldReconnect(event.code)) {
+          // 判斷是否需要重連：連線中斷才重連；伺服器以 4000 正常關閉的是暫時錯誤
+          // （例如驗證時資料庫故障），也要重連
+          if ((!event.wasClean || event.code === SERVER_ERROR_CODE) && this.shouldReconnect(event.code)) {
             this.scheduleReconnect();
           }
         };
