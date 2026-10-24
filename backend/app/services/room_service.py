@@ -16,7 +16,7 @@ from app.models.room import (
     RoomSummary,
     RoomUpdate,
 )
-from app.models.user import UserResponse
+from app.models.user import UserInDB, UserResponse
 from app.repositories.message_repository import MessageRepository
 from app.repositories.room_repository import RoomRepository
 from app.repositories.user_repository import UserRepository
@@ -771,7 +771,7 @@ class RoomService:
         return [self._to_user_response(user) for user in users]
 
     @staticmethod
-    def _to_user_response(user) -> UserResponse:
+    def _to_user_response(user: UserInDB) -> UserResponse:
         """UserInDB 轉成 UserResponse（確保 _id 映射到 id）"""
         user_dict = user.model_dump()
         if "_id" in user_dict:

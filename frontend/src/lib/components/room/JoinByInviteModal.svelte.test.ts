@@ -49,6 +49,17 @@ describe('以邀請碼加入', () => {
     expect(screen.getByRole('dialog')).toBeTruthy();
   });
 
+  // 邀請碼本身有效，訊息不能說成驗證失敗
+  it('邀請碼有效但加入被拒（被房主封鎖）時，直接顯示原因', async () => {
+    vi.spyOn(roomStore, 'joinRoom').mockRejectedValue(new Error('你已被房主禁止加入此聊天室'));
+    const { onSuccess } = setup();
+
+    await submit('abc123');
+
+    expect(await screen.findByText('你已被房主禁止加入此聊天室')).toBeTruthy();
+    expect(onSuccess).not.toHaveBeenCalled();
+  });
+
   it('邀請碼驗證失敗時顯示原因，不嘗試加入', async () => {
     vi.spyOn(roomStore, 'validateInvitation').mockRejectedValue(new Error('邀請碼無效或已過期'));
     const joinRoom = vi.spyOn(roomStore, 'joinRoom');

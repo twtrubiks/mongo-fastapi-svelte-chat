@@ -48,6 +48,8 @@
   let bansError = $state<string | null>(null);
   let loadingBans = $state(false);
   let unbanningId = $state<string | null>(null);
+  // 每次載入遞增；設定頁在換房間時保留，晚到的舊回應（關掉後或上一個房間的）不採用
+  let bansRequest = 0;
 
   // 創建本地的響應式變數
   let user = $derived(currentUser());
@@ -137,7 +139,10 @@
       await roomStore.removeMember(room.id, member.id, ban);
       if (ban) {
         successMessage = `已將 ${member.username} 移出並封鎖`;
-        if (bannedUsers && !bannedUsers.some((u) => u.id === member.id)) {
+        if (bannedUsers === null) {
+          // 名單還在載入：那次回應可能是封鎖前的，重新載入
+          loadBannedUsers();
+        } else if (!bannedUsers.some((u) => u.id === member.id)) {
           bannedUsers = [...bannedUsers, member];
         }
       } else {
@@ -157,16 +162,26 @@
   }
 
   async function loadBannedUsers() {
-    if (!room?.id || !canManageRoom || loadingBans) return;
+    if (!room?.id || !canManageRoom) return;
+    const request = ++bansRequest;
     loadingBans = true;
     bansError = null;
     try {
-      bannedUsers = await roomStore.getBannedUsers(room.id);
+      const users = await roomStore.getBannedUsers(room.id);
+      if (request === bansRequest) bannedUsers = users;
     } catch (err: unknown) {
-      bansError = extractErrorMessage(err, '載入封鎖名單失敗');
+      if (request === bansRequest) bansError = extractErrorMessage(err, '載入封鎖名單失敗');
     } finally {
-      loadingBans = false;
+      if (request === bansRequest) loadingBans = false;
     }
+  }
+
+  // 關閉或重新開啟時清空名單，進行中的載入作廢
+  function resetBans() {
+    bansRequest++;
+    bannedUsers = null;
+    bansError = null;
+    loadingBans = false;
   }
 
   async function unbanUser(banned: User) {
@@ -207,8 +222,7 @@
     inviteCodeCopied = false;
     confirmingRegenerate = false;
     confirmingRemoveId = null;
-    bannedUsers = null;
-    bansError = null;
+    resetBans();
     if (copyTimerId) { clearTimeout(copyTimerId); copyTimerId = null; }
     onClose();
   }
@@ -239,8 +253,7 @@
       inviteCodeCopied = false;
       confirmingRegenerate = false;
       confirmingRemoveId = null;
-      bannedUsers = null;
-      bansError = null;
+      resetBans();
     }
   }
 </script>

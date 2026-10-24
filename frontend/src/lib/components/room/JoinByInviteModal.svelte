@@ -41,8 +41,11 @@
     if (!code) return;
 
     isJoining = true;
+    // 邀請碼通過驗證後加入失敗（例如被房主封鎖），訊息不能說成邀請碼有問題
+    let validated = false;
     try {
       const result = await roomStore.validateInvitation(code);
+      validated = true;
 
       if (result.room) {
         const joined = await roomStore.joinRoom(result.room.id, { invite_code: code });
@@ -56,7 +59,10 @@
         onSuccess(result.room as unknown as RoomSummary);
       }
     } catch (error: unknown) {
-      toastState = { show: true, message: `邀請碼驗證失敗：${extractErrorMessage(error, '未知錯誤')}` };
+      const message = validated
+        ? extractErrorMessage(error, '加入房間失敗')
+        : `邀請碼驗證失敗：${extractErrorMessage(error, '未知錯誤')}`;
+      toastState = { show: true, message };
     } finally {
       isJoining = false;
     }

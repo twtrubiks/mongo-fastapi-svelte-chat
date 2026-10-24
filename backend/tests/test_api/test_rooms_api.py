@@ -954,7 +954,9 @@ class TestRoomBans:
             (users["member"]["id"], "member")
         ]
 
-    async def test_only_owner_manages_bans(self, async_client, users):
+    @pytest.mark.parametrize("actor", ["member", "stranger"])
+    async def test_only_owner_manages_bans(self, async_client, users, actor):
+        """其他成員與非成員都不能查看或解除封鎖"""
         room = await _create_room(async_client, users["owner"])
         for name in ("member", "outsider"):
             await _join(async_client, room["id"], users[name])
@@ -965,10 +967,15 @@ class TestRoomBans:
             users["outsider"]["id"],
             ban="true",
         )
+        requester = (
+            users["member"]
+            if actor == "member"
+            else await _make_user(async_client, "stranger")
+        )
 
-        listed = await self._bans(async_client, room["id"], users["member"])
+        listed = await self._bans(async_client, room["id"], requester)
         unbanned = await self._unban(
-            async_client, room["id"], users["member"], users["outsider"]["id"]
+            async_client, room["id"], requester, users["outsider"]["id"]
         )
         rejoin = await _join(async_client, room["id"], users["outsider"])
 
