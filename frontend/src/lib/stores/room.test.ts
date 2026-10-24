@@ -241,6 +241,18 @@ describe('房間與成員', () => {
     expect(roomStore.users).toEqual([]);
     expect(list).toHaveBeenCalled();
   });
+
+  // 自己離開時，WS 的 user_left 與 HTTP 回應都會呼叫 forgetMembership
+  it('同一個房間的成員資格只清一次，探索列表只重新整理一次', () => {
+    const list = vi.spyOn(apiClient.rooms, 'list').mockResolvedValue([]);
+    Object.assign(roomStore.state, { myRooms: [summary('r1')], currentRoom: room('r1') });
+
+    roomStore.forgetMembership('r1');
+    roomStore.forgetMembership('r1');
+
+    expect(roomStore.myRooms).toEqual([]);
+    expect(list).toHaveBeenCalledOnce();
+  });
 });
 
 describe('即時房間事件', () => {

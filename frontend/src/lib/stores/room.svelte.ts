@@ -487,6 +487,9 @@ export const roomStore = {
 
   // 不再是成員（自己離開或被房主移除）：從我的房間移除，並背景刷新探索列表（公開房應重新出現）
   forgetMembership: (roomId: string) => {
+    // 自己離開時 WS 的 user_left 與 HTTP 回應都會呼叫，第二次不必再刷新
+    const isKnown = roomState.myRooms.some(room => room.id === roomId) || roomState.currentRoom?.id === roomId;
+    if (!isKnown) return;
     updateRoomState({
       myRooms: roomState.myRooms.filter(room => room.id !== roomId),
       currentRoom: roomState.currentRoom?.id === roomId ? null : roomState.currentRoom,

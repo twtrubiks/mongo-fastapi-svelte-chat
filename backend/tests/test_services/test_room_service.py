@@ -448,7 +448,8 @@ class TestRoomService:
         """測試擁有者離開房間"""
         room_repo, user_repo, message_repo = mock_repositories
 
-        # 設置用戶為擁有者
+        # 設置用戶為擁有者（擁有者也在成員名單裡）
+        sample_room.members = [sample_room.owner_id]
         room_repo.get_by_id.return_value = sample_room
 
         # 執行並驗證拋出異常

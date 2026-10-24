@@ -201,15 +201,18 @@ class RoomRepository(BaseRepository[RoomInDB]):
         """
         從房間移除成員（純資料操作，商業邏輯驗證由 Service 層負責）
 
+        以「仍是成員」為原子條件：同時離開與被移出時只有一方成功，
+        不會各自廣播一次 user_left
+
         Args:
             room_id: 房間 ID
             user_id: 使用者 ID
 
         Returns:
-            bool: 是否移除成功
+            bool: 是否移除成功（False 表示房間不存在或已不是成員）
         """
         success = await self.update_one(
-            {"_id": ObjectId(room_id)},
+            {"_id": ObjectId(room_id), "members": user_id},
             {
                 "$pull": {"members": user_id},
                 "$unset": {f"member_roles.{user_id}": ""},

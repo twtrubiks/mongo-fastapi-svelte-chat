@@ -310,11 +310,16 @@ class TestRoomRepository:
         created_room = await repo.create(room_data)
         assert created_room is not None
 
+        # 不是成員的使用者：不動資料，回傳 False
+        assert await repo.remove_member(created_room.id, str(ObjectId())) is False
+
         # 移除成員
         result = await repo.remove_member(created_room.id, member_id)
 
         # 驗證結果
         assert result is True
+        # 已移除後再移除一次：回傳 False（同時離開與被移出時只有一方成功）
+        assert await repo.remove_member(created_room.id, member_id) is False
 
         # 驗證成員已被移除
         updated_room = await repo.get_by_id(created_room.id)

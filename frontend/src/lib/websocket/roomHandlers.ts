@@ -73,7 +73,8 @@ export function handleUserJoined(user: User, eventTimestamp: string | undefined,
 export function handleUserLeft(data: WSUserLeftMessage, ctx: HandlerContext) {
   const { user, timestamp: eventTimestamp, removed, kicked } = data;
   const userId = user.id;
-  const username = user.username;
+  // 後端查不到名稱時只帶 id：改用成員列表裡的名稱，都沒有就不產生系統訊息
+  const username = user.username || roomStore.state.users.find(u => u.id === userId)?.username;
 
   // 自己的成員資格被移除（房主移除，或在其他分頁離開）：交給頁面離開房間，後端隨後會關閉連線
   if (removed && userId && userId === currentUser()?.id) {
@@ -101,7 +102,7 @@ export function handleUserLeft(data: WSUserLeftMessage, ctx: HandlerContext) {
 
   // 只有當後端提供事件時間戳時才創建系統訊息
   // 這確保時間戳來自後端的 UTC 時間
-  if (eventTimestamp) {
+  if (eventTimestamp && username) {
     addSystemMessage(kicked ? `${username} 已被移出聊天室` : `${username} 離開了聊天室`, ctx.roomId!, eventTimestamp);
   }
 }

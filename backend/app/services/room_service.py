@@ -585,12 +585,12 @@ class RoomService:
             str: 操作結果訊息
 
         Raises:
-            NotFoundError: 房間不存在時
+            NotFoundError: 房間不存在或不是成員時
             ForbiddenError: 房間擁有者不能離開時
         """
-        # 獲取房間
+        # 獲取房間；不是成員時與房間不存在回同樣的錯誤，不透露私人房是否存在
         room = await self.room_repo.get_by_id(room_id)
-        if not room:
+        if not room or user_id not in room.members:
             raise NotFoundError("房間不存在")
 
         # 檢查是否是房間擁有者
@@ -639,7 +639,8 @@ class RoomService:
 
         success = await self.room_repo.remove_member(room_id, member_id)
         if not success:
-            raise AppError("移除成員失敗")
+            # 檢查後對方剛好自己離開
+            raise NotFoundError("該使用者不是房間成員")
 
         logger.info(f"User {member_id} removed from room {room_id} by owner {owner_id}")
         await self._revoke_member_access(room_id, member_id, kicked=True)
@@ -657,7 +658,12 @@ class RoomService:
         if self._connection_manager:
             user_info = self._connection_manager.user_info.get(user_id, {}).copy()
             if not user_info:
+                # 離線的使用者不在 connection_manager 裡（被移出的多半是這種），
+                # 補上名稱，前端的系統訊息才不會顯示 undefined
+                user = await self.user_repo.get_by_id(user_id)
                 user_info = {"id": user_id}
+                if user:
+                    user_info["username"] = user.username
             await self._connection_manager.broadcast_to_room(
                 room_id,
                 {

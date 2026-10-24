@@ -349,6 +349,15 @@ describe('成員事件', () => {
     expect(messageStore.messages).toEqual([]);
   });
 
+  it('事件沒有名稱時用成員列表裡的名稱，都查不到就不產生系統訊息', () => {
+    roomStore.setUsers([user('u2', true)]);
+
+    handleUserLeft(userLeft('u2', { removed: true, kicked: true, timestamp: '2026-01-01T00:00:00Z', user: { id: 'u2' } as User }), ctx());
+    handleUserLeft(userLeft('u9', { removed: true, kicked: true, timestamp: '2026-01-01T00:00:01Z', user: { id: 'u9' } as User }), ctx());
+
+    expect(messageStore.messages.map((m) => m.content)).toEqual(['user-u2 已被移出聊天室']);
+  });
+
   it('自己只是斷線（沒有移除成員資格）時不離開房間', () => {
     const context = ctx();
 
