@@ -42,6 +42,10 @@ export async function createRoom(
   return { id: room.id, name, ...(room.invite_code ? { invite_code: room.invite_code } : {}) };
 }
 
+export async function updateRoom(api: APIRequestContext, roomId: string, settings: Record<string, unknown>) {
+  await data(await api.put(`/api/rooms/${roomId}`, { data: settings }), '更新房間');
+}
+
 export async function postMessage(api: APIRequestContext, roomId: string, content: string) {
   const response = await api.post(`/api/rooms/${roomId}/messages`, {
     data: { content, message_type: 'text' },
