@@ -71,7 +71,6 @@ export const messageStore = {
     };
 
     try {
-
       // 游標分頁：以最早訊息的 seq 為游標（不受訊息增刪造成的偏移影響）
       // 舊資料無 seq 時 fallback 到 skip/limit
       const skip = currentMessages.length;
