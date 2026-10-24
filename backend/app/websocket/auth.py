@@ -6,6 +6,8 @@ from typing import Any
 from bson import ObjectId
 from fastapi import WebSocket
 from fastapi.security.utils import get_authorization_scheme_param
+from pymongo.errors import PyMongoError
+from redis.exceptions import RedisError
 
 from app.auth.jwt_handler import decode_access_token
 from app.core.fastapi_integration import create_room_service
@@ -13,6 +15,10 @@ from app.utils.user_cache import fetch_user_with_cache
 from app.utils.ws_ticket import validate_ws_ticket
 
 logger = logging.getLogger(__name__)
+
+# 資料庫 / Redis 暫時故障不是認證失敗：往上拋，由 handler 以 4000 關閉讓前端重連，
+# 不能當成認證失敗或不是成員（以 4001 拒絕，前端不重連）
+INFRA_ERRORS = (PyMongoError, RedisError)
 
 
 async def _get_user_info(
@@ -54,6 +60,8 @@ async def _get_user_info(
             "avatar": user.get("avatar"),
             "is_active": user.get("is_active", True),
         }
+    except INFRA_ERRORS:
+        raise
     except Exception as e:  # intentional catch-all: 使用者查詢失敗回傳 None 拒絕連線
         logger.error(f"Error fetching user info for {user_id}: {e}")
         return None
@@ -91,6 +99,8 @@ async def authenticate_websocket(
             user_id, expected_token_version=payload.get("token_version", 0)
         )
 
+    except INFRA_ERRORS:
+        raise
     except Exception as e:  # intentional catch-all: 認證失敗回傳 None 拒絕連線
         logger.error(f"Error authenticating WebSocket connection: {e}")
         return None
@@ -150,6 +160,8 @@ async def verify_room_membership(user_id: str, room_id: str) -> bool:
 
         return True
 
+    except INFRA_ERRORS:
+        raise
     except Exception as e:  # intentional catch-all: 房間驗證失敗回傳 False 拒絕連線
         logger.error(f"Error verifying room membership: {e}")
         return False
@@ -227,6 +239,8 @@ async def websocket_auth_middleware(
         logger.info(f"User {user_info['username']} authenticated for room {room_id}")
         return user_info
 
+    except INFRA_ERRORS:
+        raise
     except Exception as e:  # intentional catch-all: 認證中介軟體失敗回傳 None 拒絕連線
         logger.error(f"Error in WebSocket auth middleware: {e}")
         return None

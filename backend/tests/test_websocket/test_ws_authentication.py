@@ -8,6 +8,8 @@ from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 from bson import ObjectId
+from pymongo.errors import AutoReconnect, ServerSelectionTimeoutError
+from redis.exceptions import ConnectionError as RedisConnectionError
 from starlette.datastructures import Headers, QueryParams
 
 from app.auth.jwt_handler import create_access_token, create_refresh_token
@@ -342,6 +344,39 @@ class TestWebsocketAuthMiddleware:
     async def test_no_credentials(self, ctx):
         assert await websocket_auth_middleware(fake_ws(), ctx["room_id"]) is None
         assert await websocket_auth_middleware(fake_ws(), "lobby") is None
+
+    # 資料庫或 Redis 暫時故障不是認證失敗：往上拋，由 handler 以 4000 關閉讓前端重連，
+    # 不能當成「不是成員」以 4001 拒絕（前端收到 4001 不重連）
+    @pytest.mark.parametrize(
+        ("target", "error"),
+        [
+            ("app.websocket.auth.validate_ws_ticket", RedisConnectionError("down")),
+            (
+                "app.websocket.auth.fetch_user_with_cache",
+                ServerSelectionTimeoutError("down"),
+            ),
+            (
+                "app.repositories.room_repository.RoomRepository.is_member",
+                AutoReconnect("down"),
+            ),
+        ],
+    )
+    async def test_infrastructure_errors_propagate(self, ctx, target, error):
+        ticket = await create_ws_ticket(ctx["member"]["id"], ctx["room_id"])
+
+        with (
+            patch(target, AsyncMock(side_effect=error)),
+            pytest.raises(type(error)),
+        ):
+            await websocket_auth_middleware(fake_ws({"ticket": ticket}), ctx["room_id"])
+
+    async def test_unexpected_auth_error_still_rejects(self, ctx):
+        websocket = fake_ws({"token": ctx["member"]["token"]})
+
+        with patch(
+            "app.websocket.auth.decode_access_token", side_effect=ValueError("bad")
+        ):
+            assert await websocket_auth_middleware(websocket, ctx["room_id"]) is None
 
     async def test_left_member_can_no_longer_connect(self, async_client, ctx):
         joined = await async_client.post(

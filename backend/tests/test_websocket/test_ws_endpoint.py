@@ -17,6 +17,7 @@ from urllib.parse import urlencode
 
 import pytest
 from bson import ObjectId
+from pymongo.errors import AutoReconnect
 
 from app.core.bot import BOT_USERNAME
 from app.database.mongodb import get_database
@@ -382,6 +383,20 @@ class TestProtocolErrors:
             closed = await websocket.receive_close()
 
         assert (closed["code"], closed["reason"]) == (4000, "Internal server error")
+
+    async def test_database_error_during_membership_check_closes_with_4000(
+        self, ctx, manager
+    ):
+        """查詢成員資格時資料庫故障：以 4000 關閉（前端會重連），不當成不是成員"""
+        with patch(
+            "app.repositories.room_repository.RoomRepository.is_member",
+            AsyncMock(side_effect=AutoReconnect("down")),
+        ):
+            websocket = await _connect(ctx, ctx.member)
+            closed = await websocket.receive_close()
+
+        assert closed["code"] == 4000
+        assert ctx.member["id"] not in manager.active_connections
 
     async def test_invalid_ticket_closed_with_4001(self, ctx, manager):
         websocket = AsgiWebSocket(f"/ws/{ctx.room_id}", {"ticket": "bogus"})

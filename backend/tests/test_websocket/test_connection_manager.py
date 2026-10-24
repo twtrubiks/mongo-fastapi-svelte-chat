@@ -815,6 +815,23 @@ class TestConnectionManager:
         assert "user1" in connection_manager.room_users[room_id]
 
     @pytest.mark.asyncio
+    async def test_recheck_error_propagates(self, connection_manager):
+        """再確認時資料庫故障：往上拋（handler 以 4000 關閉），不留下確認中的標記"""
+        ws = self._ws()
+
+        with pytest.raises(ConnectionError):
+            await connection_manager.connect(
+                ws,
+                "user1",
+                "room123",
+                {"id": "user1", "username": "User1"},
+                still_member=AsyncMock(side_effect=ConnectionError("db down")),
+            )
+
+        assert connection_manager._confirming == set()
+        assert "user1" not in connection_manager.room_users.get("room123", set())
+
+    @pytest.mark.asyncio
     async def test_personal_event_avoids_connection_still_confirming(
         self, connection_manager
     ):
