@@ -311,6 +311,10 @@
         // 更新訊息計數與尾端訊息 id
         previousMessageCount = currentMessageCount;
         previousLastMessageId = latestMessage?.id ?? previousLastMessageId;
+      } else if (currentMessageCount < previousMessageCount) {
+        // 訊息被刪除（或 bot 預覽被收掉）：計數跟著降，否則之後的新訊息數量不超過舊值而被漏掉
+        previousMessageCount = currentMessageCount;
+        previousLastMessageId = messages[currentMessageCount - 1]?.id ?? null;
       }
     }
     
