@@ -8,6 +8,7 @@ from bson import ObjectId
 from pymongo.errors import PyMongoError
 
 from app.models.notification import (
+    NotificationActivity,
     NotificationCreate,
     NotificationInDB,
     NotificationStatus,
@@ -333,11 +334,10 @@ class TestNotificationRepository:
         assert (stats.total_count, stats.unread_count, stats.read_count) == (3, 2, 1)
         assert stats.type_counts == {"message": 2, "system": 1}
 
-        # 驗證最近活動
-        assert len(stats.recent_activity) <= 5
-        assert all("type" in activity for activity in stats.recent_activity)
-        assert all("title" in activity for activity in stats.recent_activity)
-        assert all("created_at" in activity for activity in stats.recent_activity)
+        # 驗證最近活動（排序與筆數上限見 test_stats_recent_activity_is_latest_five）
+        assert sorted((a.title, a.type) for a in stats.recent_activity) == sorted(
+            (n.title, n.type) for n in notifications
+        )
 
     @pytest.mark.asyncio
     async def test_pagination(self, db_manager):
@@ -460,7 +460,9 @@ class TestNotificationOrdering:
         latest = sorted(docs, key=lambda d: d["created_at"], reverse=True)[:5]
         assert [d["title"] for d in latest] == ["n1", "n3", "n5", "n0", "n6"]
         assert stats.recent_activity == [
-            {"type": d["type"], "title": d["title"], "created_at": d["created_at"]}
+            NotificationActivity(
+                type=d["type"], title=d["title"], created_at=d["created_at"]
+            )
             for d in latest
         ]
 

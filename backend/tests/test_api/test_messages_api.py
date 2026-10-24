@@ -6,7 +6,7 @@
 授權相關情境見 test_rooms_api.py。
 """
 
-from datetime import UTC, datetime
+from datetime import datetime
 
 import pytest
 from bson import ObjectId
@@ -141,16 +141,13 @@ class TestReplyPreviews:
         listed = response.json()
         assert [m["id"] for m in listed] == [question["id"], answer["id"]]
         assert listed[0]["reply_to_message"] is None
-        quoted = listed[1]["reply_to_message"]
-        # 引用預覽的時間沒有時區標記（前端不使用此欄位），只比對時間值
-        quoted_at = datetime.fromisoformat(quoted.pop("created_at"))
-        assert quoted_at.replace(tzinfo=UTC) == datetime.fromisoformat(
-            question["created_at"]
-        )
-        assert quoted == {
+        # 引用預覽的時間與訊息本身同格式（UTC 以 Z 結尾）
+        assert question["created_at"].endswith("Z")
+        assert listed[1]["reply_to_message"] == {
             "id": question["id"],
             "content": "晚餐吃什麼？",
             "username": "owner",
+            "created_at": question["created_at"],
         }
 
 

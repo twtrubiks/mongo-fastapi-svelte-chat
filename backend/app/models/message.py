@@ -150,6 +150,11 @@ class ReplyToMessage(BaseModel):
 
     model_config = ConfigDict(from_attributes=True)
 
+    @field_serializer("created_at")
+    def serialize_datetime(self, dt: datetime) -> str:
+        """序列化日期時間（與訊息本身相同，UTC 以 Z 結尾）"""
+        return format_datetime_for_json(dt)
+
 
 class MessageWithReply(MessageResponse):
     """包含回覆資訊的訊息模型"""

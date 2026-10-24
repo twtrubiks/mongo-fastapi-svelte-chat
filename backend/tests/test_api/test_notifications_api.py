@@ -74,11 +74,6 @@ def _titles(body: dict) -> list[str]:
     return [n["title"] for n in body["notifications"]]
 
 
-def _as_utc(value: str) -> datetime:
-    parsed = datetime.fromisoformat(value)
-    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
-
-
 @pytest.mark.asyncio
 @pytest.mark.integration
 class TestListNotifications:
@@ -203,12 +198,24 @@ class TestNotificationStats:
             "read_count": 1,
             "type_counts": {"message": 3, "system": 1},
         }
-        # recent_activity 的時間沒有時區標記（前端不使用此欄位），只比對時間值
-        assert [(a["type"], a["title"], _as_utc(a["created_at"])) for a in recent] == [
-            ("message", "通知 3", BASE + timedelta(minutes=3)),
-            ("system", "通知 2", BASE + timedelta(minutes=2)),
-            ("message", "通知 1", BASE + timedelta(minutes=1)),
-            ("message", "通知 0", BASE),
+        # 時間與其他 API 同格式（UTC 以 Z 結尾）
+        assert recent == [
+            {
+                "type": "message",
+                "title": "通知 3",
+                "created_at": "2026-01-01T00:03:00Z",
+            },
+            {"type": "system", "title": "通知 2", "created_at": "2026-01-01T00:02:00Z"},
+            {
+                "type": "message",
+                "title": "通知 1",
+                "created_at": "2026-01-01T00:01:00Z",
+            },
+            {
+                "type": "message",
+                "title": "通知 0",
+                "created_at": "2026-01-01T00:00:00Z",
+            },
         ]
 
     async def test_empty(self, async_client, users):
