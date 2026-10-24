@@ -313,14 +313,9 @@ class RoomService:
             ForbiddenError: 無權限時
             ConflictError: 名稱衝突時
         """
-        # 獲取房間
-        room = await self.room_repo.get_by_id(room_id)
-        if not room:
-            raise NotFoundError("聊天室不存在")
-
-        # 檢查權限
-        if room.owner_id != owner_id:
-            raise ForbiddenError("只有房間擁有者可以修改房間資訊")
+        room = await self._get_owned_room(
+            room_id, owner_id, "只有房間擁有者可以修改房間資訊"
+        )
 
         # 檢查新的最大成員數不能小於當前成員數
         if update_data.max_members is not None:
@@ -384,20 +379,9 @@ class RoomService:
             NotFoundError: 房間不存在時
             ForbiddenError: 無權限時
         """
-        # 獲取房間
-        room = await self.room_repo.get_by_id(room_id)
-        if not room:
-            raise NotFoundError("聊天室不存在")
-
-        # 檢查權限
-        logger.info(
-            f"[DELETE] Room owner check: room.owner_id={room.owner_id}, requesting_user_id={owner_id}"
+        room = await self._get_owned_room(
+            room_id, owner_id, "只有房間擁有者可以刪除房間"
         )
-        if room.owner_id != owner_id:
-            logger.warning(
-                f"[DELETE] Permission denied: user {owner_id} tried to delete room owned by {room.owner_id}"
-            )
-            raise ForbiddenError("只有房間擁有者可以刪除房間")
 
         # 刪除房間
         success = await self.room_repo.delete(room_id)
@@ -628,7 +612,8 @@ class RoomService:
             room_id: 房間 ID
             owner_id: 發出請求的使用者 ID（須為房間擁有者）
             member_id: 要移除的成員 ID
-            ban: 同時封鎖，對方之後不能再加入（直到房主解除）
+            ban: 同時封鎖，對方之後不能再加入（直到房主解除）；對方剛好已離開
+                時仍會封鎖，見 ban_user
 
         Returns:
             str: 操作結果訊息
@@ -637,6 +622,9 @@ class RoomService:
             NotFoundError: 房間不存在或對方不是成員時
             ForbiddenError: 非房間擁有者，或要移除的是擁有者本人時
         """
+        if ban:
+            return await self.ban_user(room_id, owner_id, member_id)
+
         room = await self._get_owned_room(
             room_id, owner_id, "只有房間擁有者可以移除成員"
         )
@@ -648,17 +636,79 @@ class RoomService:
         if member_id not in room.members:
             raise NotFoundError("該使用者不是房間成員")
 
-        success = await self.room_repo.remove_member(room_id, member_id, ban=ban)
+        success = await self.room_repo.remove_member(room_id, member_id)
         if not success:
             # 檢查後對方剛好自己離開
             raise NotFoundError("該使用者不是房間成員")
 
-        logger.info(
-            f"User {member_id} removed from room {room_id} by owner {owner_id} (ban={ban})"
-        )
+        logger.info(f"User {member_id} removed from room {room_id} by owner {owner_id}")
         await self._revoke_member_access(room_id, member_id, kicked=True)
 
-        return "已將成員移出並封鎖" if ban else "已將成員移出房間"
+        return "已將成員移出房間"
+
+    async def ban_user(self, room_id: str, owner_id: str, user_id: str) -> str:
+        """
+        封鎖使用者，之後不能再加入（直到房主解除）；是成員就一併移出並斷線
+
+        不要求是成員：成員先離開就能躲過封鎖，房主也要能封鎖已離開的人。
+
+        Raises:
+            NotFoundError: 房間或使用者不存在時
+            ForbiddenError: 非房間擁有者，或要封鎖的是擁有者本人時
+            ConflictError: 已在封鎖名單中時
+        """
+        room = await self._get_owned_room(
+            room_id, owner_id, "只有房間擁有者可以封鎖使用者"
+        )
+
+        if user_id == room.owner_id:
+            raise ForbiddenError("不能封鎖房間擁有者")
+
+        # user_id 會成為 member_roles 的欄位路徑：不是成員時必須是存在的使用者
+        if user_id not in room.members and not await self.user_repo.get_by_id(user_id):
+            raise NotFoundError("使用者不存在")
+
+        # 以更新前的狀態判斷：檢查後對方剛好離開或加入，都以實際被移除與否為準
+        before = await self.room_repo.ban_user(room_id, user_id)
+        if not before:
+            raise NotFoundError("聊天室不存在")
+
+        if user_id not in before.members:
+            if user_id in before.banned_users:
+                raise ConflictError("該使用者已在封鎖名單中")
+            logger.info(
+                f"User {user_id} banned from room {room_id} by owner {owner_id}"
+            )
+            return "已封鎖"
+
+        logger.info(
+            f"User {user_id} removed and banned from room {room_id} by owner {owner_id}"
+        )
+        await self._revoke_member_access(room_id, user_id, kicked=True, banned=True)
+        return "已將成員移出並封鎖"
+
+    async def ban_by_username(
+        self, room_id: str, owner_id: str, username: str
+    ) -> UserResponse:
+        """
+        以使用者名稱封鎖（可封鎖已離開或從未加入的人）
+
+        Returns:
+            UserResponse: 被封鎖的使用者（供前端加入封鎖名單）
+
+        Raises:
+            NotFoundError: 房間或使用者不存在時
+            ForbiddenError: 非房間擁有者，或要封鎖的是擁有者本人時
+            ConflictError: 已在封鎖名單中時
+        """
+        # 先確認是房主，非房主不能藉此探測使用者名稱是否存在
+        await self._get_owned_room(room_id, owner_id, "只有房間擁有者可以封鎖使用者")
+        user = await self.user_repo.get_by_username(username)
+        if not user:
+            raise NotFoundError("找不到這個使用者")
+
+        await self.ban_user(room_id, owner_id, user.id)
+        return self._to_user_response(user)
 
     async def get_banned_users(self, room_id: str, owner_id: str) -> list[UserResponse]:
         """
@@ -694,21 +744,27 @@ class RoomService:
     async def _get_owned_room(
         self, room_id: str, owner_id: str, forbidden_message: str
     ) -> RoomInDB:
-        """取得房間並確認是房主本人"""
+        """取得房間並確認是房主本人
+
+        私人房對非成員隱藏存在（與 require_room_membership、leave_room 一致）：
+        非成員呼叫房主專用操作時與房間不存在一樣回 404，成員才回 403。
+        """
         room = await self.room_repo.get_by_id(room_id)
         if not room:
             raise NotFoundError("聊天室不存在")
         if room.owner_id != owner_id:
+            if room.room_type == RoomType.PRIVATE and owner_id not in room.members:
+                raise NotFoundError("聊天室不存在")
             raise ForbiddenError(forbidden_message)
         return room
 
     async def _revoke_member_access(
-        self, room_id: str, user_id: str, kicked: bool
+        self, room_id: str, user_id: str, kicked: bool, banned: bool = False
     ) -> None:
         """成員資格移除後的通知與撤銷（離開房間與房主移除成員共用）
 
         斷開被移除者在該房的 WS 連線（關閉前送給他 user_left，前端據此離開房間），
-        再廣播 user_left 給房間。
+        再廣播 user_left 給房間。banned 讓被封鎖的人知道不能再加入。
         """
         if self._connection_manager:
             user_info = self._connection_manager.user_info.get(user_id, {}).copy()
@@ -726,6 +782,7 @@ class RoomService:
                 "room_id": room_id,
                 "removed": True,
                 "kicked": kicked,
+                "banned": banned,
             }
             # 撤銷被移除者在該房的 WS 讀取權：成員資格只在 WS 連線時驗證，
             # 不主動斷線的話，已開的分頁會繼續收到房間所有新訊息廣播。

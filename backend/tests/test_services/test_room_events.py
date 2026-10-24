@@ -132,6 +132,7 @@ class TestRoomUpdatedEvents:
             "room_id": room.id,
             "removed": True,
             "kicked": True,
+            "banned": False,
         }
         assert recorder.disconnected == [(users["member"], room.id)]
         # 被移出者在斷線前收到同一則 user_left（前端據此離開房間）
@@ -157,6 +158,7 @@ class TestRoomUpdatedEvents:
             "room_id": room.id,
             "removed": True,
             "kicked": False,
+            "banned": False,
         }
         assert recorder.disconnected == [(users["member"], room.id)]
         assert recorder.notices == [event]
@@ -202,3 +204,46 @@ class TestRoomUpdatedEvents:
 
         with pytest.raises(ForbiddenError, match="你已被房主禁止加入此聊天室"):
             await service.join_room(room.id, users["member"])
+
+    async def test_banning_member_tells_them_they_are_banned(
+        self, service, recorder, users
+    ):
+        room = await service.create_room(users["owner"], RoomCreate(name="lobby"))
+        await service.join_room(room.id, users["member"])
+        recorder.room_broadcasts.clear()
+
+        await service.ban_user(room.id, users["owner"], users["member"])
+
+        [(_, event)] = recorder.room_broadcasts
+        assert (event["type"], event["kicked"], event["banned"]) == (
+            "user_left",
+            True,
+            True,
+        )
+        assert recorder.notices == [event]
+        assert recorder.disconnected == [(users["member"], room.id)]
+
+    async def test_banning_non_member_does_not_broadcast(
+        self, service, recorder, users
+    ):
+        room = await service.create_room(users["owner"], RoomCreate(name="lobby"))
+        recorder.events.clear()
+
+        message = await service.ban_user(room.id, users["owner"], users["outsider"])
+
+        assert message == "已封鎖"
+        assert recorder.room_broadcasts == []
+        assert recorder.disconnected == []
+        assert recorder.events == []
+
+    async def test_ban_follows_membership_at_write_time(self, service, recorder, users):
+        """檢查時還不是成員、寫入前剛好加入：以寫入當下為準，一併移出並斷線"""
+        room = await service.create_room(users["owner"], RoomCreate(name="lobby"))
+        before_join = await service.room_repo.get_by_id(room.id)
+        await service.join_room(room.id, users["member"])
+        service.room_repo.get_by_id = AsyncMock(return_value=before_join)
+
+        message = await service.ban_user(room.id, users["owner"], users["member"])
+
+        assert message == "已將成員移出並封鎖"
+        assert recorder.disconnected == [(users["member"], room.id)]

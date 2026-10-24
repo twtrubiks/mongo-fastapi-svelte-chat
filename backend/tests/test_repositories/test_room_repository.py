@@ -334,7 +334,7 @@ class TestRoomRepository:
 
     @pytest.mark.asyncio
     async def test_ban_and_unban(self, db_manager):
-        """移出時一併封鎖；被封鎖的人加不進來（原子條件），解除後可以"""
+        """封鎖時一併移出成員；被封鎖的人加不進來（原子條件），解除後可以"""
         repo = RoomRepository(db_manager.database)
         owner_id, member_id, other_id = (str(ObjectId()) for _ in range(3))
         room = await repo.create(
@@ -346,20 +346,26 @@ class TestRoomRepository:
             )
         )
 
-        # 不是成員時不封鎖（以「仍是成員」為條件）
-        assert await repo.remove_member(room.id, other_id, ban=True) is False
-        assert await repo.remove_member(room.id, member_id, ban=True) is True
+        # 回傳更新前的房間，呼叫端據此判斷對方原本是否為成員
+        before = await repo.ban_user(room.id, member_id)
+        assert member_id in before.members
         banned = await repo.get_by_id(room.id)
         assert banned.banned_users == [member_id]
         assert member_id not in banned.members
         assert member_id not in banned.member_roles
 
-        assert await repo.add_member(room.id, member_id, MemberRole.MEMBER) is False
-        assert await repo.add_member(room.id, other_id, MemberRole.MEMBER) is True
+        # 不是成員也能封鎖；再封鎖一次不重複
+        assert other_id not in (await repo.ban_user(room.id, other_id)).members
+        again = await repo.ban_user(room.id, other_id)
+        assert again.banned_users == [member_id, other_id]
+        assert (await repo.get_by_id(room.id)).banned_users == [member_id, other_id]
+        assert await repo.ban_user(str(ObjectId()), other_id) is None
 
-        assert await repo.unban_user(room.id, other_id) is False
+        assert await repo.add_member(room.id, member_id, MemberRole.MEMBER) is False
+
+        assert await repo.unban_user(room.id, owner_id) is False
         assert await repo.unban_user(room.id, member_id) is True
-        assert (await repo.get_by_id(room.id)).banned_users == []
+        assert (await repo.get_by_id(room.id)).banned_users == [other_id]
         assert await repo.add_member(room.id, member_id, MemberRole.MEMBER) is True
 
     @pytest.mark.asyncio

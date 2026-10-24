@@ -100,6 +100,12 @@ class RoomResponse(_RoomResponseBase):
     invite_code: str | None = None
 
 
+class RoomBanRequest(BaseModel):
+    """以使用者名稱封鎖的請求模型"""
+
+    username: str = Field(..., min_length=1, max_length=50)
+
+
 class RoomJoinRequest(BaseModel):
     """加入房間的請求模型"""
 

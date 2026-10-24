@@ -1024,6 +1024,187 @@ class TestRoomBans:
                 assert response.status_code == 200
                 assert "banned_users" not in response.text, (viewer, path)
 
+    async def test_banned_user_does_not_see_room_in_lists(self, async_client, users):
+        """被封鎖的人加不進去，探索、搜尋與房間列表都不列出這個房間"""
+        room = await _create_room(async_client, users["owner"], name="被封鎖的房間")
+        await self._remove(
+            async_client, room["id"], users["owner"], users["member"]["id"], ban="true"
+        )
+
+        def listed(response) -> bool:
+            assert response.status_code == 200
+            return room["id"] in [r["id"] for r in response.json()]
+
+        for params in (
+            {"exclude_joined": "true"},
+            {"exclude_joined": "true", "search": "被封鎖"},
+            {},
+        ):
+            as_banned = await async_client.get(
+                "/api/rooms/", params=params, headers=users["member"]["headers"]
+            )
+            as_other = await async_client.get(
+                "/api/rooms/", params=params, headers=users["outsider"]["headers"]
+            )
+            assert not listed(as_banned), params
+            assert listed(as_other), params
+
+    async def _ban_by_name(self, client, room_id: str, actor: dict, username: str):
+        return await client.post(
+            f"/api/rooms/{room_id}/bans",
+            json={"username": username},
+            headers=actor["headers"],
+        )
+
+    async def _member_ids(self, client, room_id: str, owner: dict) -> list[str]:
+        members = await client.get(
+            f"/api/rooms/{room_id}/members", headers=owner["headers"]
+        )
+        return [m["id"] for m in members.json()]
+
+    # 成員先離開就能躲過封鎖：房主按下封鎖時對方剛離開，仍要封鎖成功
+    async def test_member_who_already_left_can_still_be_banned(
+        self, async_client, users
+    ):
+        room = await _create_room(async_client, users["owner"])
+        await _join(async_client, room["id"], users["member"])
+        await async_client.post(
+            f"/api/rooms/{room['id']}/leave", headers=users["member"]["headers"]
+        )
+
+        banned = await self._remove(
+            async_client, room["id"], users["owner"], users["member"]["id"], ban="true"
+        )
+        rejoin = await _join(async_client, room["id"], users["member"])
+
+        assert banned.status_code == 200
+        assert rejoin.status_code == 403
+
+    async def test_ban_by_username_someone_who_is_not_a_member(
+        self, async_client, users
+    ):
+        room = await _create_room(async_client, users["owner"])
+
+        response = await self._ban_by_name(
+            async_client, room["id"], users["owner"], "outsider"
+        )
+        rejoin = await _join(async_client, room["id"], users["outsider"])
+        bans = await self._bans(async_client, room["id"], users["owner"])
+
+        assert response.status_code == 200
+        assert (response.json()["id"], response.json()["username"]) == (
+            users["outsider"]["id"],
+            "outsider",
+        )
+        assert rejoin.status_code == 403
+        assert [u["id"] for u in bans.json()] == [users["outsider"]["id"]]
+
+    async def test_ban_by_username_removes_a_current_member(self, async_client, users):
+        room = await _create_room(async_client, users["owner"])
+        await _join(async_client, room["id"], users["member"])
+
+        response = await self._ban_by_name(
+            async_client, room["id"], users["owner"], "member"
+        )
+
+        assert response.status_code == 200
+        assert await self._member_ids(async_client, room["id"], users["owner"]) == [
+            users["owner"]["id"]
+        ]
+        rejoin = await _join(async_client, room["id"], users["member"])
+        assert rejoin.status_code == 403
+
+    @pytest.mark.parametrize(
+        ("username", "status", "detail"),
+        [
+            ("nobody", 404, "找不到這個使用者"),
+            ("owner", 403, "不能封鎖房間擁有者"),
+        ],
+    )
+    async def test_ban_by_username_rejected(
+        self, async_client, users, username, status, detail
+    ):
+        room = await _create_room(async_client, users["owner"])
+
+        response = await self._ban_by_name(
+            async_client, room["id"], users["owner"], username
+        )
+
+        assert response.status_code == status
+        assert response.json()["detail"] == detail
+
+    async def test_banning_twice_conflicts(self, async_client, users):
+        room = await _create_room(async_client, users["owner"])
+        await self._ban_by_name(async_client, room["id"], users["owner"], "outsider")
+
+        again = await self._ban_by_name(
+            async_client, room["id"], users["owner"], "outsider"
+        )
+
+        assert again.status_code == 409
+        assert again.json()["detail"] == "該使用者已在封鎖名單中"
+
+    async def test_only_owner_bans_by_username(self, async_client, users):
+        room = await _create_room(async_client, users["owner"])
+        await _join(async_client, room["id"], users["member"])
+
+        response = await self._ban_by_name(
+            async_client, room["id"], users["member"], "outsider"
+        )
+        rejoin = await _join(async_client, room["id"], users["outsider"])
+
+        assert response.status_code == 403
+        assert rejoin.status_code == 200
+
+    # 封鎖不是成員的人時，user_id 會成為 member_roles 的欄位路徑，必須是存在的使用者
+    @pytest.mark.parametrize("target", [str(ObjectId()), "member_roles.x", "$set"])
+    async def test_ban_unknown_user_id(self, async_client, users, target):
+        room = await _create_room(async_client, users["owner"])
+
+        response = await self._remove(
+            async_client, room["id"], users["owner"], target, ban="true"
+        )
+        bans = await self._bans(async_client, room["id"], users["owner"])
+
+        assert response.status_code == 404
+        assert response.json()["detail"] == "使用者不存在"
+        assert bans.json() == []
+
+
+# 私人房對非成員隱藏存在：房主專用的操作，非成員呼叫與房間不存在一樣回 404
+PRIVATE_OWNER_ONLY = [
+    ("PUT", "/api/rooms/{room_id}", {"name": "hijacked"}),
+    ("DELETE", "/api/rooms/{room_id}", None),
+    ("POST", "/api/rooms/{room_id}/invite-code", None),
+    ("DELETE", "/api/rooms/{room_id}/members/{member_id}", None),
+    ("GET", "/api/rooms/{room_id}/bans", None),
+    ("POST", "/api/rooms/{room_id}/bans", {"username": "member"}),
+    ("DELETE", "/api/rooms/{room_id}/bans/{member_id}", None),
+]
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+@pytest.mark.parametrize(("method", "path", "body"), PRIVATE_OWNER_ONLY)
+async def test_private_room_owner_actions_hide_room_from_non_members(
+    async_client, users, method, path, body
+):
+    room = await _create_room(async_client, users["owner"], room_type="private")
+    await _join(
+        async_client, room["id"], users["member"], {"invite_code": room["invite_code"]}
+    )
+    url = path.format(room_id=room["id"], member_id=users["member"]["id"])
+
+    as_outsider = await async_client.request(
+        method, url, json=body, headers=users["outsider"]["headers"]
+    )
+    as_member = await async_client.request(
+        method, url, json=body, headers=users["member"]["headers"]
+    )
+
+    assert as_outsider.status_code == 404
+    assert as_member.status_code == 403
+
 
 @pytest.mark.asyncio
 @pytest.mark.integration

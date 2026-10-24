@@ -8,6 +8,7 @@ from app.auth.dependencies import get_current_active_user, require_room_membersh
 from app.core.fastapi_integration import MessageServiceDep, RoomServiceDep
 from app.models.message import MessageCreate, MessageResponse, MessageWithReply
 from app.models.room import (
+    RoomBanRequest,
     RoomCreate,
     RoomJoinRequest,
     RoomResponse,
@@ -220,6 +221,19 @@ async def get_banned_users(
 ):
     """封鎖名單（僅房間擁有者）"""
     return await room_service.get_banned_users(room_id, current_user["_id"])
+
+
+@router.post("/{room_id}/bans", response_model=UserResponse)
+async def ban_user_by_username(
+    room_id: str,
+    request: RoomBanRequest,
+    current_user: dict = Depends(get_current_active_user),
+    room_service: RoomService = RoomServiceDep,
+):
+    """以使用者名稱封鎖（僅房間擁有者；可封鎖已離開或從未加入的人）"""
+    return await room_service.ban_by_username(
+        room_id, current_user["_id"], request.username
+    )
 
 
 @router.delete("/{room_id}/bans/{user_id}")

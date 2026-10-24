@@ -881,6 +881,7 @@ class TestRoomService:
             "room_id": sample_room.id,
             "removed": True,
             "kicked": False,
+            "banned": False,
         }
         assert abs(datetime.now(UTC) - sent_at) < timedelta(seconds=5)
 
