@@ -507,6 +507,9 @@ export const roomStore = {
   // 封鎖名單（僅房主）
   getBannedUsers: (roomId: string) => apiClient.rooms.getBannedUsers(roomId),
 
+  // 以使用者名稱封鎖（可封鎖已離開或從未加入的人）；對方若是成員，成員列表由 user_left 事件同步
+  banUser: (roomId: string, username: string) => apiClient.rooms.banUser(roomId, username),
+
   unbanUser: (roomId: string, userId: string) => apiClient.rooms.unbanUser(roomId, userId),
 
   // 房主重新產生邀請碼，舊邀請碼立即失效

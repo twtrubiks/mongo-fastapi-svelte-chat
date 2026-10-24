@@ -162,13 +162,40 @@ describe('ApiClient 請求', () => {
     await client.rooms.removeMember('r1', 'u2', { ban: true });
     expect(await client.rooms.getBannedUsers('r1')).toEqual([{ id: 'u2', username: 'bob' }]);
     await client.rooms.unbanUser('r1', 'u2');
+    reply = { status: 200, body: bffOk({ id: 'u3', username: 'carol' }) };
+    expect(await client.rooms.banUser('r1', 'carol')).toEqual({ id: 'u3', username: 'carol' });
 
     expect(received.map((r) => [r.method, r.url])).toEqual([
       ['DELETE', '/api/rooms/r1/members/u2'],
       ['DELETE', '/api/rooms/r1/members/u2?ban=true'],
       ['GET', '/api/rooms/r1/bans'],
       ['DELETE', '/api/rooms/r1/bans/u2'],
+      ['POST', '/api/rooms/r1/bans'],
     ]);
+    expect(JSON.parse(received[4]!.body)).toEqual({ username: 'carol' });
+  });
+
+  // 使用者資料直接進入元件的 {#each}：契約漂移時要明確報錯，不在畫面上靜默壞掉
+  it.each([
+    ['不是陣列', { id: 'u1', username: 'bob' }],
+    ['缺少名稱', [{ id: 'u1' }]],
+    ['id 不是字串', [{ id: 1, username: 'bob' }]],
+    ['項目是 null', [null]],
+  ])('成員與封鎖名單的回應格式不對時拋錯（%s）', async (_, data) => {
+    reply = { status: 200, body: bffOk(data) };
+    const client = new ApiClient(baseURL);
+    const invalid = { code: 'INVALID_RESPONSE', message: '伺服器回傳的使用者資料格式不正確' };
+
+    await expect(client.rooms.getMembers('r1')).rejects.toMatchObject(invalid);
+    await expect(client.rooms.getBannedUsers('r1')).rejects.toMatchObject(invalid);
+  });
+
+  it('封鎖回傳的使用者格式不對時拋錯', async () => {
+    reply = { status: 200, body: bffOk({ id: 'u3' }) };
+
+    await expect(new ApiClient(baseURL).rooms.banUser('r1', 'carol')).rejects.toMatchObject({
+      code: 'INVALID_RESPONSE',
+    });
   });
 
   it('WS ticket 只回傳 ticket 字串', async () => {

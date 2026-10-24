@@ -247,6 +247,42 @@ describe('成員管理', () => {
     expect(getBannedUsers).toHaveBeenCalledTimes(2);
   });
 
+  it('以使用者名稱封鎖（可封鎖已離開或從未加入的人）', async () => {
+    const banUser = vi.spyOn(roomStore, 'banUser').mockResolvedValue(member('u9', 'dave'));
+    setup();
+    await openMembersTab();
+    await screen.findByText('沒有封鎖的使用者');
+
+    const input = screen.getByLabelText('要封鎖的使用者名稱') as HTMLInputElement;
+    await fireEvent.input(input, { target: { value: ' dave ' } });
+    await fireEvent.click(screen.getByRole('button', { name: '封鎖' }));
+
+    expect(banUser).toHaveBeenCalledWith('r1', 'dave');
+    expect(await screen.findByText('已封鎖 dave')).toBeTruthy();
+    expect(within(screen.getByRole('list', { name: '封鎖名單' })).getByText('dave')).toBeTruthy();
+    expect(input.value).toBe('');
+  });
+
+  it('以名稱封鎖失敗時顯示原因並保留輸入', async () => {
+    vi.spyOn(roomStore, 'banUser').mockRejectedValue(new Error('找不到這個使用者'));
+    setup();
+    await openMembersTab();
+
+    const input = screen.getByLabelText('要封鎖的使用者名稱') as HTMLInputElement;
+    await fireEvent.input(input, { target: { value: 'nobody' } });
+    await fireEvent.click(screen.getByRole('button', { name: '封鎖' }));
+
+    expect(await screen.findByText('找不到這個使用者')).toBeTruthy();
+    expect(input.value).toBe('nobody');
+  });
+
+  it('沒有輸入名稱時不能按封鎖', async () => {
+    setup();
+    await openMembersTab();
+
+    expect((screen.getByRole('button', { name: '封鎖' }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
   it('封鎖名單載入失敗時顯示原因，可重試', async () => {
     const getBannedUsers = vi
       .spyOn(roomStore, 'getBannedUsers')

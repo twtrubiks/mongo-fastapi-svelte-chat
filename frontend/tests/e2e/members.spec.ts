@@ -65,10 +65,12 @@ test('重新產生邀請碼後，舊的邀請碼無法再加入', async ({ page,
   await outsiderContext.close();
 });
 
-test('移出並封鎖：公開房也不能再加入，解除封鎖後可以', async ({ page, browser }) => {
+test('移出並封鎖：公開房也不能再加入、探索也看不到，解除封鎖後可以', async ({ page, browser }) => {
   const ownerApi = page.context().request;
   await registerUser(ownerApi, 'owner');
-  const room = await createRoom(ownerApi, `封鎖-${uniqueSuffix()}`);
+  const suffix = uniqueSuffix();
+  const room = await createRoom(ownerApi, `封鎖-${suffix}`);
+  const other = await createRoom(ownerApi, `封鎖-${suffix}-其他`);
 
   const memberContext = await browser.newContext();
   const memberPage = await memberContext.newPage();
@@ -88,17 +90,50 @@ test('移出並封鎖：公開房也不能再加入，解除封鎖後可以', as
   await expect(settings).toContainText(`已將 ${member.username} 移出並封鎖`);
   await expect(settings.getByRole('list', { name: '封鎖名單' })).toContainText(member.username);
   await expect(memberPage).toHaveURL(/\/app\/dashboard$/);
+  await expect(memberPage.getByText('你已被房主移出並封鎖，無法再加入此聊天室')).toBeVisible();
 
-  // 被封鎖的人從探索找到房間也加不進去，看到原因並回到自己的房間
+  // 探索搜尋不到封鎖自己的房間（同名前綴的其他房間仍在）。搜尋關鍵字會被標亮，
+  // 所以等搜尋結果回來後，以房間按鈕的完整名稱比對
   await memberPage.goto(`/app/room/${own.id}`);
   await memberPage.getByRole('tab', { name: '探索' }).click();
-  await memberPage.getByPlaceholder('搜尋公開房間...').fill(room.name);
-  await memberPage.locator('.room-list-content').getByText(room.name).click();
+  const searched = memberPage.waitForResponse((r) => r.url().includes('/api/rooms?') && r.url().includes('search='));
+  await memberPage.getByPlaceholder('搜尋公開房間...').fill(`封鎖-${suffix}`);
+  await searched;
+  const results = memberPage.locator('.room-list-content');
+  await expect(results.getByRole('button', { name: `${other.name} by` })).toBeVisible();
+  await expect(results.getByRole('button', { name: `${room.name} by` })).toHaveCount(0);
+
+  // 直接開房間網址也加不進去，看到原因並回到自己的房間
+  await memberPage.goto(`/app/room/${room.id}`);
   await expect(memberPage.getByText('你已被房主禁止加入此聊天室')).toBeVisible();
   await expect(memberPage).toHaveURL(new RegExp(`/app/room/${own.id}$`));
 
   await settings.getByRole('button', { name: `解除封鎖 ${member.username}` }).click();
   await expect(settings).toContainText(`已解除對 ${member.username} 的封鎖`);
   expect((await memberApi.post(`/api/rooms/${room.id}/join`)).ok()).toBe(true);
+  await memberContext.close();
+});
+
+test('以使用者名稱封鎖已經離開的人，之後不能再加入', async ({ page, browser }) => {
+  const ownerApi = page.context().request;
+  await registerUser(ownerApi, 'owner');
+  const room = await createRoom(ownerApi, `封鎖離開的人-${uniqueSuffix()}`);
+
+  const memberContext = await browser.newContext();
+  const memberApi = memberContext.request;
+  const member = await registerUser(memberApi, 'member');
+  expect((await memberApi.post(`/api/rooms/${room.id}/join`)).ok()).toBe(true);
+  expect((await memberApi.post(`/api/rooms/${room.id}/leave`)).ok()).toBe(true);
+
+  await page.goto(`/app/room/${room.id}`);
+  const settings = await openSettings(page);
+  await settings.getByRole('button', { name: '成員管理' }).click();
+  await settings.getByLabel('要封鎖的使用者名稱').fill(member.username);
+  await settings.getByRole('button', { name: '封鎖', exact: true }).click();
+  await expect(settings).toContainText(`已封鎖 ${member.username}`);
+  await expect(settings.getByRole('list', { name: '封鎖名單' })).toContainText(member.username);
+
+  const rejoin = await memberApi.post(`/api/rooms/${room.id}/join`);
+  expect(rejoin.status()).toBe(403);
   await memberContext.close();
 });

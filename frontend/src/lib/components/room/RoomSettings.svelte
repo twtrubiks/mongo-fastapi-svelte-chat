@@ -48,6 +48,8 @@
   let bansError = $state<string | null>(null);
   let loadingBans = $state(false);
   let unbanningId = $state<string | null>(null);
+  let banUsername = $state('');
+  let banningByName = $state(false);
   // 每次載入遞增；設定頁在換房間時保留，晚到的舊回應（關掉後或上一個房間的）不採用
   let bansRequest = 0;
 
@@ -182,6 +184,30 @@
     bannedUsers = null;
     bansError = null;
     loadingBans = false;
+    banUsername = '';
+  }
+
+  // 以使用者名稱封鎖：成員先離開就能躲過「移出並封鎖」，已離開或從未加入的人也要能封鎖
+  async function banByUsername() {
+    const username = banUsername.trim();
+    if (!room?.id || !username || !canManageRoom) return;
+    banningByName = true;
+    error = null;
+    successMessage = null;
+    try {
+      const banned = await roomStore.banUser(room.id, username);
+      successMessage = `已封鎖 ${banned.username}`;
+      banUsername = '';
+      if (bannedUsers === null) {
+        loadBannedUsers();
+      } else if (!bannedUsers.some((u) => u.id === banned.id)) {
+        bannedUsers = [...bannedUsers, banned];
+      }
+    } catch (err: unknown) {
+      error = extractErrorMessage(err, '封鎖失敗');
+    } finally {
+      banningByName = false;
+    }
   }
 
   async function unbanUser(banned: User) {
@@ -258,7 +284,7 @@
   }
 </script>
 
-<Modal bind:open={show} title="房間設定" size="xl" closeable={!isLoading && !regenerating && !removingId && !unbanningId} onClose={handleClose}>
+<Modal bind:open={show} title="房間設定" size="xl" closeable={!isLoading && !regenerating && !removingId && !unbanningId && !banningByName} onClose={handleClose}>
   <!-- 分隔線 -->
   <div class="divider mt-0"></div>
 
@@ -546,6 +572,23 @@
         <!-- 封鎖名單：被封鎖的人不能再加入，解除後可依加入方式再加入 -->
         <div class="pt-4">
           <h3 class="font-semibold mb-2">封鎖名單</h3>
+          <form class="flex gap-2 mb-3" onsubmit={(e) => { e.preventDefault(); banByUsername(); }}>
+            <input
+              type="text"
+              class="input input-bordered input-sm flex-1"
+              placeholder="輸入使用者名稱（已離開的人也能封鎖）"
+              aria-label="要封鎖的使用者名稱"
+              maxlength="50"
+              bind:value={banUsername}
+              disabled={banningByName}
+            />
+            <button type="submit" class="btn btn-error btn-outline btn-sm" disabled={banningByName || !banUsername.trim()}>
+              {#if banningByName}
+                <span class="loading loading-spinner loading-xs"></span>
+              {/if}
+              封鎖
+            </button>
+          </form>
           {#if bansError}
             <div class="flex items-center gap-2 text-sm text-error">
               <span>{bansError}</span>

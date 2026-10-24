@@ -351,6 +351,36 @@ describe('房主撤銷權限', () => {
     });
   });
 
+  it('POST /bans 以使用者名稱封鎖，轉送去掉前後空白的名稱', async () => {
+    const backend = mockBackend({ 'POST /api/rooms/r1/bans': () => ({ id: 'u3', username: 'carol' }) });
+
+    const result = await body(
+      await bans.POST(event({ params: { id: 'r1' }, request: jsonRequest('POST', { username: ' carol ' }) })),
+    );
+
+    expect(result).toMatchObject({ status: 200, data: { id: 'u3', username: 'carol' } });
+    expect(backend.mock.calls[0]![1]).toMatchObject({ method: 'POST', data: { username: 'carol' } });
+  });
+
+  it.each([{}, { username: '   ' }, { username: 3 }])('POST /bans 沒有名稱時不轉送（%o）', async (payload) => {
+    const backend = mockBackend({});
+
+    const result = await body(await bans.POST(event({ params: { id: 'r1' }, request: jsonRequest('POST', payload) })));
+
+    expect(result).toMatchObject({ status: 400, error: { code: 'VALIDATION_ERROR', message: '請輸入使用者名稱' } });
+    expect(backend).not.toHaveBeenCalled();
+  });
+
+  it('封鎖找不到的使用者時沿用後端 404', async () => {
+    mockBackend({ 'POST /api/rooms/r1/bans': throws(404, '找不到這個使用者') });
+
+    const result = await body(
+      await bans.POST(event({ params: { id: 'r1' }, request: jsonRequest('POST', { username: 'nobody' }) })),
+    );
+
+    expect(result).toMatchObject({ status: 404, error: { code: 'BAN_ERROR', message: '找不到這個使用者' } });
+  });
+
   it('DELETE /bans/[userId] 解除封鎖', async () => {
     const backend = mockBackend({ 'DELETE /api/rooms/r1/bans/u2': () => ({ message: '已解除封鎖' }) });
 

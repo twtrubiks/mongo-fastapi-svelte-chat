@@ -40,6 +40,27 @@ function createBFFError(message: string, code: string, details?: unknown, respon
   return error;
 }
 
+// 使用者資料會直接進入元件：先驗證結構，後端契約漂移時明確報錯，不在畫面上靜默壞掉
+function isUser(value: unknown): value is User {
+  if (typeof value !== 'object' || value === null) return false;
+  const { id, username } = value as { id?: unknown; username?: unknown };
+  return typeof id === 'string' && typeof username === 'string';
+}
+
+const INVALID_USERS_MESSAGE = '伺服器回傳的使用者資料格式不正確';
+
+function expectUser(value: unknown): User {
+  if (!isUser(value)) throw createBFFError(INVALID_USERS_MESSAGE, 'INVALID_RESPONSE');
+  return value;
+}
+
+function expectUsers(value: unknown): User[] {
+  if (!Array.isArray(value) || !value.every(isUser)) {
+    throw createBFFError(INVALID_USERS_MESSAGE, 'INVALID_RESPONSE');
+  }
+  return value;
+}
+
 /**
  * API 客戶端
  *
@@ -277,7 +298,12 @@ export class ApiClient {
     },
 
     getBannedUsers: async (roomId: string): Promise<User[]> => {
-      return this.bffRequest<User[]>('GET', `/api/rooms/${roomId}/bans`);
+      return expectUsers(await this.bffRequest<unknown>('GET', `/api/rooms/${roomId}/bans`));
+    },
+
+    // 以使用者名稱封鎖，回傳被封鎖的使用者
+    banUser: async (roomId: string, username: string): Promise<User> => {
+      return expectUser(await this.bffRequest<unknown>('POST', `/api/rooms/${roomId}/bans`, { data: { username } }));
     },
 
     unbanUser: async (roomId: string, userId: string): Promise<void> => {
@@ -292,7 +318,7 @@ export class ApiClient {
       const params: Record<string, number> = {};
       if (options?.limit != null) params['limit'] = options.limit;
       if (options?.offset != null) params['offset'] = options.offset;
-      return this.bffRequest<User[]>('GET', `/api/rooms/${roomId}/members`, { params });
+      return expectUsers(await this.bffRequest<unknown>('GET', `/api/rooms/${roomId}/members`, { params }));
     },
 
     updateSettings: async (roomId: string, settings: Partial<RoomCreate>): Promise<Room> => {
