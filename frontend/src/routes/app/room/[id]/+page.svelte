@@ -468,8 +468,11 @@
   });
   
   // 監聽認證狀態變化 - 如果未認證則重定向
+  // 初次載入由 checkAuthentication 處理（先以 cookie 向 server 驗證）；localStorage 沒有
+  // 使用者資料時 isAuth 一開始是 false，若在這裡立即轉址，已登入的使用者會經 /login →
+  // /app → /app/rooms 被帶到第一個房間
   $effect(() => {
-    if (!isAuth && browser) {
+    if (isInitialized && !isAuth && browser) {
       goto('/login');
     }
   });
