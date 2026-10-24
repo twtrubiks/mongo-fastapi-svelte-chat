@@ -7,6 +7,10 @@ import {
   isTokenExpired,
 } from '$lib/bff-utils';
 import { tryRefreshIfNeeded } from '$lib/bff-auth';
+import { FILE_TYPE_CONFIGS } from '$lib/utils';
+
+// 未知類型（general）的大小上限
+const GENERAL_MAX_SIZE = 5 * 1024 * 1024;
 
 // 檔案上傳代理 API
 // multipart/form-data 無法走 bffAuthRequest，但仍需透明 refresh
@@ -85,31 +89,17 @@ export const POST: RequestHandler = async ({ cookies, request }) => {
 function validateFile(file: File | null, uploadType: string): { valid: boolean; error?: string; } {
   if (!file) return { valid: false, error: '沒有選擇檔案' };
 
-  const sizeLimits: Record<string, number> = {
-    image: 10 * 1024 * 1024,
-    document: 50 * 1024 * 1024,
-    audio: 20 * 1024 * 1024,
-    video: 100 * 1024 * 1024,
-    general: 5 * 1024 * 1024,
-  };
-
-  const maxSize = sizeLimits[uploadType] ?? sizeLimits['general'] ?? 5 * 1024 * 1024;
+  // 與前端 getFileType、後端白名單共用同一份設定，避免各自維護的清單不一致
+  const config = FILE_TYPE_CONFIGS[uploadType];
+  const maxSize = config ? config.maxSizeMB * 1024 * 1024 : GENERAL_MAX_SIZE;
   if (file.size > maxSize) {
     return { valid: false, error: `檔案大小不能超過 ${Math.round(maxSize / 1024 / 1024)}MB` };
   }
 
-  const allowedTypes: Record<string, string[]> = {
-    image: ['image/jpeg', 'image/png', 'image/gif', 'image/webp'],
-    document: ['application/pdf', 'text/plain', 'application/msword',
-               'application/vnd.openxmlformats-officedocument.wordprocessingml.document'],
-    audio: ['audio/mpeg', 'audio/wav', 'audio/ogg'],
-    video: ['video/mp4', 'video/avi', 'video/mov', 'video/webm'],
-    general: [],
-  };
-
-  const allowed = allowedTypes[uploadType];
-  if (allowed && allowed.length > 0 && !allowed.includes(file.type)) {
-    return { valid: false, error: `不支援的檔案類型：${file.type}` };
+  // 與後端相同只看副檔名（瀏覽器給的 MIME 不可靠，例如 .md 常是空字串）
+  const fileName = file.name.toLowerCase();
+  if (config && !config.extensions.some((ext) => fileName.endsWith(ext))) {
+    return { valid: false, error: `不支援的檔案類型：${file.name}` };
   }
 
   if (file.name.length > 255) return { valid: false, error: '檔案名過長' };
