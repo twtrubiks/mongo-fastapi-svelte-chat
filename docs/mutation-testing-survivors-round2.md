@@ -1,7 +1,7 @@
 # 變異測試附錄（第二輪，修正後）：存活變異體與未覆蓋函數明細
 
 本文件為 [變異測試報告](mutation-testing-report.md) 第〇節的附錄，列出修正與補測後重跑時仍存活的變異體與從未被執行的函數。
-第一輪（修正前）的明細見 [mutation-testing-survivors.md](mutation-testing-survivors.md)，第三輪見 [mutation-testing-survivors-round3.md](mutation-testing-survivors-round3.md)，第四輪見 [mutation-testing-survivors-round4.md](mutation-testing-survivors-round4.md)。編號為本輪 `gen` 產生的編號，與第一輪不同。
+第一輪（修正前）的明細見 [mutation-testing-survivors.md](mutation-testing-survivors.md)，第三輪見 [mutation-testing-survivors-round3.md](mutation-testing-survivors-round3.md)，第四輪見 [mutation-testing-survivors-round4.md](mutation-testing-survivors-round4.md)，第五輪見 [mutation-testing-survivors-round5.md](mutation-testing-survivors-round5.md)。編號為本輪 `gen` 產生的編號，與第一輪不同。
 
 分類沿用第一輪的定義：程式碼未變的存活者延用第一輪的判讀；本輪才出現的存活者（多為原本從未執行、這次才被執行到的程式碼）為人工判讀。
 
