@@ -36,7 +36,8 @@ ruff check . && ruff format .                 # Lint + Format
 
 # Frontend (from /frontend)
 npm run dev                                   # Dev server on :5173
-npm run test                                  # Vitest unit tests
+npm run test                                  # Vitest unit + component tests
+npm run test:e2e                              # Playwright E2E (needs running backend, see tests/e2e/README.md)
 npm run check:all                             # Type check + lint + naming check + tests
 ```
 
