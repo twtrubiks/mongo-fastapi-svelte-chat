@@ -9,6 +9,7 @@
     getFileTypeLabel,
     getMaxFileSize,
     getAcceptString,
+    getAllowedTypesLabel,
     getFileType
   } from '$lib/utils';
   import type { BFFResponse } from '$lib/bff-types';
@@ -126,14 +127,19 @@
 
   // 處理檔案
   export function processFiles(files: File[]) {
+    // 上傳中再加入的檔案會跟著另外上傳一次（自動上傳時兩個都送出），等這次完成
+    if (isUploading) {
+      onError?.({ message: '檔案上傳中，請稍候再加入其他檔案' });
+      return;
+    }
+
     const validFiles: File[] = [];
     const errors: string[] = [];
     
     for (const file of files) {
       // 檢查檔案類型
       if (!isSupportedFileType(file, allowedTypes)) {
-        const supportedTypes = allowedTypes?.map(type => type).join('、') || '所有支援的類型';
-        errors.push(`檔案 "${file.name}" 不是支援的類型。支援：${supportedTypes}`);
+        errors.push(`檔案 "${file.name}" 不是支援的類型。支援：${getAllowedTypesLabel(allowedTypes)}`);
         continue;
       }
       
@@ -273,24 +279,6 @@
     }
   }
   
-  // 獲取支援的檔案類型描述
-  function getSupportedTypesDescription(): string {
-    if (!allowedTypes || allowedTypes.includes('general')) {
-      return '支援圖片、文檔、影片、音檔';
-    }
-    
-    const typeLabels = allowedTypes.map(type => {
-      switch (type) {
-        case 'image': return '圖片';
-        case 'document': return '文檔';
-        case 'video': return '影片';
-        case 'audio': return '音檔';
-        default: return type;
-      }
-    });
-    
-    return `支援 ${typeLabels.join('、')}`;
-  }
 </script>
 
 <div class="file-upload" class:compact class:disabled>
@@ -300,7 +288,7 @@
     type="file"
     {accept}
     {multiple}
-    {disabled}
+    disabled={disabled || isUploading}
     class="hidden"
     onchange={handleFileSelect}
   />
@@ -322,7 +310,8 @@
     {#if selectedFiles.length > 0}
       <!-- 檔案預覽列表 -->
       <div class="files-preview">
-        {#each selectedFiles as file (file.name)}
+        <!-- 以檔案本身當 key：同名的不同檔案（例如兩張都叫 image.png 的截圖）不會互相衝突 -->
+        {#each selectedFiles as file (file)}
           <div class="file-item">
             <div class="file-preview">
               {#if previewUrls.has(file)}
@@ -346,10 +335,12 @@
               </div>
             </div>
             
+            <!-- 上傳無法中途取消；上傳中移除只會讓檔案從畫面消失，完成後仍照樣回報 -->
             <Button
               variant="ghost"
               size="sm"
               onclick={(e) => { e.stopPropagation(); removeFile(file); }}
+              disabled={isUploading}
               aria-label="移除檔案"
               class="remove-btn"
             >
@@ -373,7 +364,7 @@
           <div class="upload-text">
             <p class="upload-primary">點擊或拖拽檔案到此處</p>
             <p class="upload-secondary">
-              {getSupportedTypesDescription()}
+              支援{getAllowedTypesLabel(allowedTypes)}
             </p>
           </div>
         {/if}

@@ -126,4 +126,13 @@ describe('編輯與刪除', () => {
     expect(screen.getByRole('button', { name: '刪除訊息' })).toBeTruthy();
   });
 
+  // 尚未送達的訊息還沒有伺服器 id，編輯或刪除的 API 一定失敗
+  it('尚未送達的訊息不能編輯或刪除', () => {
+    messageStatusStore.setFailed('c1', '訊息未送出，請重試');
+
+    render(MessageItem, { message: pendingMessage(), isCurrentUser: true });
+
+    expect(screen.queryByRole('button', { name: '編輯訊息' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '刪除訊息' })).toBeNull();
+  });
 });

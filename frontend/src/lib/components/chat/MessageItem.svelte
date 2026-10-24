@@ -43,9 +43,10 @@
   let messageDate = $derived(formatDateTime(message.created_at));
   let normalizedContentUrl = $derived(normalizeFileUrl(message.content));
 
-  // 訊息編輯／刪除（僅作者本人；圖片／檔案只能刪不能編）
-  let canEdit = $derived(isCurrentUser && !isSystemMessage && !isImageMessage && !isFileMessage);
-  let canDelete = $derived(isCurrentUser && !isSystemMessage);
+  // 訊息編輯／刪除（僅作者本人；圖片／檔案只能刪不能編）。
+  // 尚未送達的訊息還沒有伺服器 id，API 一定失敗，不提供
+  let canEdit = $derived(isCurrentUser && !message.pending && !isSystemMessage && !isImageMessage && !isFileMessage);
+  let canDelete = $derived(isCurrentUser && !message.pending && !isSystemMessage);
 
   let isEditing = $state(false);
   let editContent = $state('');

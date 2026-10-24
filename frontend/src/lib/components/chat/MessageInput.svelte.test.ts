@@ -86,6 +86,42 @@ describe('送出', () => {
   });
 });
 
+// 發送鍵只負責送出輸入框的內容；個別訊息的狀態與重試在訊息泡泡與「全部重試」
+describe('發送鍵', () => {
+  async function sendViaButton(type: (value: string) => Promise<unknown>, content: string) {
+    await type(content);
+    await fireEvent.click(screen.getByRole('button', { name: '發送' }));
+  }
+
+  it('上一則還在等伺服器確認時，仍可送出下一則', async () => {
+    const { onSend, type } = setup();
+
+    await sendViaButton(type, '第一則');
+    messageStatusStore.setSending(onSend.mock.calls[0]![0].messageId);
+    await sendViaButton(type, '第二則');
+
+    expect(onSend.mock.calls.map(([sent]) => sent.content)).toEqual(['第一則', '第二則']);
+  });
+
+  it('上一則失敗時，按發送送出的是新打的內容，不是重送上一則', async () => {
+    const manualRetry = vi.spyOn(messageRetryManager, 'manualRetry').mockResolvedValue(true);
+    const { onSend, type } = setup();
+
+    await sendViaButton(type, '第一則');
+    messageStatusStore.setFailed(onSend.mock.calls[0]![0].messageId, '連線中斷，訊息未送達');
+    await sendViaButton(type, '新的訊息');
+
+    expect(onSend.mock.calls.map(([sent]) => sent.content)).toEqual(['第一則', '新的訊息']);
+    expect(manualRetry).not.toHaveBeenCalled();
+  });
+
+  it('輸入框是空的時候不能按', () => {
+    setup();
+
+    expect((screen.getByRole('button', { name: '發送' }) as HTMLButtonElement).disabled).toBe(true);
+  });
+});
+
 describe('失敗的訊息', () => {
   it('顯示失敗數量與原因，全部重試會重送所有失敗訊息', async () => {
     const retryAllFailed = vi.spyOn(messageRetryManager, 'retryAllFailed').mockResolvedValue();
@@ -99,6 +135,20 @@ describe('失敗的訊息', () => {
     expect(retryAllFailed).toHaveBeenCalledOnce();
   });
 
+  it('清除時移出重試佇列，並移除畫面上未送出的訊息', async () => {
+    messageStore.addPendingMessage(pendingMessage('c1'));
+    messageRetryManager.addToRetryQueue({ id: 'c1', content: '訊息 c1', type: 'text' });
+    messageStatusStore.setFailed('c1', '訊息未送出，請重試');
+    setup();
+
+    await fireEvent.click(screen.getByRole('button', { name: '清除' }));
+
+    expect(messageRetryManager.isInQueue('c1')).toBe(false);
+    expect(messageStatusStore.getStatus('c1')).toBeUndefined();
+    // 留著的話沒有任何狀態標示，看起來就像已送出
+    expect(messageList().map((m) => m.client_id)).not.toContain('c1');
+  });
+
   it('清除時保留伺服器其實已收到的訊息', async () => {
     // 廣播或補發已帶回伺服器版本（id 已換成伺服器 id），只是沒收到 ack
     messageStore.addMessage(pendingMessage('c2', { id: 'srv-2' }));
@@ -108,5 +158,18 @@ describe('失敗的訊息', () => {
     await fireEvent.click(screen.getByRole('button', { name: '清除' }));
 
     expect(messageList().map((m) => m.id)).toEqual(['srv-2']);
+  });
+});
+
+describe('選擇檔案', () => {
+  it('不支援的類型以中文說明可上傳的類型', async () => {
+    const onError = vi.fn();
+    const { container } = render(MessageInput, { onSend: vi.fn(), onError, allowedFileTypes: ['image', 'audio'] });
+    const input = container.querySelector('input[type="file"]') as HTMLInputElement;
+
+    const exe = new File(['x'], 'setup.exe', { type: 'application/x-msdownload' });
+    await fireEvent.change(input, { target: { files: [exe] } });
+
+    expect(onError).toHaveBeenCalledWith({ message: '不支援的檔案類型，支援：圖片、音檔' });
   });
 });

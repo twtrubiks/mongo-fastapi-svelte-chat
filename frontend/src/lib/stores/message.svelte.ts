@@ -187,6 +187,13 @@ export const messageStore = {
     };
   },
 
+  // 移除尚未送達的樂觀訊息（使用者放棄重送）；伺服器已收到、id 已換成伺服器 id 的不受影響
+  removePendingMessage: (clientId: string) => {
+    const newMessages = messageState.messages.filter(msg => !(msg.pending && msg.client_id === clientId));
+    if (newMessages.length === messageState.messages.length) return;
+    messageState = { ...messageState, messages: newMessages };
+  },
+
   // 收到 ack：以伺服器 id/seq 確認樂觀訊息
   confirmMessage: (clientId: string, serverId: string, seq?: number) => {
     const index = messageState.messages.findIndex(msg => msg.client_id === clientId);
