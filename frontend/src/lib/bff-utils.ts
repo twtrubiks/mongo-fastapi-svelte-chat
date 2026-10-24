@@ -95,7 +95,9 @@ export function isTokenExpiringSoon(token: string | null, thresholdSeconds: numb
     const parts = token.split('.');
     if (parts.length !== 3) return true;
 
-    const payload = JSON.parse(atob(parts[1]!));
+    // JWT payload 是 base64url（- 與 _），atob 只接受標準 base64，需先轉回
+    const base64 = parts[1]!.replace(/-/g, '+').replace(/_/g, '/');
+    const payload = JSON.parse(atob(base64));
     const now = Math.floor(Date.now() / 1000);
     return (payload.exp - now) < thresholdSeconds;
   } catch {
