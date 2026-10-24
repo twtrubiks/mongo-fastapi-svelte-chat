@@ -138,6 +138,14 @@ export function getMaxFileSize(file: File): number {
   return config?.maxSizeMB || 5;
 }
 
+// 可上傳類型的中文說明（如「圖片、音檔」）；未限制或含 general 時為全部類型
+export function getAllowedTypesLabel(allowedTypes?: string[]): string {
+  const types = !allowedTypes || allowedTypes.includes('general')
+    ? Object.keys(FILE_TYPE_CONFIGS)
+    : allowedTypes;
+  return types.map(type => FILE_TYPE_CONFIGS[type]?.label ?? type).join('、');
+}
+
 // 生成檔案接受的 MIME 類型字串
 export function getAcceptString(allowedTypes?: string[]): string {
   if (!allowedTypes || allowedTypes.includes('general')) {

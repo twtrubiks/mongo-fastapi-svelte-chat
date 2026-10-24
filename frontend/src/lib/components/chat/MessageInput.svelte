@@ -2,7 +2,7 @@
   import { tick } from 'svelte';
   import { Button } from '$lib/components/ui';
   import FileUpload from '$lib/components/ui/FileUpload.svelte';
-  import { debounce, isSupportedFileType, isFileSizeValid, getMaxFileSize, getAcceptString } from '$lib/utils';
+  import { debounce, isSupportedFileType, isFileSizeValid, getMaxFileSize, getAcceptString, getAllowedTypesLabel } from '$lib/utils';
   import { messageStatusStore } from '$lib/stores/messageStatus.svelte';
   import { messageStore } from '$lib/stores/message.svelte';
   import { messageRetryManager } from '$lib/utils/messageRetry';
@@ -207,7 +207,7 @@
 
       // 檢查檔案類型
       if (!isSupportedFileType(file, allowedFileTypes)) {
-        const typeDesc = allowedFileTypes ? allowedFileTypes.join('、') : '所有支援的類型';
+        const typeDesc = getAllowedTypesLabel(allowedFileTypes);
         const errorData = { message: `不支援的檔案類型，支援：${typeDesc}` };
         if (onError) {
           onError(errorData);
@@ -350,7 +350,7 @@
 
       // 基本驗證
       if (!isSupportedFileType(file, allowedFileTypes)) {
-        const typeDesc = allowedFileTypes ? allowedFileTypes.join('、') : '所有支援的類型';
+        const typeDesc = getAllowedTypesLabel(allowedFileTypes);
         const errorData = { message: `不支援的檔案類型，支援：${typeDesc}` };
         if (onError) {
           onError(errorData);

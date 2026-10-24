@@ -26,11 +26,11 @@ function setup(props: Record<string, unknown> = {}) {
     onAllFilesRemoved: vi.fn(),
     onError: vi.fn(),
   };
-  const { container } = render(FileUpload, { ...callbacks, ...props });
+  const { container, component } = render(FileUpload, { ...callbacks, ...props });
   const input = container.querySelector('input[type="file"]') as HTMLInputElement;
   const area = container.querySelector('.upload-area') as HTMLElement;
   const choose = (...files: File[]) => fireEvent.change(input, { target: { files } });
-  return { ...callbacks, input, area, choose };
+  return { ...callbacks, component, input, area, choose };
 }
 
 // 可以控制何時完成的上傳請求
@@ -68,18 +68,19 @@ describe('選擇檔案', () => {
 
     await choose(makeFile('setup.exe', 'application/x-msdownload'));
 
-    expect(onError).toHaveBeenCalledWith({ message: expect.stringContaining('檔案 "setup.exe" 不是支援的類型') });
+    expect(onError).toHaveBeenCalledWith({ message: '檔案 "setup.exe" 不是支援的類型。支援：圖片、文檔、影片、音檔' });
     expect(onFilesSelected).not.toHaveBeenCalled();
     expect(screen.queryByText('setup.exe')).toBeNull();
   });
 
   it('只允許部分類型時，說明可上傳的類型並拒絕其他類型', async () => {
-    const { choose, onError } = setup({ allowedTypes: ['image'] });
-    expect(screen.getByText('支援 圖片')).toBeTruthy();
+    const { choose, onError } = setup({ allowedTypes: ['image', 'audio'] });
+    expect(screen.getByText('支援圖片、音檔')).toBeTruthy();
 
     await choose(makeFile('report.pdf', 'application/pdf'));
 
-    expect(onError).toHaveBeenCalledWith({ message: expect.stringContaining('檔案 "report.pdf" 不是支援的類型') });
+    // 類型以中文說明，不顯示內部代碼（image、audio）
+    expect(onError).toHaveBeenCalledWith({ message: '檔案 "report.pdf" 不是支援的類型。支援：圖片、音檔' });
     expect(screen.queryByText('report.pdf')).toBeNull();
   });
 
@@ -234,6 +235,29 @@ describe('上傳', () => {
     expect(screen.getByText('photo.png')).toBeTruthy();
     finish();
     await waitFor(() => expect(onUploaded).toHaveBeenCalledWith({ files: [file], results: [{ file, result: uploaded }] }));
+  });
+
+  // 上傳中再加入的檔案若照收，會跟著另外上傳一次（自動上傳時兩個都送出）
+  it('上傳中不接受新的檔案（選檔、拖放、貼上），說明原因且不另外上傳', async () => {
+    const { upload, finish } = deferredUpload();
+    const { choose, area, input, component, onUploaded, onError } = setup({ autoUpload: true, preview: false });
+    const first = png('first.png');
+    await choose(first);
+    await waitFor(() => expect(upload).toHaveBeenCalledOnce());
+
+    expect(input.disabled).toBe(true);
+    await choose(png('second.png'));
+    await fireEvent.drop(area, { dataTransfer: { files: [png('third.png')] } });
+    component.processFiles([png('pasted.png')]); // 貼上圖片由外層直接呼叫
+
+    expect(onError).toHaveBeenCalledTimes(3);
+    expect(onError).toHaveBeenLastCalledWith({ message: '檔案上傳中，請稍候再加入其他檔案' });
+    expect(screen.queryByText('second.png')).toBeNull();
+    expect(screen.queryByText('third.png')).toBeNull();
+    finish();
+    await waitFor(() => expect(onUploaded).toHaveBeenCalledOnce());
+    expect(upload).toHaveBeenCalledOnce();
+    expect(onUploaded).toHaveBeenCalledWith({ files: [first], results: [{ file: first, result: uploaded }] });
   });
 });
 

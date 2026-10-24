@@ -160,3 +160,16 @@ describe('失敗的訊息', () => {
     expect(messageList().map((m) => m.id)).toEqual(['srv-2']);
   });
 });
+
+describe('選擇檔案', () => {
+  it('不支援的類型以中文說明可上傳的類型', async () => {
+    const onError = vi.fn();
+    const { container } = render(MessageInput, { onSend: vi.fn(), onError, allowedFileTypes: ['image', 'audio'] });
+    const input = container.querySelector('input[type="file"]') as HTMLInputElement;
+
+    const exe = new File(['x'], 'setup.exe', { type: 'application/x-msdownload' });
+    await fireEvent.change(input, { target: { files: [exe] } });
+
+    expect(onError).toHaveBeenCalledWith({ message: '不支援的檔案類型，支援：圖片、音檔' });
+  });
+});
