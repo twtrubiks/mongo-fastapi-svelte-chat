@@ -356,6 +356,7 @@ class TestJoinPolicies:
         assert updated.status_code == 200
         invite_code = updated.json()["invite_code"]
         assert invite_code
+        assert updated.json()["room_type"] == "private"
         assert updated.json()["join_policy"] == "invite"
         without_code = await _join(async_client, room["id"], users["member"])
         assert without_code.status_code == 400

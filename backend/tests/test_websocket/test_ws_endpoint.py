@@ -366,6 +366,7 @@ class TestProtocolErrors:
             "error",
             "Invalid message format",
         )
+        assert isinstance(invalid["timestamp"], str)
         assert unknown["type"] == "error"
 
     async def test_endpoint_closes_with_4000_on_unexpected_error(self, ctx):
