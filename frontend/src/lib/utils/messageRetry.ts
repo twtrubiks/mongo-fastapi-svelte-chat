@@ -60,9 +60,9 @@ class MessageRetryManager {
       const success = wsInstance.sendMessage(message.content, message.type, messageId);
       
       if (success) {
-        // 發送成功，從佇列中移除
-        console.debug(`[MessageRetry] 訊息 ${messageId} 重試成功`);
-        this.removeFromQueue(messageId);
+        // 只代表已寫入 socket；留在佇列直到收到 ack（handleAck 移除），
+        // 否則 ack 逾時再次失敗時已無法重試
+        console.debug(`[MessageRetry] 訊息 ${messageId} 已重新送出，等待伺服器確認`);
         return true;
       } else {
         // 發送失敗，安排下次重試
@@ -110,8 +110,8 @@ class MessageRetryManager {
     // 清除自動重試計時器
     this.clearRetryTimeout(messageId);
     
-    // 重置重試次數（手動重試從 0 開始）
-    messageStatusStore.setStatus(messageId, 'idle');
+    // 重置重試次數（手動重試從 0 開始）；setStatus 會保留 retryCount，須清除整筆狀態
+    messageStatusStore.clearStatus(messageId);
     
     return await this.retryMessage(messageId);
   }
