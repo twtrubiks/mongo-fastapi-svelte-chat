@@ -206,6 +206,46 @@ class TestNotificationRepository:
         assert updated_notification.updated_at >= created_notification.updated_at
 
     @pytest.mark.asyncio
+    async def test_update_metadata(self, db_manager):
+        repo = NotificationRepository(db_manager.database)
+        created = await _create_notification(
+            repo,
+            NotificationCreate(
+                user_id=str(ObjectId()),
+                title="標題",
+                content="內容",
+                type=NotificationType.MESSAGE,
+                metadata={"room_id": "r1"},
+            ),
+        )
+
+        updated = await repo.update(
+            created.id, NotificationUpdate(metadata={"room_id": "r2"})
+        )
+
+        assert updated.metadata == {"room_id": "r2"}
+        assert (await repo.get_by_id(created.id)).metadata == {"room_id": "r2"}
+
+    @pytest.mark.asyncio
+    async def test_empty_update_returns_current_notification(self, db_manager):
+        """沒有任何欄位要更新時不寫入，直接回傳現有通知"""
+        repo = NotificationRepository(db_manager.database)
+        created = await _create_notification(
+            repo,
+            NotificationCreate(
+                user_id=str(ObjectId()),
+                title="標題",
+                content="內容",
+                type=NotificationType.MESSAGE,
+            ),
+        )
+
+        result = await repo.update(created.id, NotificationUpdate())
+
+        assert result == await repo.get_by_id(created.id)
+        assert result.updated_at == created.updated_at
+
+    @pytest.mark.asyncio
     async def test_update_nonexistent_notification(self, db_manager):
         """測試更新不存在的通知"""
         repo = NotificationRepository(db_manager.database)
@@ -289,16 +329,9 @@ class TestNotificationRepository:
         # 獲取統計
         stats = await repo.get_stats(user_id)
 
-        # 驗證統計結果
-        assert stats.total_count >= 3
-        assert stats.unread_count >= 1  # 1 個未讀
-        assert stats.read_count >= 1  # 1 個已讀
-
-        # 驗證類型統計
-        assert NotificationType.MESSAGE in stats.type_counts
-        assert NotificationType.SYSTEM in stats.type_counts
-        assert stats.type_counts[NotificationType.MESSAGE] >= 2
-        assert stats.type_counts[NotificationType.SYSTEM] >= 1
+        # 驗證統計結果（user_id 為新產生的，數量可精確比對）
+        assert (stats.total_count, stats.unread_count, stats.read_count) == (3, 2, 1)
+        assert stats.type_counts == {"message": 2, "system": 1}
 
         # 驗證最近活動
         assert len(stats.recent_activity) <= 5
