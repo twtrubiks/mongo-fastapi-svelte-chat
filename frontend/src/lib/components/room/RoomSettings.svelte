@@ -1,12 +1,13 @@
 <script lang="ts">
-  import { roomStore } from '$lib/stores/room.svelte';
+  import { untrack } from 'svelte';
+  import { roomStore, roomUsers } from '$lib/stores/room.svelte';
   import { currentUser } from '$lib/stores/auth.svelte';
   import { copyToClipboard } from '$lib/utils/clipboard';
   import { extractErrorMessage } from '$lib/utils/error';
   import Modal from '$lib/components/ui/Modal.svelte';
   import PasswordInput from '$lib/components/ui/PasswordInput.svelte';
-  import { RoomType } from '$lib/types';
-  import type { Room, RoomCreate } from '$lib/types';
+  import { JoinPolicy, RoomType } from '$lib/types';
+  import type { Room, RoomCreate, User } from '$lib/types';
 
   interface Props {
     room: Room;
@@ -23,7 +24,7 @@
   }: Props = $props();
 
   // 狀態管理
-  let activeTab = $state<'general'>('general');
+  let activeTab = $state<'general' | 'members'>('general');
   let isLoading = $state(false);
   let error = $state<string | null>(null);
 
@@ -36,6 +37,12 @@
   let showInviteCode = $state(false);
   let inviteCodeCopied = $state(false);
   let copyTimerId: ReturnType<typeof setTimeout> | null = null;
+  let confirmingRegenerate = $state(false);
+  let regenerating = $state(false);
+
+  // 成員管理
+  let confirmingRemoveId = $state<string | null>(null);
+  let removingId = $state<string | null>(null);
 
   // 創建本地的響應式變數
   let user = $derived(currentUser());
@@ -86,7 +93,51 @@
     }
   }
 
-  // TODO: 邀請和申請管理功能等后端 API 實作完成後再添加
+  // 可移出的成員（不含房主自己）
+  let removableMembers = $derived(roomUsers().filter((member) => member.id && member.id !== room.owner_id));
+
+  // 被移出的人能不能自己再加入，取決於房間的加入方式
+  let rejoinHint = $derived.by(() => {
+    if (room.invite_code) return '被移出的人仍可用目前的邀請碼重新加入；如需阻止，請到「一般設定」重新產生邀請碼。';
+    if (room.join_policy === JoinPolicy.PASSWORD) return '被移出的人知道密碼仍可重新加入；如需阻止，請變更房間密碼。';
+    return '這是公開房間，被移出的人仍可重新加入。';
+  });
+
+  // 重新產生邀請碼：舊邀請碼立即失效，已加入的成員不受影響
+  async function regenerateInviteCode() {
+    if (!room?.id || !canManageRoom) return;
+    regenerating = true;
+    error = null;
+    successMessage = null;
+    try {
+      const inviteCode = await roomStore.regenerateInviteCode(room.id);
+      onUpdate?.({ ...room, invite_code: inviteCode });
+      showInviteCode = true;
+      inviteCodeCopied = false;
+      successMessage = '已產生新的邀請碼，舊的邀請碼已失效';
+    } catch (err: unknown) {
+      error = extractErrorMessage(err, '重新產生邀請碼失敗');
+    } finally {
+      regenerating = false;
+      confirmingRegenerate = false;
+    }
+  }
+
+  async function removeMember(member: User) {
+    if (!room?.id || !member.id || !canManageRoom) return;
+    removingId = member.id;
+    error = null;
+    successMessage = null;
+    try {
+      await roomStore.removeMember(room.id, member.id);
+      successMessage = `已將 ${member.username} 移出聊天室`;
+    } catch (err: unknown) {
+      error = extractErrorMessage(err, '移除成員失敗');
+    } finally {
+      removingId = null;
+      confirmingRemoveId = null;
+    }
+  }
 
   function markCopied() {
     if (copyTimerId) clearTimeout(copyTimerId);
@@ -108,6 +159,8 @@
     successMessage = null;
     showInviteCode = false;
     inviteCodeCopied = false;
+    confirmingRegenerate = false;
+    confirmingRemoveId = null;
     if (copyTimerId) { clearTimeout(copyTimerId); copyTimerId = null; }
     onClose();
   }
@@ -122,21 +175,27 @@
   }
 
 
-  // 監聽 show 變化，自動載入資料
+  // 開啟時把表單重置為當前房間資料。只追蹤 show：開著時 room 也會變動（room_updated 事件、
+  // 重新產生邀請碼），若一併追蹤會清掉正在輸入的內容
   $effect(() => {
-    if (show && room?.id) {
-      // 重置表單為當前房間資料
+    if (show) untrack(resetForm);
+  });
+
+  function resetForm() {
+    if (room?.id) {
       roomName = room.name || '';
       roomDescription = room.description || '';
       roomType = room.room_type || RoomType.PUBLIC;
       roomPassword = '';
       showInviteCode = false;
       inviteCodeCopied = false;
+      confirmingRegenerate = false;
+      confirmingRemoveId = null;
     }
-  });
+  }
 </script>
 
-<Modal bind:open={show} title="房間設定" size="xl" closeable={!isLoading} onClose={handleClose}>
+<Modal bind:open={show} title="房間設定" size="xl" closeable={!isLoading && !regenerating && !removingId} onClose={handleClose}>
   <!-- 分隔線 -->
   <div class="divider mt-0"></div>
 
@@ -150,28 +209,15 @@
       一般設定
     </button>
 
-    <!-- 邀請管理和申請審核功能暫時隱藏，等后端 API 實作完成 -->
-    <!--
-    {#if canInviteUsers}
+    {#if canManageRoom}
       <button
         class="tab"
-        class:tab-active={activeTab === 'invitations'}
-        onclick={() => activeTab = 'invitations'}
+        class:tab-active={activeTab === 'members'}
+        onclick={() => activeTab = 'members'}
       >
-        邀請管理
+        成員管理
       </button>
     {/if}
-
-    {#if canManageRequests}
-      <button
-        class="tab"
-        class:tab-active={activeTab === 'requests'}
-        onclick={() => activeTab = 'requests'}
-      >
-        申請審核
-      </button>
-    {/if}
-    -->
   </div>
 
   <!-- 權限提示 -->
@@ -296,6 +342,27 @@
             <div class="text-sm text-base-content/60 mt-2">
               將此邀請碼分享給其他用戶，他們可以通過「加入房間」功能輸入此邀請碼加入。
             </div>
+            <!-- 邀請碼外流時，重新產生讓舊碼失效 -->
+            {#if confirmingRegenerate}
+              <div class="alert alert-warning mt-3 flex-col items-start gap-2 sm:flex-row sm:items-center">
+                <span class="flex-1">舊的邀請碼會立即失效，已加入的成員不受影響。</span>
+                <div class="flex gap-2">
+                  <button type="button" class="btn btn-ghost btn-sm" aria-label="取消重新產生邀請碼" onclick={() => confirmingRegenerate = false} disabled={regenerating}>
+                    取消
+                  </button>
+                  <button type="button" class="btn btn-warning btn-sm" onclick={regenerateInviteCode} disabled={regenerating}>
+                    {#if regenerating}
+                      <span class="loading loading-spinner loading-xs"></span>
+                    {/if}
+                    產生新邀請碼
+                  </button>
+                </div>
+              </div>
+            {:else}
+              <button type="button" class="btn btn-outline btn-warning btn-sm mt-3 self-start" onclick={() => confirmingRegenerate = true}>
+                重新產生邀請碼
+              </button>
+            {/if}
           </div>
         {/if}
 
@@ -372,7 +439,44 @@
         {/if}
       </div>
 
-    <!-- 邀請管理和申請審核功能暫時隱藏，等后端 API 實作完成 -->
+    {:else if activeTab === 'members' && canManageRoom}
+      <!-- 成員管理（僅房主） -->
+      <div class="space-y-3">
+        <p class="text-sm text-base-content/70">移出後對方會立即離開聊天室，並無法再讀取新訊息。{rejoinHint}</p>
+        {#if removableMembers.length === 0}
+          <p class="text-center text-base-content/60 py-6">目前沒有其他成員</p>
+        {:else}
+          <ul class="divide-y divide-base-200" aria-label="房間成員">
+            {#each removableMembers as member (member.id)}
+              <li class="flex items-center justify-between gap-3 py-2">
+                <span class="truncate">{member.full_name || member.username}</span>
+                {#if confirmingRemoveId === member.id}
+                  <div class="flex gap-2 shrink-0">
+                    <button type="button" class="btn btn-ghost btn-xs" aria-label="取消移出 {member.username}" onclick={() => confirmingRemoveId = null} disabled={removingId === member.id}>
+                      取消
+                    </button>
+                    <button type="button" class="btn btn-error btn-xs" onclick={() => removeMember(member)} disabled={removingId === member.id}>
+                      {#if removingId === member.id}
+                        <span class="loading loading-spinner loading-xs"></span>
+                      {/if}
+                      確定移出 {member.username}
+                    </button>
+                  </div>
+                {:else}
+                  <button type="button" class="btn btn-outline btn-error btn-xs shrink-0" onclick={() => confirmingRemoveId = member.id ?? null} disabled={removingId !== null}>
+                    移出
+                  </button>
+                {/if}
+              </li>
+            {/each}
+          </ul>
+          {#if roomStore.hasMoreMembers}
+            <button type="button" class="btn btn-ghost btn-sm w-full" onclick={() => roomStore.loadMoreMembers(room.id)}>
+              載入更多成員
+            </button>
+          {/if}
+        {/if}
+      </div>
     {/if}
   </div>
 </Modal>

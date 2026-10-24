@@ -7,7 +7,7 @@ import { notificationStore, soundNotificationManager } from '$lib/stores/notific
 import { roomStore } from '$lib/stores/room.svelte';
 import { typingIndicatorStore } from '$lib/stores/typingIndicator.svelte';
 import { authStore } from '$lib/stores/auth.svelte';
-import type { Message, Notification, User, WSRoomUsersMessage } from '$lib/types';
+import type { Message, Notification, User, WSRoomUsersMessage, WSUserLeftMessage } from '$lib/types';
 import { isValidWSMessage } from './guards';
 import type { HandlerContext } from './handlers';
 import { dispatchNotification, handleNotificationStatusChanged, cancelPendingNotificationRefresh } from './notificationHandlers';
@@ -312,13 +312,48 @@ describe('成員事件', () => {
     expect(messageStore.messages.map((m) => m.content)).toEqual(['user-u2 加入了聊天室']);
   });
 
+  function userLeft(id: string, extra: Partial<WSUserLeftMessage> = {}): WSUserLeftMessage {
+    return { type: 'user_left', user: user(id), timestamp: '', room_id: 'r1', ...extra };
+  }
+
   it('離線與退出房間的差別', () => {
     roomStore.setUsers([user('u1', true), user('u2', true)]);
 
-    handleUserLeft(user('u1'), undefined, ctx());
-    handleUserLeft(user('u2'), undefined, ctx(), true);
+    handleUserLeft(userLeft('u1'), ctx());
+    handleUserLeft(userLeft('u2', { removed: true }), ctx());
 
     expect(roomStore.users.map((u) => [u.id, u.is_active])).toEqual([['u1', false]]);
     expect(messageStore.messages).toEqual([]);
+  });
+
+  it('其他成員被房主移出：從列表移除，系統訊息寫明被移出', () => {
+    roomStore.setUsers([user('u2', true)]);
+
+    handleUserLeft(userLeft('u2', { removed: true, kicked: true, timestamp: '2026-01-01T00:00:00Z' }), ctx());
+
+    expect(roomStore.users).toEqual([]);
+    expect(messageStore.messages.map((m) => m.content)).toEqual(['user-u2 已被移出聊天室']);
+  });
+
+  it.each([
+    ['被房主移出', true],
+    ['在其他分頁離開', false],
+  ])('自己%s：不再是成員，通知頁面離開房間', (_, kicked) => {
+    const forgetMembership = vi.spyOn(roomStore, 'forgetMembership').mockImplementation(() => {});
+    const context = ctx();
+
+    handleUserLeft(userLeft('me', { removed: true, kicked, timestamp: '2026-01-01T00:00:00Z' }), context);
+
+    expect(forgetMembership).toHaveBeenCalledWith('r1');
+    expect(context.emit).toHaveBeenCalledWith('removed_from_room', { room_id: 'r1', kicked });
+    expect(messageStore.messages).toEqual([]);
+  });
+
+  it('自己只是斷線（沒有移除成員資格）時不離開房間', () => {
+    const context = ctx();
+
+    handleUserLeft(userLeft('me'), context);
+
+    expect(context.emit).not.toHaveBeenCalled();
   });
 });

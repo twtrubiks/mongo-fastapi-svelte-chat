@@ -682,6 +682,151 @@ class TestRoomOwnership:
 
 @pytest.mark.asyncio
 @pytest.mark.integration
+class TestOwnerAccessRevocation:
+    """房主撤銷權限：重新產生邀請碼、移除成員"""
+
+    async def _remove(self, client, room_id: str, actor: dict, target_id: str):
+        return await client.delete(
+            f"/api/rooms/{room_id}/members/{target_id}", headers=actor["headers"]
+        )
+
+    async def test_regenerated_invite_code_replaces_old_one(self, async_client, users):
+        room = await _create_room(async_client, users["owner"], room_type="private")
+        old_code = room["invite_code"]
+
+        regenerated = await async_client.post(
+            f"/api/rooms/{room['id']}/invite-code", headers=users["owner"]["headers"]
+        )
+        assert regenerated.status_code == 200
+        new_code = regenerated.json()["invite_code"]
+        assert new_code and new_code != old_code
+
+        # 外流的舊邀請碼立即失效：驗證與加入都被拒
+        validate_old = await async_client.post(
+            "/api/invitations/validate",
+            json={"invite_code": old_code},
+            headers=users["outsider"]["headers"],
+        )
+        join_old = await _join(
+            async_client, room["id"], users["outsider"], {"invite_code": old_code}
+        )
+        assert validate_old.status_code == 404
+        assert join_old.status_code == 400
+        assert join_old.json()["detail"] == "邀請碼無效"
+
+        join_new = await _join(
+            async_client, room["id"], users["outsider"], {"invite_code": new_code}
+        )
+        assert join_new.status_code == 200
+        details = await async_client.get(
+            f"/api/rooms/{room['id']}", headers=users["owner"]["headers"]
+        )
+        assert details.json()["invite_code"] == new_code
+
+    async def test_only_owner_can_regenerate_invite_code(self, async_client, users):
+        room = await _create_room(async_client, users["owner"], room_type="private")
+        await _join(
+            async_client,
+            room["id"],
+            users["member"],
+            {"invite_code": room["invite_code"]},
+        )
+
+        response = await async_client.post(
+            f"/api/rooms/{room['id']}/invite-code", headers=users["member"]["headers"]
+        )
+        details = await async_client.get(
+            f"/api/rooms/{room['id']}", headers=users["owner"]["headers"]
+        )
+
+        assert response.status_code == 403
+        assert details.json()["invite_code"] == room["invite_code"]
+
+    async def test_regenerate_rejected_for_room_without_invite_code(
+        self, async_client, users
+    ):
+        room = await _create_room(async_client, users["owner"])
+
+        response = await async_client.post(
+            f"/api/rooms/{room['id']}/invite-code", headers=users["owner"]["headers"]
+        )
+
+        assert response.status_code == 400
+        assert response.json()["detail"] == "此聊天室沒有使用邀請碼"
+
+    async def test_regenerate_missing_room(self, async_client, users):
+        response = await async_client.post(
+            f"/api/rooms/{ObjectId()}/invite-code", headers=users["owner"]["headers"]
+        )
+
+        assert response.status_code == 404
+
+    async def test_owner_removes_member(self, async_client, users):
+        room = await _create_room(async_client, users["owner"])
+        await _join(async_client, room["id"], users["member"])
+
+        removed = await self._remove(
+            async_client, room["id"], users["owner"], users["member"]["id"]
+        )
+        assert removed.status_code == 200
+        assert removed.json() == {"message": "已將成員移出房間"}
+
+        messages = await async_client.get(
+            f"/api/rooms/{room['id']}/messages", headers=users["member"]["headers"]
+        )
+        members = await async_client.get(
+            f"/api/rooms/{room['id']}/members", headers=users["owner"]["headers"]
+        )
+        assert messages.status_code == 403
+        assert [m["id"] for m in members.json()] == [users["owner"]["id"]]
+
+    async def test_only_owner_can_remove_members(self, async_client, users):
+        room = await _create_room(async_client, users["owner"])
+        await _join(async_client, room["id"], users["member"])
+        await _join(async_client, room["id"], users["outsider"])
+
+        response = await self._remove(
+            async_client, room["id"], users["member"], users["outsider"]["id"]
+        )
+        members = await async_client.get(
+            f"/api/rooms/{room['id']}/members", headers=users["owner"]["headers"]
+        )
+
+        assert response.status_code == 403
+        assert len(members.json()) == 3
+
+    async def test_owner_cannot_be_removed(self, async_client, users):
+        room = await _create_room(async_client, users["owner"])
+
+        response = await self._remove(
+            async_client, room["id"], users["owner"], users["owner"]["id"]
+        )
+
+        assert response.status_code == 403
+        assert response.json()["detail"] == "不能移除房間擁有者"
+
+    @pytest.mark.parametrize("target", ["outsider", "not-an-id", "member_roles.x"])
+    async def test_remove_non_member(self, async_client, users, target):
+        room = await _create_room(async_client, users["owner"])
+        target_id = users[target]["id"] if target in users else target
+
+        response = await self._remove(
+            async_client, room["id"], users["owner"], target_id
+        )
+
+        assert response.status_code == 404
+        assert response.json()["detail"] == "該使用者不是房間成員"
+
+    async def test_remove_from_missing_room(self, async_client, users):
+        response = await self._remove(
+            async_client, str(ObjectId()), users["owner"], users["member"]["id"]
+        )
+
+        assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
 class TestMessageAuthorization:
     """訊息的發送、讀取、修改、刪除授權"""
 

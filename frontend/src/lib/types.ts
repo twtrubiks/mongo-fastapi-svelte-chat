@@ -239,7 +239,10 @@ export interface WSUserLeftMessage {
   user: User;
   timestamp: string;
   room_id: string;
+  /** 成員資格被移除（離開房間或被房主移除），而非只是斷線 */
   removed?: boolean;
+  /** 由房主移除 */
+  kicked?: boolean;
 }
 
 export interface WSUserStatusChangedMessage {

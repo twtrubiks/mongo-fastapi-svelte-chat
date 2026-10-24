@@ -70,8 +70,13 @@
     loadDashboardData();
 
     // 處理從已刪除房間重導向過來的提示
-    if ($page.url.searchParams.has('room_deleted')) {
+    const params = $page.url.searchParams;
+    if (params.has('room_deleted')) {
       showToast('此房間已被刪除', 'warning');
+      goto('/app/dashboard', { replaceState: true });
+    } else if (params.has('removed')) {
+      // 從被移出的房間重導向過來（被房主移出，或在其他分頁離開）
+      showToast(params.get('removed') === 'kicked' ? '你已被房主移出聊天室' : '你已離開此聊天室', 'warning');
       goto('/app/dashboard', { replaceState: true });
     }
   });

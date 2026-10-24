@@ -53,6 +53,7 @@
   let desktopMessageListComponent: any = $state(null);
   let mobileMessageListComponent: any = $state(null);
   let messageIdToScrollTo: string | null = $state(null); // 待定位的訊息 ID
+  let isLeavingRoom = false; // 自己按離開時，後端廣播的 user_left 由離開流程處理導向
   
   // 已讀狀態追蹤器
   const markAsReadTracker = createMarkAsReadTracker();
@@ -382,6 +383,7 @@
     if (!room) return;
 
     if (confirm(`確定要離開聊天室「${room.name}」嗎？`)) {
+      isLeavingRoom = true;
       try {
         await roomStore.leaveRoom(room.id);
         wsManager.getInstance().disconnect();
@@ -393,6 +395,8 @@
       } catch (error) {
         console.error('離開聊天室失敗:', error);
         showToast('離開聊天室失敗', 'error');
+      } finally {
+        isLeavingRoom = false;
       }
     }
   }
@@ -583,6 +587,12 @@
       }
     };
 
+    // 成員資格被移除：被房主移出，或在其他分頁離開了這個房間
+    const handleRemovedFromRoom = (data: { room_id: string; kicked: boolean }) => {
+      if (data.room_id !== roomId || isLeavingRoom) return;
+      goto(`/app/dashboard?removed=${data.kicked ? 'kicked' : 'left'}`, { replaceState: true });
+    };
+
     const handleRoomUpdated = (data: any) => {
       if (data?.room?.id === roomId && currentRoom) {
         currentRoom = { ...currentRoom, ...data.room };
@@ -591,7 +601,8 @@
 
     // WebSocket 錯誤處理（具名 handler，於 cleanup 對應 off，避免切房重複註冊）
     const handleDisconnectedError = (data: { code: number; reason: string }) => {
-      if (data.code !== 1000) { // 非正常關閉
+      // 4003 是成員資格被撤銷（離開、被移出或房間刪除），重連也會被拒，改由對應事件導向
+      if (data.code !== 1000 && data.code !== 4003) { // 非正常關閉
         errorStore.showConnectionError({
           label: '重新連接',
           handler: () => {
@@ -630,6 +641,7 @@
     ws.on('connected', handleConnected);
     ws.on('disconnected', handleDisconnected);
     ws.on('room_deleted', handleRoomDeleted);
+    ws.on('removed_from_room', handleRemovedFromRoom);
     ws.on('room_updated', handleRoomUpdated);
     ws.on('disconnected', handleDisconnectedError);
     ws.on('reconnect_failed', handleReconnectFailed);
@@ -668,6 +680,7 @@
       ws.off('connected', handleConnected);
       ws.off('disconnected', handleDisconnected);
       ws.off('room_deleted', handleRoomDeleted);
+      ws.off('removed_from_room', handleRemovedFromRoom);
       ws.off('room_updated', handleRoomUpdated);
       ws.off('disconnected', handleDisconnectedError);
       ws.off('reconnect_failed', handleReconnectFailed);

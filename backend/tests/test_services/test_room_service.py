@@ -438,7 +438,7 @@ class TestRoomService:
 
         # 離開後必須強制斷開 WS，否則已開分頁會繼續收到房間廣播
         mock_connection_manager.force_disconnect.assert_called_once_with(
-            user_id, sample_room.id
+            user_id, sample_room.id, reason="已離開房間"
         )
 
     @pytest.mark.asyncio
@@ -874,6 +874,7 @@ class TestRoomService:
             "user": {"id": user_id, "username": "leaver"},
             "room_id": sample_room.id,
             "removed": True,
+            "kicked": False,
         }
         assert abs(datetime.now(UTC) - sent_at) < timedelta(seconds=5)
 

@@ -32,7 +32,7 @@ class RoomEventRecorder:
     async def broadcast_to_room(self, room_id, message, exclude_user=None):
         self.room_broadcasts.append((room_id, message))
 
-    async def force_disconnect(self, user_id, room_id):
+    async def force_disconnect(self, user_id, room_id, reason=""):
         self.disconnected.append((user_id, room_id))
 
 
@@ -108,6 +108,30 @@ class TestRoomUpdatedEvents:
         await service.leave_room(room.id, users["member"])
         assert _room_updates(recorder) == expected("hall", 1)
 
+    async def test_owner_removing_member_notifies_and_disconnects(
+        self, service, recorder, users
+    ):
+        room = await service.create_room(users["owner"], RoomCreate(name="lobby"))
+        await service.join_room(room.id, users["member"])
+        recorder.events.clear()
+
+        await service.remove_member(room.id, users["owner"], users["member"])
+
+        [(room_id, event)] = recorder.room_broadcasts
+        event.pop("timestamp")
+        assert room_id == room.id
+        assert event == {
+            "type": "user_left",
+            "user": {"id": users["member"]},
+            "room_id": room.id,
+            "removed": True,
+            "kicked": True,
+        }
+        assert recorder.disconnected == [(users["member"], room.id)]
+        updates = _room_updates(recorder)
+        assert [user_id for user_id, _ in updates] == sorted(users.values())
+        assert {summary["member_count"] for _, summary in updates} == {1}
+
     async def test_offline_member_leaving_is_identified_by_id(
         self, service, recorder, users
     ):
@@ -124,5 +148,6 @@ class TestRoomUpdatedEvents:
             "user": {"id": users["member"]},
             "room_id": room.id,
             "removed": True,
+            "kicked": False,
         }
         assert recorder.disconnected == [(users["member"], room.id)]

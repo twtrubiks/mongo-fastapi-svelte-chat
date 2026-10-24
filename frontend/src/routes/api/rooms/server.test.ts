@@ -7,6 +7,8 @@ import * as join from './[id]/join/+server';
 import * as joinAdvanced from './[id]/join-advanced/+server';
 import * as leave from './[id]/leave/+server';
 import * as members from './[id]/members/+server';
+import * as member from './[id]/members/[userId]/+server';
+import * as inviteCode from './[id]/invite-code/+server';
 import * as messages from './[id]/messages/+server';
 import {
   backendError,
@@ -272,6 +274,47 @@ describe('GET /api/rooms/[id]/members', () => {
     await members.GET(event({ params: { id: 'r1' }, url: '/api/rooms/r1/members?limit=20&offset=40' }));
 
     expect(backend).toHaveBeenCalledOnce();
+  });
+});
+
+describe('房主撤銷權限', () => {
+  it('POST /invite-code 回傳新的邀請碼', async () => {
+    mockBackend({ 'POST /api/rooms/r1/invite-code': () => ({ invite_code: 'new-code' }) });
+
+    const result = await body(await inviteCode.POST(event({ params: { id: 'r1' } })));
+
+    expect(result).toMatchObject({ status: 200, data: { invite_code: 'new-code' } });
+  });
+
+  it('非房主重新產生邀請碼時沿用後端 403', async () => {
+    mockBackend({ 'POST /api/rooms/r1/invite-code': throws(403, '只有房間擁有者可以重新產生邀請碼') });
+
+    const result = await body(await inviteCode.POST(event({ params: { id: 'r1' } })));
+
+    expect(result).toMatchObject({
+      status: 403,
+      error: { code: 'INVITE_CODE_ERROR', message: '只有房間擁有者可以重新產生邀請碼' },
+    });
+  });
+
+  it('DELETE /members/[userId] 移除成員', async () => {
+    const backend = mockBackend({ 'DELETE /api/rooms/r1/members/u2': () => ({ message: '已將成員移出房間' }) });
+
+    const result = await body(await member.DELETE(event({ params: { id: 'r1', userId: 'u2' } })));
+
+    expect(result).toMatchObject({ status: 200, data: { message: '已將成員移出房間' } });
+    expect(backend).toHaveBeenCalledOnce();
+  });
+
+  it('移除房主時沿用後端 403', async () => {
+    mockBackend({ 'DELETE /api/rooms/r1/members/u1': throws(403, '不能移除房間擁有者') });
+
+    const result = await body(await member.DELETE(event({ params: { id: 'r1', userId: 'u1' } })));
+
+    expect(result).toMatchObject({
+      status: 403,
+      error: { code: 'REMOVE_MEMBER_ERROR', message: '不能移除房間擁有者' },
+    });
   });
 });
 

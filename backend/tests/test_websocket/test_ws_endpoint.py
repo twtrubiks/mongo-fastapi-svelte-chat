@@ -416,6 +416,49 @@ class TestProtocolErrors:
 
 @pytest.mark.asyncio
 @pytest.mark.integration
+class TestMembershipRevocation:
+    async def test_removed_member_is_told_and_disconnected(self, ctx, manager):
+        owner_ws = await _connect(ctx, ctx.owner)
+        await _connection_preamble(owner_ws)
+        member_ws = await _connect(ctx, ctx.member)
+        await _connection_preamble(member_ws)
+        await owner_ws.receive_json()  # user_joined
+
+        removed = await ctx.client.delete(
+            f"/api/rooms/{ctx.room_id}/members/{ctx.member['id']}",
+            headers=ctx.owner["headers"],
+        )
+        assert removed.status_code == 200
+
+        # 被移除者先收到自己的 user_left（前端據此離開房間），接著連線以 4003 關閉
+        notice = await member_ws.receive_json()
+        closed = await member_ws.receive_close()
+        seen_by_owner = await owner_ws.receive_json()
+        await member_ws.disconnect()
+        await owner_ws.disconnect()
+
+        for event in (notice, seen_by_owner):
+            assert event["type"] == "user_left"
+            assert event["user"]["id"] == ctx.member["id"]
+            assert (event["removed"], event["kicked"]) == (True, True)
+        assert closed["code"] == 4003
+        assert ctx.member["id"] not in manager.room_users.get(ctx.room_id, set())
+
+        # 撤銷後重新連線會在驗證成員資格時被拒
+        ticket = await ctx.client.post(
+            "/api/ws/ticket",
+            json={"room_id": ctx.room_id},
+            headers=ctx.member["headers"],
+        )
+        retry_ws = AsgiWebSocket(
+            f"/ws/{ctx.room_id}", {"ticket": ticket.json()["ticket"]}
+        )
+        await retry_ws.open()
+        assert (await retry_ws.receive_close())["code"] == 4001
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
 async def test_unknown_room_rejected(async_client, isolated_db_manager, manager):
     user = await _make_user(async_client, "lonely")
     token = user["headers"]["Authorization"].removeprefix("Bearer ")

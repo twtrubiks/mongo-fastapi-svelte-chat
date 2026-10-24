@@ -437,6 +437,8 @@ invite_code 僅在 `RoomResponse` 中回傳，且受角色限制：
 - **一般成員** → `null`
 - **非成員** → 不在 `RoomSummary` 中
 
+邀請碼外流時，房主以 `POST /rooms/{room_id}/invite-code` 重新產生，舊碼立即失效（驗證回 404、加入回「邀請碼無效」），已加入的成員不受影響。只有房主可呼叫，且房間須有邀請碼或為邀請制。
+
 ---
 
 ## 認證 Token 生命週期
@@ -715,10 +717,13 @@ disconnect（房間 A） → 排程 _execute_room_leave（5s）
 
 成員資格只在 WS 連線建立當下驗證一次（`verify_room_membership`），之後不重驗。因此撤銷成員資格的業務操作必須主動斷開既有連線，否則離開者已開的分頁會繼續收到房間所有新訊息廣播（對私密房間是機密性缺口）：
 
-- **`leave_room`**（Service 層）：廣播 `user_left(removed=true)` 後呼叫 `force_disconnect(user_id, room_id)`，關閉離開者在該房的 WS 連線
+- **`leave_room`**（Service 層）：廣播 `user_left(removed=true, kicked=false)` 後呼叫 `force_disconnect(user_id, room_id)`，關閉離開者在該房的 WS 連線
+- **`remove_member`**（Service 層，`DELETE /rooms/{room_id}/members/{user_id}`，僅房主）：與 `leave_room` 共用 `_revoke_member_access`，廣播 `user_left(removed=true, kicked=true)` 後斷開被移除者的連線
 - **`delete_room`**（Service 層）：廣播 `room_deleted` 後呼叫 `force_disconnect_room(room_id)`，關閉該房所有連線
 
-與 `disconnect()`（暫時斷線）的差異：`force_disconnect` **立即**從 `room_users` 移除（不走 rejoin debounce——撤銷是確定事件），並以 close code **4003** 主動關閉 socket。前端的 `noReconnectCodes` 已含 4003，收到後不會嘗試重連。
+與 `disconnect()`（暫時斷線）的差異：`force_disconnect` **立即**從 `room_users` 移除（不走 rejoin debounce——撤銷是確定事件），並以 close code **4003** 主動關閉 socket。前端的 `noReconnectCodes` 已含 4003，收到後不會嘗試重連，房間頁也不顯示「重新連接」提示。
+
+`user_left` 在斷線前廣播，被移除者自己的分頁也會收到。前端看到 `removed` 且是自己時，從「我的房間」移除該房並導回儀表板（`kicked` 時提示「你已被房主移出聊天室」）；自己在本分頁按離開時由離開流程處理導向。被移出的人能否再加入取決於房間的加入方式：邀請制要重新產生邀請碼、密碼房要變更密碼，公開直接加入的房間無法阻擋（房間設定的成員管理頁會說明）。
 
 ### 客戶端連線管理（一次性 Ticket 機制）
 

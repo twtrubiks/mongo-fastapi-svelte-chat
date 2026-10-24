@@ -1,5 +1,5 @@
 import type { HandlerContext } from './handlers';
-import type { Message, User, WSUserStatusChangedMessage, WSRoomUsersMessage, WSRoomCreatedMessage, WSRoomDeletedMessage, WSRoomUpdatedMessage } from '$lib/types';
+import type { Message, User, WSUserLeftMessage, WSUserStatusChangedMessage, WSRoomUsersMessage, WSRoomCreatedMessage, WSRoomDeletedMessage, WSRoomUpdatedMessage } from '$lib/types';
 import { currentUser, roomStore, messageStore } from '$lib/stores';
 
 // 追蹤最後收到 room_users 事件的時間（模組級共享狀態）
@@ -70,9 +70,17 @@ export function handleUserJoined(user: User, eventTimestamp: string | undefined,
 }
 
 // 處理用戶離開
-export function handleUserLeft(user: User, eventTimestamp: string | undefined, ctx: HandlerContext, removed?: boolean) {
+export function handleUserLeft(data: WSUserLeftMessage, ctx: HandlerContext) {
+  const { user, timestamp: eventTimestamp, removed, kicked } = data;
   const userId = user.id;
   const username = user.username;
+
+  // 自己的成員資格被移除（房主移除，或在其他分頁離開）：交給頁面離開房間，後端隨後會關閉連線
+  if (removed && userId && userId === currentUser()?.id) {
+    roomStore.forgetMembership(data.room_id);
+    ctx.emit('removed_from_room', { room_id: data.room_id, kicked: Boolean(kicked) });
+    return;
+  }
 
   if (userId) {
     const currentRoomState = roomStore.state;
@@ -94,7 +102,7 @@ export function handleUserLeft(user: User, eventTimestamp: string | undefined, c
   // 只有當後端提供事件時間戳時才創建系統訊息
   // 這確保時間戳來自後端的 UTC 時間
   if (eventTimestamp) {
-    addSystemMessage(`${username} 離開了聊天室`, ctx.roomId!, eventTimestamp);
+    addSystemMessage(kicked ? `${username} 已被移出聊天室` : `${username} 離開了聊天室`, ctx.roomId!, eventTimestamp);
   }
 }
 

@@ -477,21 +477,37 @@ export const roomStore = {
     
     try {
       await apiClient.rooms.leave(roomId);
-
-      updateRoomState({
-        myRooms: roomState.myRooms.filter(room => room.id !== roomId),
-        currentRoom: roomState.currentRoom?.id === roomId ? null : roomState.currentRoom,
-        users: roomState.currentRoom?.id === roomId ? [] : roomState.users,
-        loading: false,
-      });
-
-      // 背景刷新探索列表（離開的房間應出現在探索中）
-      roomStore.loadRooms(true).catch(() => {});
-      
+      updateRoomState({ loading: false });
+      roomStore.forgetMembership(roomId);
     } catch (error) {
       updateRoomState({ loading: false });
       throw error;
     }
+  },
+
+  // 不再是成員（自己離開或被房主移除）：從我的房間移除，並背景刷新探索列表（公開房應重新出現）
+  forgetMembership: (roomId: string) => {
+    updateRoomState({
+      myRooms: roomState.myRooms.filter(room => room.id !== roomId),
+      currentRoom: roomState.currentRoom?.id === roomId ? null : roomState.currentRoom,
+      users: roomState.currentRoom?.id === roomId ? [] : roomState.users,
+    });
+    roomStore.loadRooms(true).catch(() => {});
+  },
+
+  // 房主移除成員；成員列表另由 user_left 事件同步，這裡先移除讓畫面立即反映
+  removeMember: async (roomId: string, userId: string) => {
+    await apiClient.rooms.removeMember(roomId, userId);
+    updateRoomState({ users: roomState.users.filter(u => u.id !== userId) });
+  },
+
+  // 房主重新產生邀請碼，舊邀請碼立即失效
+  regenerateInviteCode: async (roomId: string) => {
+    const { invite_code } = await apiClient.rooms.regenerateInviteCode(roomId);
+    if (roomState.currentRoom?.id === roomId) {
+      updateRoomState({ currentRoom: { ...roomState.currentRoom, invite_code } });
+    }
+    return invite_code;
   },
 
   // 設置當前聊天室

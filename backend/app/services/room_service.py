@@ -492,6 +492,44 @@ class RoomService:
 
         return "成功加入房間"
 
+    async def regenerate_invite_code(self, room_id: str, owner_id: str) -> str:
+        """
+        重新產生邀請碼，舊的邀請碼立即失效
+
+        邀請碼外流時，房主用這個撤銷舊碼；已加入的成員不受影響。
+
+        Args:
+            room_id: 房間 ID
+            owner_id: 發出請求的使用者 ID（須為房間擁有者）
+
+        Returns:
+            str: 新的邀請碼
+
+        Raises:
+            NotFoundError: 房間不存在時
+            ForbiddenError: 非房間擁有者時
+            AppError: 房間不使用邀請碼時
+        """
+        room = await self.room_repo.get_by_id(room_id)
+        if not room:
+            raise NotFoundError("聊天室不存在")
+
+        if room.owner_id != owner_id:
+            raise ForbiddenError("只有房間擁有者可以重新產生邀請碼")
+
+        if not room.invite_code and room.join_policy != JoinPolicy.INVITE:
+            raise AppError("此聊天室沒有使用邀請碼")
+
+        invite_code = secrets.token_urlsafe(16)
+        updated_room = await self.room_repo.update(
+            room_id, RoomUpdate(), invite_code=invite_code
+        )
+        if not updated_room:
+            raise NotFoundError("聊天室不存在")
+
+        logger.info(f"Invite code regenerated for room {room_id} by user {owner_id}")
+        return invite_code
+
     async def validate_invite_code(self, invite_code: str) -> dict:
         """
         驗證房間邀請碼並回傳房間資訊（供加入前預覽）
@@ -554,8 +592,57 @@ class RoomService:
             raise AppError("離開房間失敗")
 
         logger.info(f"User {user_id} left room {room_id}")
+        await self._revoke_member_access(room_id, user_id, kicked=False)
 
-        # 廣播 user_left 給房間內其他成員（成員離開是業務事件，由 Service 層主動通知）
+        return "成功離開房間"
+
+    async def remove_member(self, room_id: str, owner_id: str, member_id: str) -> str:
+        """
+        房間擁有者將成員移出房間
+
+        Args:
+            room_id: 房間 ID
+            owner_id: 發出請求的使用者 ID（須為房間擁有者）
+            member_id: 要移除的成員 ID
+
+        Returns:
+            str: 操作結果訊息
+
+        Raises:
+            NotFoundError: 房間不存在或對方不是成員時
+            ForbiddenError: 非房間擁有者，或要移除的是擁有者本人時
+        """
+        room = await self.room_repo.get_by_id(room_id)
+        if not room:
+            raise NotFoundError("聊天室不存在")
+
+        if room.owner_id != owner_id:
+            raise ForbiddenError("只有房間擁有者可以移除成員")
+
+        if member_id == room.owner_id:
+            raise ForbiddenError("不能移除房間擁有者")
+
+        # 先確認是成員，member_id 之後會成為 member_roles 的欄位路徑
+        if member_id not in room.members:
+            raise NotFoundError("該使用者不是房間成員")
+
+        success = await self.room_repo.remove_member(room_id, member_id)
+        if not success:
+            raise AppError("移除成員失敗")
+
+        logger.info(f"User {member_id} removed from room {room_id} by owner {owner_id}")
+        await self._revoke_member_access(room_id, member_id, kicked=True)
+
+        return "已將成員移出房間"
+
+    async def _revoke_member_access(
+        self, room_id: str, user_id: str, kicked: bool
+    ) -> None:
+        """成員資格移除後的通知與撤銷（離開房間與房主移除成員共用）
+
+        廣播 user_left 給房間內所有連線（含被移除者自己的分頁，前端據此離開房間），
+        再斷開被移除者在該房的 WS 連線。
+        """
         if self._connection_manager:
             user_info = self._connection_manager.user_info.get(user_id, {}).copy()
             if not user_info:
@@ -568,15 +655,16 @@ class RoomService:
                     "timestamp": datetime.now(UTC).isoformat(),
                     "room_id": room_id,
                     "removed": True,
+                    "kicked": kicked,
                 },
             )
-            # 撤銷離開者在該房的 WS 讀取權：成員資格只在 WS 連線當下驗證一次，
-            # 不主動斷線的話，離開者已開的分頁會繼續收到房間所有新訊息廣播
-            await self._connection_manager.force_disconnect(user_id, room_id)
+            # 撤銷被移除者在該房的 WS 讀取權：成員資格只在 WS 連線當下驗證一次，
+            # 不主動斷線的話，已開的分頁會繼續收到房間所有新訊息廣播
+            await self._connection_manager.force_disconnect(
+                user_id, room_id, reason="已被移出房間" if kicked else "已離開房間"
+            )
 
         await self._notify_room_change(room_id)
-
-        return "成功離開房間"
 
     async def get_room_members(
         self, room_id: str, skip: int = 0, limit: int = 50

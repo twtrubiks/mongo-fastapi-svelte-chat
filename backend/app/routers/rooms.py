@@ -183,6 +183,31 @@ async def leave_room(
     return {"message": message}
 
 
+@router.post("/{room_id}/invite-code")
+async def regenerate_invite_code(
+    room_id: str,
+    current_user: dict = Depends(get_current_active_user),
+    room_service: RoomService = RoomServiceDep,
+):
+    """重新產生邀請碼（僅房間擁有者，舊邀請碼立即失效）"""
+    invite_code = await room_service.regenerate_invite_code(
+        room_id, current_user["_id"]
+    )
+    return {"invite_code": invite_code}
+
+
+@router.delete("/{room_id}/members/{user_id}")
+async def remove_room_member(
+    room_id: str,
+    user_id: str,
+    current_user: dict = Depends(get_current_active_user),
+    room_service: RoomService = RoomServiceDep,
+):
+    """將成員移出聊天室（僅房間擁有者，同時斷開對方在該房的連線）"""
+    message = await room_service.remove_member(room_id, current_user["_id"], user_id)
+    return {"message": message}
+
+
 @router.get("/{room_id}/members")
 async def get_room_members(
     room_id: str,
