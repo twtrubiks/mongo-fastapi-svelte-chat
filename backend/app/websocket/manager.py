@@ -156,7 +156,11 @@ class ConnectionManager:
             return False
 
         # 鎖外查詢：在線列表只列本房成員
-        member_ids = await self._get_member_ids(room_id)
+        try:
+            member_ids = await self._get_member_ids(room_id)
+        except Exception as e:  # intentional catch-all: 查不到不能讓連線失敗
+            logger.error(f"Error looking up members of room {room_id}: {e}")
+            member_ids = None
 
         async with self._lock:
             # 確認期間這條連線可能已被撤銷，或被同一使用者的新連線取代
@@ -173,7 +177,8 @@ class ConnectionManager:
             # 儲存使用者資訊
             self.user_info[user_id] = user_info
 
-            # 將使用者加入全局在線集合
+            # 將使用者加入全局在線集合（已在線只是換房間時，不必再通知上線）
+            was_online = user_id in self.global_online_users
             self.global_online_users.add(user_id)
 
             logger.info(f"User {user_id} connected to room {room_id}")
@@ -206,14 +211,18 @@ class ConnectionManager:
                 {
                     "type": "room_users",
                     "users": online_users,
-                    "global_online_user_ids": self._online_among(member_ids),
+                    # 查不到成員時退回本房的連線者：都已通過成員驗證
+                    "global_online_user_ids": self._online_among(
+                        self.room_users[room_id] if member_ids is None else member_ids
+                    ),
                     "timestamp": datetime.now(UTC).isoformat(),
                     "room_id": room_id,
                     "online_only": True,  # 標記這只是在線用戶列表
                 },
             )
 
-        await self._broadcast_user_status(user_id, True, exclude_room=room_id)
+        if not was_online:
+            await self._broadcast_user_status(user_id, True, exclude_room=room_id)
         return True
 
     async def disconnect(
@@ -373,6 +382,9 @@ class ConnectionManager:
             )
         except Exception as e:  # intentional catch-all: 查不到就不送，不能因此斷線
             logger.error(f"Error looking up rooms of {user_id} for status: {e}")
+            return
+        # 查詢期間狀態可能又變了（如離線途中重新連線）：過時的狀態不送
+        if (user_id in self.global_online_users) != is_online:
             return
         for rid in room_ids:
             if rid not in member_room_ids:

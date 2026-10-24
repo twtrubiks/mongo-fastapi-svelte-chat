@@ -1181,6 +1181,67 @@ class TestEventPayloads:
         assert await manager.connect(_ws(), "bob", "r1", dict(BOB)) is True
         assert _received(carol_ws) == []
 
+    async def test_member_lookup_failure_on_connect_keeps_connection(self, clock):
+        class BrokenMembership(FakeMembership):
+            async def get_member_ids(self, room_id):
+                raise RuntimeError("db down")
+
+        manager = ConnectionManager(membership=BrokenMembership(MEMBERSHIP).factory())
+        await _join(manager, ALICE, "r1")
+        await _join(manager, CAROL, "r2")
+        bob_ws = _ws()
+
+        assert await manager.connect(bob_ws, "bob", "r1", dict(BOB)) is True
+        # 查不到成員：在線列表退回本房的連線者（都已通過成員驗證），不列 r2 的 carol
+        [room_users] = _received(bob_ws)
+        assert sorted(room_users["global_online_user_ids"]) == ["alice", "bob"]
+
+    async def test_switching_rooms_does_not_reannounce_online(self, manager):
+        carol_ws = await _join(manager, CAROL, "r2")
+        await _join(manager, BOB, "r1")
+        _received(carol_ws)
+
+        await _join(manager, BOB, "r3")
+
+        # bob 本來就在線：其他房間不必再收到一次上線
+        assert _received(carol_ws) == []
+
+    async def test_stale_offline_is_not_sent_after_reconnect(self, clock):
+        class SlowOffline(FakeMembership):
+            """離線那次的成員查詢卡住，直到 release 被設定"""
+
+            def __init__(self, rooms):
+                super().__init__(rooms)
+                self.release = asyncio.Event()
+
+            async def get_member_room_ids(self, user_id, room_ids):
+                if user_id not in self.online:
+                    await self.release.wait()
+                return await super().get_member_room_ids(user_id, room_ids)
+
+        membership = SlowOffline(MEMBERSHIP)
+        manager = ConnectionManager(membership=membership.factory())
+        membership.online = manager.global_online_users
+        alice_ws = await _join(manager, ALICE, "r1")
+        bob_ws = await _join(manager, BOB, "r2")
+        _received(alice_ws)
+
+        await manager.disconnect("bob", "r2", bob_ws)
+        await clock.advance_to(3)  # 離線處理開始，卡在成員查詢
+        await _join(manager, BOB, "r2")  # 這時 bob 重新連線
+        membership.release.set()
+        await clock.advance_to(4)
+
+        # 較晚完成的離線查詢不再送出：alice 看到的最後狀態是在線
+        assert _received(alice_ws) == [
+            {
+                "type": "user_status_changed",
+                "user_id": "bob",
+                "is_online": True,
+                "timestamp": TS,
+            }
+        ]
+
     async def test_online_member_ids_lists_only_members(self, manager):
         for user, room in ((ALICE, "r1"), (BOB, "r2"), (ERIN, "r4")):
             await _join(manager, user, room)

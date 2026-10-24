@@ -448,16 +448,25 @@ invite_code 僅在 `RoomResponse` 中回傳，且受角色限制：
 - 不是成員時對方必須是存在的使用者：`user_id` 會成為 `member_roles` 的欄位路徑，不能是任意字串
 - 以名稱封鎖時先確認是房主才查使用者，非房主不能藉此探測名稱是否存在
 - 以名稱封鎖與封鎖名單只回 `UserPublic`（`id`、`username`、`avatar`）：任何人都能自己建房當房主，若回完整的 `UserResponse`，就能用名稱查到任何人的 email
-
-其他使用者的 email 一律不經 WS 與房間 API 傳出：WS 的使用者資料（`user_joined`、`room_users`、`user_left`）不含 email；上線狀態 `user_status_changed` 只帶 `user_id` 與 `is_online`；成員列表（`GET /rooms/{room_id}/members`）回 `RoomMember`，同樣不含 email（公開房任何人都能加入，帶 email 等於公開）。
-
-誰在線也只告訴同房成員：`user_status_changed` 只送到該使用者是成員、且有人連線的房間；`room_users` 的 `global_online_user_ids`（沿用舊欄位名）只列本房成員中在線的人。否則任何人自己建房保持連線，就能記錄所有使用者的上下線時間。成員資格由 `ConnectionManager` 透過注入的 `RoomMembership`（`RoomService` 實作）查詢；上線事件查不到成員資格時不送（不退回送給所有房間，也不中斷連線）。`lobby` 不是資料庫裡的房間、沒有成員，收不到任何人的上線狀態。
 - `add_member` 的條件含 `banned_users: {$ne: user_id}`：`join_room` 檢查後才被封鎖的人，寫入時仍會被擋下；此時重讀房間，回報被封鎖而不是「房間已滿」
 - 探索、搜尋（`exclude_joined`）與房間列表不列出封鎖了自己的房間
 - 被封鎖的人收到 `banned=true` 的 `user_left`，導回儀表板時提示「你已被房主移出並封鎖，無法再加入此聊天室」
 - 封鎖功能之前建立的房間沒有這個欄位，`$ne` 條件照常成立，不需要遷移
 
 房主專用的操作（更新、刪除、重新產生邀請碼、移出成員、封鎖名單）共用 `_get_owned_room`：私人房的非成員與房間不存在一樣回 404，不透露私人房是否存在；成員才回 403。
+
+#### 個人資料與在線狀態
+
+其他使用者的 email 一律不經 WS 與房間 API 傳出：WS 的使用者資料（`user_joined`、`room_users`、`user_left`）不含 email；上線狀態 `user_status_changed` 只帶 `user_id` 與 `is_online`；成員列表（`GET /rooms/{room_id}/members`）回 `RoomMember`，同樣不含 email（公開房任何人都能加入，帶 email 等於公開）。
+
+誰在線也只告訴同房成員，否則任何人自己建房保持連線，就能記錄所有使用者的上下線時間：
+
+- `user_status_changed` 只送到該使用者是成員、且有人連線的房間（是成員但沒連在那個房間也算）
+- `room_users` 的 `global_online_user_ids`（沿用舊欄位名）只列本房成員中在線的人，連線時與 `get_users` 指令皆同
+- 成員資格由 `ConnectionManager` 透過注入的 `RoomMembership`（`RoomService` 實作）在鎖外查詢
+- 已在線的人只是換房間時不再廣播上線；查詢期間狀態又變了（例如離線途中重新連線）時，過時的狀態不送
+- 查不到成員資格時：上下線事件不送（不退回送給所有房間，也不中斷連線）；連線時的在線列表退回本房的連線者（都已通過成員驗證）。離線事件因此沒送出時，和該使用者連在同一房的人會收到 `user_left` 而熄燈，其他共同房間的成員則會一直看到該使用者在線，直到重新整理或重連
+- `lobby` 不是資料庫裡的房間、沒有成員，收不到任何人的上線狀態
 
 ---
 
