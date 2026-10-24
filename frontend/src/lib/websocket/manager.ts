@@ -131,6 +131,7 @@ export class WebSocketManager {
           this.isReconnecting = false;
           this.clearReconnectTimeout();
           this.startHeartbeat();
+          this.scheduleRetryFailedMessages();
           this.emit('connected');
           resolve();
         };
@@ -469,6 +470,19 @@ export class WebSocketManager {
       messageStatusStore.setFailed(clientId, '伺服器未確認訊息，請重試');
     }, WebSocketManager.ACK_TIMEOUT_MS);
     this.pendingAcks.set(clientId, timeoutId);
+  }
+
+  // 連上後重送失敗的訊息（延遲一點讓連線穩定）。由 manager 自己觸發：登出時實例會被
+  // destroy，外部在模組載入時註冊的監聽不會帶到新實例。動態載入避免循環 import
+  private scheduleRetryFailedMessages() {
+    const failedCount = messageStatusStore.getFailedMessageIds().length;
+    if (failedCount === 0) return;
+    console.log(`[WebSocket] 發現 ${failedCount} 則失敗訊息，連線穩定後重送`);
+    window.setTimeout(() => {
+      void import('$lib/utils/messageRetry').then(({ messageRetryManager }) => {
+        void messageRetryManager.retryAllFailed();
+      });
+    }, 1000);
   }
 
   // 連線中斷：等待 ack 的訊息立即標記失敗，重新連上時由重試機制重送。

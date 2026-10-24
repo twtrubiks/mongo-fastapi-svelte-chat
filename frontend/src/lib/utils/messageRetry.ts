@@ -192,22 +192,3 @@ class MessageRetryManager {
 
 // 導出單例實例
 export const messageRetryManager = new MessageRetryManager();
-
-// 監聽 WebSocket 連線狀態變化
-if (typeof window !== 'undefined') {
-  const ws = wsManager.getInstance();
-  
-  // 當連線成功時，自動重試所有失敗的訊息
-  ws.on('connection_state_changed', (state: string) => {
-    if (state === 'connected') {
-      const failedMessages = messageStatusStore.getFailedMessageIds();
-      if (failedMessages.length > 0) {
-        console.log(`[MessageRetry] 發現 ${failedMessages.length} 則失敗訊息，開始重試`);
-        // 延遲一點時間讓連線穩定
-        setTimeout(() => {
-          messageRetryManager.retryAllFailed();
-        }, 1000);
-      }
-    }
-  });
-}

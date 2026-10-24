@@ -69,7 +69,7 @@ beforeEach(async () => {
   vi.spyOn(console, 'warn').mockImplementation(() => {});
   vi.spyOn(console, 'debug').mockImplementation(() => {});
 
-  // messageRetry 在模組載入時才註冊「連線成功就重送」的監聽，須在 stub window 之後匯入
+  // 每個測試重新載入模組，取得乾淨的重試佇列、狀態與連線管理器
   ({ messageRetryManager: retry } = await import('./messageRetry'));
   ({ messageStatusStore: statusStore } = await import('$lib/stores/messageStatus.svelte'));
   ({ processFileUpload } = await import('./fileUploadHandler'));
@@ -166,6 +166,23 @@ describe('重新連線', () => {
     await vi.advanceTimersByTimeAsync(1000);
     expect(sentWith(last(), 'c1')).toHaveLength(1);
     expect(status('c1')).toBe('sending');
+  });
+
+  it('登出後重建連線管理器，重新連上時仍會自動重送', async () => {
+    // 登出時 wsManager.destroy() 丟掉舊實例，再次登入取得的是新實例
+    wsManager.destroy();
+    manager = wsManager.getInstance();
+    const first = await connectOpen();
+    retry.addToRetryQueue({ id: 'c1', content: '嗨', type: 'text' });
+    manager.sendMessage('嗨', 'text', 'c1');
+
+    first.serverClose(1006, false);
+    await vi.advanceTimersByTimeAsync(1000);
+    answerPings(last());
+    last().serverOpen();
+    await vi.advanceTimersByTimeAsync(1000);
+
+    expect(sentWith(last(), 'c1')).toHaveLength(1);
   });
 
   it('未連線時手動重試，訊息維持失敗，連上後自動重送', async () => {
