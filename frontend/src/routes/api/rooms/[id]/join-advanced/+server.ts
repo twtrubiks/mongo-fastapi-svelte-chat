@@ -53,6 +53,16 @@ export const POST: RequestHandler = async ({ params, cookies, request }) => {
           return json(createBFFResponse(response));
         }
 
+        // 邀請碼錯誤或過期：與密碼錯誤相同，回傳原因讓使用者知道要換一組邀請碼
+        if (errorMessage.includes('邀請碼無效') || errorMessage.includes('邀請碼已過期')) {
+          const response: JoinRoomResponse = {
+            success: false,
+            message: error.message,
+            requiresAction: { type: 'error', message: error.message }
+          };
+          return json(createBFFResponse(response));
+        }
+
         if (errorMessage.includes('邀請') || errorMessage.includes('invite')) {
           const response: JoinRoomResponse = {
             success: false,

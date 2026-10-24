@@ -196,7 +196,8 @@ describe('POST /api/rooms/[id]/join-advanced', () => {
     ['需要提供密碼', { type: 'password', message: '此聊天室需要密碼才能加入' }],
     ['密碼錯誤', { type: 'error', message: '密碼錯誤' }],
     ['需要提供邀請碼', { type: 'invite_code', message: '此聊天室需要邀請碼才能加入' }],
-    ['邀請碼無效', { type: 'invite_code', message: '此聊天室需要邀請碼才能加入' }],
+    ['邀請碼無效', { type: 'error', message: '邀請碼無效' }],
+    ['邀請碼已過期', { type: 'error', message: '邀請碼已過期' }],
   ])('後端「%s」轉成需要使用者處理的回應', async (message, requiresAction) => {
     mockBackend({ 'POST /api/rooms/r1/join': throws(400, message) });
 

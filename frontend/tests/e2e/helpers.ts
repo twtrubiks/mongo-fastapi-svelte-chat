@@ -11,6 +11,7 @@ export interface TestUser {
 export interface TestRoom {
   id: string;
   name: string;
+  invite_code?: string;
 }
 
 export const uniqueSuffix = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
@@ -31,12 +32,14 @@ export async function registerUser(api: APIRequestContext, prefix: string): Prom
   return (await data<{ user: TestUser }>(response, '註冊')).user;
 }
 
-export async function createRoom(api: APIRequestContext, name: string): Promise<TestRoom> {
-  const response = await api.post('/api/rooms', {
-    data: { name, room_type: 'public', join_policy: 'direct' },
-  });
-  const room = await data<{ id: string }>(response, '建立房間');
-  return { id: room.id, name };
+export async function createRoom(
+  api: APIRequestContext,
+  name: string,
+  settings: Record<string, unknown> = { room_type: 'public', join_policy: 'direct' },
+): Promise<TestRoom> {
+  const response = await api.post('/api/rooms', { data: { name, ...settings } });
+  const room = await data<{ id: string; invite_code?: string }>(response, '建立房間');
+  return { id: room.id, name, ...(room.invite_code ? { invite_code: room.invite_code } : {}) };
 }
 
 export async function postMessage(api: APIRequestContext, roomId: string, content: string) {
