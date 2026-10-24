@@ -12,7 +12,7 @@
 | 範圍 | 測試檔 | 作法 |
 |---|---|---|
 | BFF 核心：`bff-utils`、`bff-client`、`bff-auth` | `src/lib/bff-*.test.ts` | `bff-client` 以真實 HTTP server 扮演後端；`bff-auth` 驗證透明換發 token、401 重試、並行去重 |
-| BFF 路由：31 個 `+server.ts` 全部 | `src/routes/api/**/server.test.ts` | 直接呼叫 handler；以 spy 取代 `bffBackendClient.request`，依 `METHOD endpoint` 分派，未列出的端點一律 404 |
+| BFF 路由：33 個 `+server.ts` 全部 | `src/routes/api/**/server.test.ts` | 直接呼叫 handler；以 spy 取代 `bffBackendClient.request`，依 `METHOD endpoint` 分派，未列出的端點一律 404 |
 | 瀏覽器端 API client | `src/lib/api/client.test.ts` | 以真實 HTTP server 扮演 BFF，驗證信封解包、BFF 錯誤、401 判斷 |
 | Stores：auth、message、room、notification | `src/lib/stores/*.test.ts` | 直接操作 store，API 以 `vi.spyOn` 取代 |
 | WebSocket 事件處理 | `src/lib/websocket/handlers.test.ts` | 以後端實際推送的 payload 驅動 handler，檢查 store 結果 |
@@ -101,6 +101,8 @@ Vitest 分成兩個 project：`server`（node 環境，其餘測試）與 `clien
 
 依專案的審查標準另外審查房主撤銷權限，修正：移出不在線的成員時事件沒有名稱，聊天室出現「undefined 已被移出聊天室」；移除成員改以「仍是成員」為原子條件，同時離開與被移出時只廣播一次；不是成員的人呼叫離開會在該房廣播「離開了聊天室」（既有問題，可對任何知道 id 的房間洗系統訊息），改回 404；自己離開時探索列表重新整理兩次。WebSocket 驗證成員資格與登記連線之間被撤銷的競態屬既有問題，之後另外修正：登記連線後再確認一次成員資格（見 `technical-reference.md`）。
 
+之後加上封鎖名單：成員管理的確認列多了「移出並封鎖」，下方列出封鎖名單並可解除封鎖（開啟分頁時才載入）。寫端對端測試時發現，從探索點進無法加入的房間時，房間頁一律提示「無法直接訪問房間」且立刻被「已為您切換到…」蓋掉，被封鎖的人看不到原因；改為顯示加入失敗的真正原因。
+
 ---
 
 ## 端對端驗證
@@ -138,7 +140,6 @@ Vitest 分成兩個 project：`server`（node 環境，其餘測試）與 `clien
 ## 尚未涵蓋
 
 - **Svelte 元件**：房間頁、`RoomList`、`CreateRoomModal`、`UserList`、`MessageSearch`、`NotificationButton` 等沒有元件測試，房間頁由端對端測試涵蓋。`MessageList` 的捲動在 jsdom 中以模擬的高度與捲動位置測試，實際瀏覽器的捲動仍靠端對端測試。
-- **被移出的人能否再加入**：取決於房間的加入方式。邀請制要重新產生邀請碼、密碼房要變更密碼；公開直接加入的房間沒有封鎖名單，被移出的人仍可再加入（成員管理頁會說明）。
 - **端對端測試**：需要真的後端，目前只能手動執行 `npm run test:e2e`。
 - **WebSocket 連線管理**（`websocket/manager.ts`）：分頁切回前台時的重連、已讀請求去重與 `PUBLIC_WS_URL` 分支未測。
 - **工具函式**：`retry`、`notificationSound`、`readStatusSync`、`roomListSync` 等大多未測。
