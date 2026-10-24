@@ -9,6 +9,8 @@ import logging
 from pymongo import AsyncMongoClient
 from pymongo.asynchronous.database import AsyncDatabase
 
+from app.database.errors import NotConnectedError
+
 logger = logging.getLogger(__name__)
 
 
@@ -46,7 +48,7 @@ class MongoDBManager:
     async def get_database(self) -> AsyncDatabase:
         """獲取資料庫實例"""
         if self.database is None:
-            raise RuntimeError("Database not connected. Call connect() first.")
+            raise NotConnectedError("Database not connected. Call connect() first.")
         return self.database
 
 

@@ -13,6 +13,7 @@ from redis.exceptions import ConnectionError as RedisConnectionError
 from starlette.datastructures import Headers, QueryParams
 
 from app.auth.jwt_handler import create_access_token, create_refresh_token
+from app.database.errors import NotConnectedError
 from app.database.redis_conn import get_redis
 from app.utils.user_cache import set_cached_user
 from app.utils.ws_ticket import WS_TICKET_PREFIX, create_ws_ticket, validate_ws_ticket
@@ -359,6 +360,8 @@ class TestWebsocketAuthMiddleware:
                 "app.repositories.room_repository.RoomRepository.is_member",
                 AutoReconnect("down"),
             ),
+            # 啟動或重連的空檔：尚未連線
+            ("app.websocket.auth.validate_ws_ticket", NotConnectedError("not yet")),
         ],
     )
     async def test_infrastructure_errors_propagate(self, ctx, target, error):

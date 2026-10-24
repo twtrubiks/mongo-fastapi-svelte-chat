@@ -11,14 +11,15 @@ from redis.exceptions import RedisError
 
 from app.auth.jwt_handler import decode_access_token
 from app.core.fastapi_integration import create_room_service
+from app.database.errors import NotConnectedError
 from app.utils.user_cache import fetch_user_with_cache
 from app.utils.ws_ticket import validate_ws_ticket
 
 logger = logging.getLogger(__name__)
 
-# 資料庫 / Redis 暫時故障不是認證失敗：往上拋，由 handler 以 4000 關閉讓前端重連，
-# 不能當成認證失敗或不是成員（以 4001 拒絕，前端不重連）
-INFRA_ERRORS = (PyMongoError, RedisError)
+# 資料庫 / Redis 暫時故障（含啟動或重連時尚未連線）不是認證失敗：往上拋，由 handler
+# 以 4000 關閉讓前端重連，不能當成認證失敗或不是成員（以 4001 拒絕，前端不重連）
+INFRA_ERRORS = (PyMongoError, RedisError, NotConnectedError)
 
 
 async def _get_user_info(
