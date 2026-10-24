@@ -58,20 +58,19 @@ export const messageStore = {
 
   // 載入更多訊息 (分頁)
   loadMoreMessages: async (roomId: string, limit: number = 50) => {
-    if (messageState.loading || !messageState.hasMore) return;
-    
+    // 使用最早的訊息作為游標參考點；列表為空（例如第一頁載入失敗）時沒有游標可用，
+    // 須在設定 loading 前返回，否則 loading 會一直停在 true
+    const currentMessages = messageState.messages;
+    const oldestMessage = currentMessages[0];
+    if (messageState.loading || !messageState.hasMore || !oldestMessage) return;
+
     messageState = {
       messages: messageState.messages,
       loading: true,
       hasMore: messageState.hasMore
     };
-    
-    try {
-      const currentMessages = messageState.messages;
 
-      // 使用最早的訊息作為游標參考點
-      const oldestMessage = currentMessages[0];
-      if (!oldestMessage) return;
+    try {
 
       // 游標分頁：以最早訊息的 seq 為游標（不受訊息增刪造成的偏移影響）
       // 舊資料無 seq 時 fallback 到 skip/limit
