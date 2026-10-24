@@ -86,12 +86,20 @@ if not settings.DEBUG:
     if allowed_hosts:
         app.add_middleware(TrustedHostMiddleware, allowed_hosts=allowed_hosts)
 
+# 添加 Rate Limiting 中間件 (在錯誤處理之內)
+app.add_middleware(RateLimitingMiddleware, settings=settings)
+
+# 添加全域錯誤處理中間件：路由與內層中間件拋出的例外在此轉為標準錯誤回應
+app.add_middleware(GlobalErrorHandler, debug=settings.DEBUG)
+
 # 載入安全配置
 security_config = load_security_config()
 # 根據 DEBUG 模式調整配置
 security_config.development_mode = settings.DEBUG
 
-# 添加安全標頭中間件 (應該在錯誤處理之前)
+# 添加安全標頭中間件（最後註冊 = 最外層，錯誤回應與 429 也會帶安全標頭）。
+# 不可放在錯誤處理之內：它的 catch-all 會先把例外轉成一般 500，
+# GlobalErrorHandler 的 409 / 503 與標準錯誤格式都不會生效
 security_middleware = SecurityHeadersMiddleware(
     enable_hsts=security_config.enable_hsts and not settings.DEBUG,
     hsts_max_age=security_config.hsts_max_age,
@@ -103,13 +111,6 @@ security_middleware = SecurityHeadersMiddleware(
 @app.middleware("http")
 async def add_security_headers(request: Request, call_next) -> Any:
     return await security_middleware(request, call_next)
-
-
-# 添加 Rate Limiting 中間件 (在錯誤處理之前)
-app.add_middleware(RateLimitingMiddleware, settings=settings)
-
-# 添加全域錯誤處理中間件 (最先執行)
-app.add_middleware(GlobalErrorHandler, debug=settings.DEBUG)
 
 
 # 註冊業務異常處理器（AppError 子類別 → 對應 HTTP 狀態碼 + {"detail": "..."} 格式）

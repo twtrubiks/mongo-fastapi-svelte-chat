@@ -182,7 +182,9 @@ Repository 方法的回傳值語義：
 | 機制 | 處理對象 | 實現方式 | 回應格式 |
 |------|---------|---------|---------|
 | `app_error_handler` | `AppError` 子類別（業務異常） | FastAPI `@app.exception_handler(AppError)` | `{"detail": "..."}` + 對應 status code |
-| `GlobalErrorHandler` | 未預期的基礎設施異常 | ASGI Middleware | 統一 500 錯誤 |
+| `GlobalErrorHandler` | 未預期的基礎設施異常 | ASGI Middleware | `{"success": false, "error": {...}}`；`DuplicateKeyError` 409、Redis 連線失敗 503、其餘 500 |
+
+`SecurityHeadersMiddleware` 必須註冊在 `GlobalErrorHandler` 之後（最外層）：它自帶 catch-all，若放在內層會先把路由拋出的例外轉成一般 500，`GlobalErrorHandler` 就接不到。放在最外層時，錯誤回應同樣會帶上安全標頭。
 
 **AppError 異常層級**（`app/core/exceptions.py`）：
 

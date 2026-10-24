@@ -5,6 +5,7 @@
 """
 
 from datetime import UTC, datetime, timedelta
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from bson import ObjectId
@@ -43,6 +44,15 @@ async def users(async_client, isolated_db_manager):
         name: await _make_user(async_client, name)
         for name in ("owner", "member", "outsider")
     }
+
+
+@pytest.fixture
+async def room_name_index(isolated_db_manager):
+    """房名唯一索引（一般測試資料庫沒有索引，用完即移除）"""
+    db = await get_database()
+    name = await db.rooms.create_index("name", unique=True)
+    yield
+    await db.rooms.drop_index(name)
 
 
 async def _create_room(client, owner: dict, **fields) -> dict:
@@ -574,6 +584,31 @@ class TestRoomOwnership:
         )
 
         assert response.status_code == 409
+
+    async def test_same_name_race_rejected_by_unique_index(
+        self, async_client, users, room_name_index
+    ):
+        """名稱檢查通過後才被別人搶先建立（競態）：唯一索引擋下並回 409，不是 500
+
+        錯誤回應由 GlobalErrorHandler 產生，且仍帶安全標頭（安全標頭中介層在最外層）
+        """
+        await _create_room(async_client, users["owner"], name="dup")
+
+        with patch(
+            "app.repositories.room_repository.RoomRepository.get_by_name",
+            AsyncMock(return_value=None),
+        ):
+            response = await async_client.post(
+                "/api/rooms/",
+                json={"name": "dup"},
+                headers=users["outsider"]["headers"],
+            )
+
+        assert response.status_code == 409
+        assert response.json()["error"]["code"] == "DUPLICATE_KEY_ERROR"
+        assert response.headers["X-Content-Type-Options"] == "nosniff"
+        db = await get_database()
+        assert await db.rooms.count_documents({"name": "dup"}) == 1
 
     async def test_max_members_cannot_drop_below_member_count(
         self, async_client, users
