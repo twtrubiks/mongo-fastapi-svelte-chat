@@ -55,6 +55,8 @@
   let mobileMessageListComponent: any = $state(null);
   let messageIdToScrollTo: string | null = $state(null); // 待定位的訊息 ID
   let isLeavingRoom = false; // 自己按離開時，後端廣播的 user_left 由離開流程處理導向
+  // 離開期間收到的「被移出」事件：按下離開時剛好被房主移出或封鎖
+  let removedWhileLeaving: { kicked: boolean; banned: boolean } | null = null;
   
   // 已讀狀態追蹤器
   const markAsReadTracker = createMarkAsReadTracker();
@@ -397,10 +399,21 @@
         await redirectToAvailableRoom();
         showToast('已離開聊天室', 'info');
       } catch (error) {
-        console.error('離開聊天室失敗:', error);
-        showToast('離開聊天室失敗', 'error');
+        // 按下離開時剛好被移出或封鎖：後端已不認為他是成員（404），連線也已被關閉。
+        // 當成已不在房間，導回儀表板並說明原因，不停在斷線的房間頁提示「離開失敗」
+        const err = error as { status?: number; response?: { status?: number } };
+        const removed = removedWhileLeaving;
+        if (removed || err.status === 404 || err.response?.status === 404) {
+          roomStore.forgetMembership(room.id);
+          const reason = removed?.banned ? 'banned' : removed?.kicked ? 'kicked' : 'left';
+          goto(`/app/dashboard?removed=${reason}`, { replaceState: true });
+        } else {
+          console.error('離開聊天室失敗:', error);
+          showToast('離開聊天室失敗', 'error');
+        }
       } finally {
         isLeavingRoom = false;
+        removedWhileLeaving = null;
       }
     }
   }
@@ -593,7 +606,11 @@
 
     // 成員資格被移除：被房主移出，或在其他分頁離開了這個房間
     const handleRemovedFromRoom = (data: { room_id: string; kicked: boolean; banned: boolean }) => {
-      if (data.room_id !== roomId || isLeavingRoom) return;
+      if (data.room_id !== roomId) return;
+      if (isLeavingRoom) {
+        removedWhileLeaving = { kicked: data.kicked, banned: data.banned };
+        return;
+      }
       const reason = data.banned ? 'banned' : data.kicked ? 'kicked' : 'left';
       goto(`/app/dashboard?removed=${reason}`, { replaceState: true });
     };

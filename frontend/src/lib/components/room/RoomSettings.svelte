@@ -605,7 +605,8 @@
             <ul class="divide-y divide-base-200" aria-label="封鎖名單">
               {#each bannedUsers as banned (banned.id)}
                 <li class="flex items-center justify-between gap-3 py-2">
-                  <span class="truncate">{banned.full_name || banned.username}</span>
+                  <!-- 封鎖名單 API 只回公開欄位（沒有全名），統一只顯示使用者名稱 -->
+                  <span class="truncate">{banned.username}</span>
                   <button type="button" class="btn btn-ghost btn-xs shrink-0" aria-label="解除封鎖 {banned.username}" onclick={() => unbanUser(banned)} disabled={unbanningId !== null}>
                     {#if unbanningId === banned.id}
                       <span class="loading loading-spinner loading-xs"></span>

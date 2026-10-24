@@ -259,6 +259,7 @@ describe('封鎖', () => {
   // 成員列表平常由 user_left 事件同步；房主的 WS 剛好斷線時，被封鎖的人會留在可移出的列表
   it('以名稱封鎖到目前成員時，立即從成員列表移除', async () => {
     vi.spyOn(apiClient.rooms, 'banUser').mockResolvedValue(user('u2'));
+    Object.assign(roomStore.state, { currentRoom: room('r1') });
     roomStore.setUsers([user('u1', true), user('u2', true)]);
 
     const banned = await roomStore.banUser('r1', 'user-u2');
@@ -266,6 +267,21 @@ describe('封鎖', () => {
     expect(banned.id).toBe('u2');
     expect(roomStore.users.map((u) => u.id)).toEqual(['u1']);
   });
+});
+
+// 設定頁換房間時保留：上一個房間的請求晚回來，不能動到目前房間的成員列表
+it.each([
+  ['以名稱封鎖', () => roomStore.banUser('r1', 'user-u2')],
+  ['移出', () => roomStore.removeMember('r1', 'u2')],
+])('%s其他房間的人時，不動目前房間的成員列表', async (_, act) => {
+  vi.spyOn(apiClient.rooms, 'banUser').mockResolvedValue(user('u2'));
+  vi.spyOn(apiClient.rooms, 'removeMember').mockResolvedValue();
+  Object.assign(roomStore.state, { currentRoom: room('r2') });
+  roomStore.setUsers([user('u1', true), user('u2', true)]);
+
+  await act();
+
+  expect(roomStore.users.map((u) => u.id)).toEqual(['u1', 'u2']);
 });
 
 describe('即時房間事件', () => {

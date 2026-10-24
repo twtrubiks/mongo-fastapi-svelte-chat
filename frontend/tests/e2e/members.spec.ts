@@ -137,3 +137,31 @@ test('以使用者名稱封鎖已經離開的人，之後不能再加入', async
   expect(rejoin.status()).toBe(403);
   await memberContext.close();
 });
+
+// 按下離開、確認框開著時被房主封鎖：離開請求回 404，連線也被關閉。
+// 不能停在已斷線的房間頁並提示「離開失敗」，要導回儀表板並說明被封鎖
+test('按離開時剛好被封鎖：導回儀表板並說明，不提示離開失敗', async ({ page, browser }) => {
+  const ownerContext = await browser.newContext();
+  const ownerApi = ownerContext.request;
+  await registerUser(ownerApi, 'owner');
+  const room = await createRoom(ownerApi, `離開時被封鎖-${uniqueSuffix()}`);
+
+  const memberApi = page.context().request;
+  const member = await registerUser(memberApi, 'member');
+  expect((await memberApi.post(`/api/rooms/${room.id}/join`)).ok()).toBe(true);
+  await page.goto(`/app/room/${room.id}`);
+  await expect(page.locator('.desktop-room-header')).toContainText(room.name);
+
+  page.once('dialog', async (dialog) => {
+    const banned = await ownerApi.delete(`/api/rooms/${room.id}/members/${member.id}?ban=true`);
+    expect(banned.ok()).toBe(true);
+    await dialog.accept();
+  });
+  await page.locator('.desktop-room-header').getByRole('button', { name: '更多選項' }).click();
+  await page.getByRole('button', { name: '離開聊天室' }).click();
+
+  await expect(page).toHaveURL(/\/app\/dashboard$/);
+  await expect(page.getByText('你已被房主移出並封鎖，無法再加入此聊天室')).toBeVisible();
+  await expect(page.getByText('離開聊天室失敗')).toHaveCount(0);
+  await ownerContext.close();
+});

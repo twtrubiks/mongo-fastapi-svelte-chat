@@ -52,6 +52,12 @@ function buildListOptions(limit: number, offset: number, excludeJoined = false):
   return opts;
 }
 
+// 輔助函數：從目前房間的成員列表移除（設定頁換房間時保留，晚回來的請求不能動到別的房間）
+function dropFromCurrentRoomUsers(roomId: string, userId: string) {
+  if (roomState.currentRoom?.id !== roomId) return;
+  updateRoomState({ users: roomState.users.filter(u => u.id !== userId) });
+}
+
 // 輔助函數：upsert 房間到列表（存在則更新，不存在則插入）
 function upsertIntoList(list: RoomSummary[], room: RoomSummary, prepend = false): RoomSummary[] {
   if (list.some(r => r.id === room.id)) {
@@ -501,7 +507,7 @@ export const roomStore = {
   // 房主移除成員（ban 時同時封鎖）；成員列表另由 user_left 事件同步，這裡先移除讓畫面立即反映
   removeMember: async (roomId: string, userId: string, ban = false) => {
     await apiClient.rooms.removeMember(roomId, userId, { ban });
-    updateRoomState({ users: roomState.users.filter(u => u.id !== userId) });
+    dropFromCurrentRoomUsers(roomId, userId);
   },
 
   // 封鎖名單（僅房主）
@@ -510,7 +516,7 @@ export const roomStore = {
   // 以使用者名稱封鎖（可封鎖已離開或從未加入的人）；對方若是成員，先從成員列表移除讓畫面立即反映
   banUser: async (roomId: string, username: string) => {
     const banned = await apiClient.rooms.banUser(roomId, username);
-    updateRoomState({ users: roomState.users.filter(u => u.id !== banned.id) });
+    if (banned.id) dropFromCurrentRoomUsers(roomId, banned.id);
     return banned;
   },
 
