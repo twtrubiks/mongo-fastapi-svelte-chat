@@ -353,6 +353,18 @@ class MessageService:
             for r in responses
         ]
 
+    async def _ensure_still_member(self, room_id: str, user_id: str) -> None:
+        """編輯 / 刪除訊息前確認使用者目前仍是房間成員
+
+        發訊息時是成員不代表現在還是：離開或被移出後，
+        不能再回頭改寫或刪除留在房內的舊訊息。
+
+        Raises:
+            ForbiddenError: 已不是該房間成員時
+        """
+        if not await self.room_repo.is_member(room_id, user_id):
+            raise ForbiddenError("您已不是該聊天室的成員")
+
     async def update_message(
         self, message_id: str, user_id: str, update_data: MessageUpdate
     ) -> MessageResponse:
@@ -377,7 +389,8 @@ class MessageService:
         if not message or message.status == MessageStatus.DELETED:
             raise NotFoundError("訊息不存在")
 
-        # 檢查權限
+        # 檢查權限：已離開或被移出的人不能再動房內的舊訊息
+        await self._ensure_still_member(message.room_id, user_id)
         if message.user_id != user_id:
             raise ForbiddenError("您只能編輯自己的訊息")
 
@@ -434,7 +447,8 @@ class MessageService:
         if not message:
             raise NotFoundError("訊息不存在")
 
-        # 檢查權限
+        # 檢查權限：已離開或被移出的人不能再動房內的舊訊息
+        await self._ensure_still_member(message.room_id, user_id)
         if message.user_id != user_id:
             raise ForbiddenError("您只能刪除自己的訊息")
 

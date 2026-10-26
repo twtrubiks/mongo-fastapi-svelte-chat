@@ -382,6 +382,42 @@ class TestMessageServiceIntegration:
         await service.delete_message(message_id=message_id, user_id=user_id)
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("action", ["update", "delete"])
+    async def test_former_member_cannot_touch_own_message(
+        self, message_service_with_mocks, action
+    ):
+        """離開或被移出房間後，不能再編輯 / 刪除自己留在房內的舊訊息"""
+        service = message_service_with_mocks
+        message_id = str(ObjectId())
+        user_id = "test_user_id"
+
+        service.message_repo.get_by_id.return_value = MessageResponse(
+            id=message_id,
+            content="原始訊息",
+            message_type=MessageType.TEXT,
+            user_id=user_id,  # 自己的訊息
+            room_id="test_room_id",
+            username="testuser",
+            status=MessageStatus.SENT,
+            edited=False,
+            created_at=datetime.now(),
+            updated_at=datetime.now(),
+        )
+        service.room_repo.is_member.return_value = False
+
+        with pytest.raises(ForbiddenError, match="已不是該聊天室的成員"):
+            if action == "update":
+                await service.update_message(
+                    message_id, user_id, MessageUpdate(content="嘗試更新")
+                )
+            else:
+                await service.delete_message(message_id, user_id)
+
+        service.room_repo.is_member.assert_awaited_once_with("test_room_id", user_id)
+        service.message_repo.update.assert_not_called()
+        service.message_repo.delete.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_update_message_unauthorized(self, message_service_with_mocks):
         """測試未授權更新訊息"""
         service = message_service_with_mocks
