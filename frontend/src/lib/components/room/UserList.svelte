@@ -186,7 +186,7 @@
         
         <!-- 離線用戶 -->
         {#if offlineUsers.length > 0}
-          <div class="user-section">
+          <div class="user-section offline-section">
             <div class="section-header">
               <span class="section-title">離線 ({offlineUsers.length})</span>
             </div>
@@ -294,7 +294,8 @@
     @apply mr-2;
   }
   
-  .user-section:last-child .section-title::before {
+  /* 離線區用 class 標記，不靠位置（全員在線時沒有離線區，在線區會變成 last-child） */
+  .offline-section .section-title::before {
     content: "⚫";
   }
 
