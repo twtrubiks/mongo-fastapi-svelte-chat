@@ -272,7 +272,7 @@ export class ApiClient {
     },
 
     create: async (roomData: RoomCreate): Promise<Room> => {
-      return this.bffRequest<Room>('POST', '/api/rooms/', { data: roomData });
+      return this.bffRequest<Room>('POST', '/api/rooms', { data: roomData });
     },
 
     get: async (roomId: string): Promise<Room> => {
@@ -382,7 +382,7 @@ export class ApiClient {
       if (options?.type) params.append('type', options.type);
 
       const queryString = params.toString();
-      const url = queryString ? `/api/notifications/?${queryString}` : '/api/notifications/';
+      const url = queryString ? `/api/notifications?${queryString}` : '/api/notifications';
       return this.request<NotificationListResponse>(url);
     },
 
@@ -403,7 +403,7 @@ export class ApiClient {
     },
 
     clearAll: async (): Promise<void> => {
-      return this.bffRequest<void>('DELETE', '/api/notifications/');
+      return this.bffRequest<void>('DELETE', '/api/notifications');
     },
   };
 
