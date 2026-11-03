@@ -1,7 +1,9 @@
 <script lang="ts">
   import { goto } from '$app/navigation';
+  import { page } from '$app/state';
   import { LoginForm } from '$lib/components/auth';
   import { Toast } from '$lib/components/ui';
+  import { safeReturnPath } from '$lib/utils/loginRedirect';
 
   let showToast = $state(false);
   let toastMessage = $state('');
@@ -12,9 +14,10 @@
     toastType = 'success';
     showToast = true;
     
-    // 給瀏覽器一點時間設置 cookie，然後跳轉
+    // 給瀏覽器一點時間設置 cookie，然後跳轉；有 redirect 就回到登入前的頁面
+    const returnTo = safeReturnPath(page.url.searchParams.get('redirect')) ?? '/app';
     setTimeout(() => {
-      goto('/app');
+      goto(returnTo);
     }, 100);
   }
 

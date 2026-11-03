@@ -25,6 +25,7 @@
   import { createMarkAsReadTracker } from '$lib/utils/markAsRead';
   import { processFileUpload } from '$lib/utils/fileUploadHandler';
   import { extractErrorMessage } from '$lib/utils/error';
+  import { loginUrl } from '$lib/utils/loginRedirect';
   import type { Room, RoomSummary, Message, User, WSErrorMessage } from '$lib/types';
   
   let currentRoom: Room | null = $state(null);
@@ -502,9 +503,10 @@
   // 初次載入由 checkAuthentication 處理（先以 cookie 向 server 驗證）；localStorage 沒有
   // 使用者資料時 isAuth 一開始是 false，若在這裡立即轉址，已登入的使用者會經 /login →
   // /app → /app/rooms 被帶到第一個房間
+  // 登入失效時與 handleAuthFailure 的轉址同時發生，兩邊都帶上 redirect，誰先誰後結果都一樣
   $effect(() => {
     if (isInitialized && !isAuth && browser) {
-      goto('/login');
+      goto(loginUrl($page.url.pathname));
     }
   });
   
@@ -534,8 +536,7 @@
         console.error('[Room] 認證驗證失敗:', error);
       }
 
-      const currentPath = $page.url.pathname;
-      goto(`/login?redirect=${encodeURIComponent(currentPath)}`);
+      goto(loginUrl($page.url.pathname));
       return false;
     }
     return true;

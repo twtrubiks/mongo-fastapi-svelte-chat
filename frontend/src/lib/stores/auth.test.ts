@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { goto } from '$app/navigation';
 import { apiClient } from '../api/client';
 import { wsManager } from '../websocket/manager';
@@ -8,9 +8,19 @@ vi.mock('$app/navigation', () => ({ goto: vi.fn(async () => {}) }));
 
 const USER = { id: 'u1', username: 'alice', email: 'alice@example.com' } as const;
 
+// server 測試環境沒有 window；handleAuthFailure 會讀目前網址
+function setLocation(path: string) {
+  vi.stubGlobal('window', { location: new URL(path, 'http://localhost') });
+}
+
 beforeEach(() => {
   vi.mocked(goto).mockClear();
   authStore.setAuthState({ user: { ...USER } as never });
+  setLocation('/');
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
 });
 
 describe('authStore 登入失效處理', () => {
@@ -25,6 +35,17 @@ describe('authStore 登入失效處理', () => {
     expect(destroy).toHaveBeenCalledOnce();
     expect(authStore.user).toBeNull();
     expect(goto).toHaveBeenCalledWith('/login');
+  });
+
+  it('在 /app 底下失效時，登入頁帶上目前頁面以便登入後回來', async () => {
+    vi.spyOn(apiClient.auth, 'logout').mockResolvedValue();
+    vi.spyOn(wsManager, 'destroy').mockImplementation(() => {});
+    authStore.init();
+    setLocation('/app/room/r1');
+
+    await apiClient.onAuthFailure?.();
+
+    expect(goto).toHaveBeenCalledWith('/login?redirect=%2Fapp%2Froom%2Fr1');
   });
 
   it('多個請求同時 401 只處理一次', async () => {

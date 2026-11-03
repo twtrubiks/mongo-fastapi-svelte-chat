@@ -3,6 +3,7 @@ import { goto } from '$app/navigation';
 import { apiClient } from '../api/client';
 import { wsManager } from '../websocket/manager';
 import { messageRetryManager } from '../utils/messageRetry';
+import { loginUrl } from '../utils/loginRedirect';
 import type { AuthState, User, LoginData, RegisterData } from '../types';
 
 const initialState: AuthState = {
@@ -165,15 +166,17 @@ export const authStore = {
 export const isAuthenticated = () => authState.user !== null;
 export const currentUser = () => authState.user;
 
-// 登入徹底失效（BFF 換發也失敗）：登出並回到登入頁。
+// 登入徹底失效（BFF 換發也失敗）：登出並回到登入頁，登入後回到目前頁面。
 // 同一時間多個請求都會 401，只處理一次
 let handlingAuthFailure = false;
 async function handleAuthFailure() {
   if (handlingAuthFailure) return;
   handlingAuthFailure = true;
   try {
+    // 先記下目前頁面，logout 會觸發房間頁的轉址
+    const toLogin = loginUrl(window.location.pathname + window.location.search);
     await authStore.logout();
-    await goto('/login');
+    await goto(toLogin);
   } finally {
     handlingAuthFailure = false;
   }
