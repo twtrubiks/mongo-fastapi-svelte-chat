@@ -2,7 +2,8 @@
 
 以替身 connection_manager 收集 handler 送出的每個事件，再對整個 payload 精確比對：
 WS 事件結構是前後端契約（見前端 types.ts 的 WebSocketMessage），欄位改名、缺漏、
-預設值與各種數量邊界都由這裡鎖住。
+預設值與各種數量邊界都由這裡鎖住。數量邊界（筆數、截斷長度、時間窗）一律由正式程式的
+常數推出，調整常數不需要改測試。
 """
 
 import asyncio
@@ -32,6 +33,11 @@ from app.utils.datetime_utils import format_datetime_for_json
 from app.utils.json_encoder import safe_json_dumps
 from app.utils.ws_ticket import create_ws_ticket
 from app.websocket.handlers import (
+    BOT_HISTORY_FETCH_LIMIT,
+    BOT_RATE_LIMIT_WINDOW_SECONDS,
+    NOTIFICATION_PREVIEW_LENGTH,
+    RECENT_MESSAGES_LIMIT,
+    SUMMARY_MESSAGE_LIMIT,
     _background_ai_tasks,
     _spawn_ai_task,
     handle_bot_mention,
@@ -255,12 +261,15 @@ def _fake_ws(query: dict) -> Mock:
 @pytest.mark.asyncio
 @pytest.mark.integration
 class TestConnectionEvents:
-    async def test_connect_sends_welcome_then_latest_50_messages(self, ctx, recorder):
+    async def test_connect_sends_welcome_then_latest_messages(self, ctx, recorder):
         sender = ctx.sender
         await _insert_messages(
             ctx.db,
             ctx.room_id,
-            [(sender["id"], "sender", f"歷史 {i:02d}") for i in range(51)],
+            [
+                (sender["id"], "sender", f"歷史 {i}")
+                for i in range(RECENT_MESSAGES_LIMIT + 1)
+            ],
         )
         ticket = await create_ws_ticket(sender["id"], ctx.room_id)
 
@@ -287,7 +296,7 @@ class TestConnectionEvents:
                 ctx.room_id,
                 {
                     "type": "message_history",
-                    # 只送最新 50 則（最舊的一則不送），最舊→最新
+                    # 只送最新 RECENT_MESSAGES_LIMIT 則（最舊的一則不送），最舊→最新
                     "messages": [_message_payload(doc, AVATAR) for doc in docs[1:]],
                     "timestamp": NOW,
                     "room_id": ctx.room_id,
@@ -493,17 +502,17 @@ class TestChatMessageEvents:
         ]
         assert await ctx.db.messages.count_documents({}) == 0
 
-    @pytest.mark.parametrize(
-        "length,expected_preview",
-        [
-            (50, "0123456789" * 5),
-            (51, "0123456789" * 5 + "..."),
-        ],
-    )
-    async def test_notification_preview_truncated_after_50_chars(
-        self, ctx, recorder, length, expected_preview
+    @pytest.mark.parametrize("extra, truncated", [(0, False), (1, True)])
+    async def test_notification_preview_truncated_beyond_limit(
+        self, ctx, recorder, extra, truncated
     ):
-        content = ("0123456789" * 6)[:length]
+        """剛好上限字數時原樣；多一個字就截斷到上限並加上「...」"""
+        content = "".join(
+            str(i % 10) for i in range(NOTIFICATION_PREVIEW_LENGTH + extra)
+        )
+        expected_preview = (
+            content[:NOTIFICATION_PREVIEW_LENGTH] + "..." if truncated else content
+        )
 
         await handle_message(
             ctx.sender["id"],
@@ -654,18 +663,19 @@ class TestBotEvents:
         ]
 
     @pytest.mark.parametrize(
-        "chitchat,expected_history",
+        "overflow,expected_history",
         [
-            # 共 50 則（含當前提問）：舊的往返仍在視窗內
-            (47, "sender: 舊問題\nAI 助理: 舊回答"),
-            # 共 51 則：舊提問被擠出最新 50 則，只剩無提問的回答 → 不成對
-            (48, ""),
+            # 舊往返 2 則 + 閒聊 + 當前提問，剛好 BOT_HISTORY_FETCH_LIMIT 則：舊往返仍在範圍內
+            (0, "sender: 舊問題\nAI 助理: 舊回答"),
+            # 多一則：舊提問被擠出撈取範圍，只剩無提問的回答 → 不成對
+            (1, ""),
         ],
     )
-    async def test_history_built_from_latest_50_messages(
-        self, ctx, recorder, chitchat, expected_history
+    async def test_history_built_from_latest_fetched_messages(
+        self, ctx, recorder, overflow, expected_history
     ):
         sender, alice = ctx.sender, ctx.alice
+        chitchat = BOT_HISTORY_FETCH_LIMIT - 3 + overflow
         ids = await _insert_messages(
             ctx.db,
             ctx.room_id,
@@ -683,19 +693,23 @@ class TestBotEvents:
 
         assert fake.stream_calls == [("新問題", expected_history)]
 
-    async def test_summary_uses_latest_30_messages(self, ctx, recorder):
+    async def test_summary_uses_latest_messages_only(self, ctx, recorder):
         await _insert_messages(
             ctx.db,
             ctx.room_id,
-            [(ctx.sender["id"], "sender", f"第 {i} 則") for i in range(31)],
+            [
+                (ctx.sender["id"], "sender", f"第 {i} 則")
+                for i in range(SUMMARY_MESSAGE_LIMIT + 1)
+            ],
         )
         fake = FakeAI(summary="重點")
 
         with _patch_ai(fake):
             await handle_summary_command(ctx.sender["id"], ctx.room_id)
 
+        # 最舊的第 0 則超出範圍，只摘要最新 SUMMARY_MESSAGE_LIMIT 則（最舊→最新）
         assert fake.summarize_calls == [
-            "\n".join(f"sender: 第 {i} 則" for i in range(1, 31))
+            "\n".join(f"sender: 第 {i} 則" for i in range(1, SUMMARY_MESSAGE_LIMIT + 1))
         ]
         assert [event[0] for event in recorder.sent] == ["message"]
 
@@ -703,9 +717,10 @@ class TestBotEvents:
 @pytest.mark.asyncio
 @pytest.mark.integration
 class TestBotRateLimitWindow:
-    async def test_quota_frees_up_exactly_60_seconds_later(self, recorder):
+    async def test_quota_frees_up_exactly_one_window_later(self, recorder):
         user_id, room_id = str(ObjectId()), str(ObjectId())
         quota = settings.BOT_RATE_LIMIT_PER_MINUTE
+        window = BOT_RATE_LIMIT_WINDOW_SECONDS
         clock = Mock()
         start = 1_700_000_000
 
@@ -720,8 +735,8 @@ class TestBotRateLimitWindow:
         ):
             for _ in range(quota):
                 await ask_at(0)
-            await ask_at(59)
-            await ask_at(60)
+            await ask_at(window - 1)
+            await ask_at(window)
         await (await get_redis()).delete(f"rate_limit:bot:{user_id}")
 
         outcomes = [

@@ -8,7 +8,7 @@ from unittest.mock import ANY, AsyncMock, Mock, patch
 import pytest
 from fastapi import WebSocketDisconnect
 
-from app.models.message import MessageStatus, MessageType
+from app.models.message import MAX_CONTENT_LENGTH, MessageStatus, MessageType
 from app.websocket.handlers import (
     handle_chat_message,
     handle_get_users,
@@ -248,7 +248,7 @@ class TestWebSocketHandlersAdditional:
     @pytest.mark.asyncio
     async def test_handle_chat_message_content_too_long(self, mock_user_info):
         """測試處理內容過長的聊天訊息"""
-        long_content = "x" * 2001
+        long_content = "x" * (MAX_CONTENT_LENGTH + 1)
         message_data = {
             "content": long_content,
             "message_type": "text",

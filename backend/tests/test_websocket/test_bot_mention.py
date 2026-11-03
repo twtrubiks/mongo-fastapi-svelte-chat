@@ -13,6 +13,7 @@ import app.core.bot as bot_module
 from app.core.bot import (
     BOT_HISTORY_MAX_ANSWER_CHARS,
     BOT_HISTORY_MAX_PAIRS,
+    BOT_HISTORY_WINDOW_MINUTES,
     build_bot_history,
     ensure_bot_user,
     get_bot_user_id,
@@ -679,7 +680,7 @@ class TestBuildBotHistory:
     def test_window_excludes_old_pairs(self):
         """超過時間窗的往返視為舊對話，不帶入"""
         now = datetime.now(UTC)
-        old = now - timedelta(minutes=30)
+        old = now - timedelta(minutes=BOT_HISTORY_WINDOW_MINUTES * 3)
         messages = [
             _hist_msg("Bob", "@bot 舊問題", user_id="u1", created_at=old),
             _hist_msg("AI 助理", "舊回答", user_id="bot123", created_at=old),
@@ -699,7 +700,7 @@ class TestBuildBotHistory:
 
     def test_truncates_long_answer(self):
         """過長的 bot 歷史回答會被截斷以控制 token"""
-        long_answer = "字" * 500
+        long_answer = "字" * (BOT_HISTORY_MAX_ANSWER_CHARS * 2)
         messages = [
             _hist_msg("Bob", "@bot 問題", user_id="u1"),
             _hist_msg("AI 助理", long_answer, user_id="bot123"),
@@ -756,22 +757,25 @@ class TestBuildBotHistoryLimits:
             "AI 助理: VM 是虛擬機"
         )
 
-    @pytest.mark.parametrize("total_pairs", [6, 7])
-    def test_keeps_latest_six_pairs(self, total_pairs):
+    @pytest.mark.parametrize(
+        "total_pairs", [BOT_HISTORY_MAX_PAIRS, BOT_HISTORY_MAX_PAIRS + 1]
+    )
+    def test_keeps_latest_pairs_up_to_limit(self, total_pairs):
         messages = [
             msg for i in range(total_pairs) for msg in _qa("Bob", f"問{i}", f"答{i}")
         ]
 
-        expected_pairs = range(total_pairs - 6, total_pairs)
+        expected_pairs = range(total_pairs - BOT_HISTORY_MAX_PAIRS, total_pairs)
         assert build_bot_history(messages, "bot123", now=HISTORY_NOW) == "\n".join(
             f"Bob: 問{i}\nAI 助理: 答{i}" for i in expected_pairs
         )
 
-    def test_ten_minute_window_boundary(self):
-        """bot 回答落在 10 分鐘前（含）才帶入；早 1 秒即視為舊對話"""
+    def test_window_boundary(self):
+        """bot 回答落在時間窗邊界上（含）才帶入；早 1 秒即視為舊對話"""
+        window = timedelta(minutes=BOT_HISTORY_WINDOW_MINUTES)
         messages = [
-            *_qa("Bob", "太舊", "舊答", ago=timedelta(minutes=10, seconds=1)),
-            *_qa("Bob", "剛好", "邊界答", ago=timedelta(minutes=10)),
+            *_qa("Bob", "太舊", "舊答", ago=window + timedelta(seconds=1)),
+            *_qa("Bob", "剛好", "邊界答", ago=window),
             *_qa("Bob", "最近", "新答"),
         ]
 
@@ -794,13 +798,15 @@ class TestBuildBotHistoryLimits:
             "Bob: 第一題\nAI 助理: 第一答\nBob: 第二題\nAI 助理: 第二答"
         )
 
-    def test_answer_truncated_to_200_chars(self):
-        exact = "甲" * 199 + "乙"
-        over = "丙" * 200 + "丁"
+    def test_answer_truncated_to_limit(self):
+        """剛好上限字數的回答原樣保留；多一個字就截到上限"""
+        limit = BOT_HISTORY_MAX_ANSWER_CHARS
+        exact = "甲" * (limit - 1) + "乙"
+        over = "丙" * limit + "丁"
         messages = [*_qa("Bob", "長答一", exact), *_qa("Bob", "長答二", over)]
 
         assert build_bot_history(messages, "bot123", now=HISTORY_NOW) == (
-            f"Bob: 長答一\nAI 助理: {exact}\nBob: 長答二\nAI 助理: {'丙' * 200}"
+            f"Bob: 長答一\nAI 助理: {exact}\nBob: 長答二\nAI 助理: {'丙' * limit}"
         )
 
 

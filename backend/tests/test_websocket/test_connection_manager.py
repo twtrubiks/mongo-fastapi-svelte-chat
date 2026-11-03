@@ -1114,9 +1114,22 @@ MEMBERSHIP = {
 }
 
 
+# 虛擬時間的測試自己設定兩個 debounce 時間窗，不依賴正式程式的預設值；
+# 下面各情境的時間點（1、2、4.999、6…）都是依這兩個值安排的
+OFFLINE_DEBOUNCE_SECONDS = 3.0
+ROOM_REJOIN_DEBOUNCE_SECONDS = 5.0
+
+
+def _timed_manager(membership) -> ConnectionManager:
+    manager = ConnectionManager(membership=membership)
+    manager._disconnect_debounce_seconds = OFFLINE_DEBOUNCE_SECONDS
+    manager._room_rejoin_debounce_seconds = ROOM_REJOIN_DEBOUNCE_SECONDS
+    return manager
+
+
 @pytest.fixture
 def manager(clock):
-    return ConnectionManager(membership=FakeMembership(MEMBERSHIP).factory())
+    return _timed_manager(FakeMembership(MEMBERSHIP).factory())
 
 
 @pytest.mark.unit
@@ -1227,7 +1240,7 @@ class TestEventPayloads:
                 return await super().get_member_room_ids(user_id, room_ids)
 
         membership = SlowOffline(MEMBERSHIP)
-        manager = ConnectionManager(membership=membership.factory())
+        manager = _timed_manager(membership.factory())
         membership.online = manager.global_online_users
         alice_ws = await _join(manager, ALICE, "r1")
         bob_ws = await _join(manager, BOB, "r2")
@@ -1286,7 +1299,10 @@ class TestEventPayloads:
 @pytest.mark.unit
 @pytest.mark.asyncio
 class TestDebounceTimeline:
-    """離線（3 秒）與房間離開（5 秒）debounce：以虛擬時間驗證時間軸"""
+    """離線與房間離開 debounce：以虛擬時間驗證時間軸
+
+    兩個時間窗由 _timed_manager 固定為 3 秒與 5 秒，測試名稱中的秒數指的是這兩個值。
+    """
 
     async def test_offline_announced_exactly_3s_after_last_room_closes(
         self, manager, clock

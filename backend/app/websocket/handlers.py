@@ -255,6 +255,10 @@ async def handle_message(
         )
 
 
+# 新訊息通知的內容預覽字數，超過時截斷並加上「...」
+NOTIFICATION_PREVIEW_LENGTH = 50
+
+
 async def handle_chat_message(
     user_id: str,
     room_id: str,
@@ -365,8 +369,8 @@ async def handle_chat_message(
 
             # 為每個成員（除發送者外）創建通知
             message_preview = created_message.content
-            if len(message_preview) > 50:
-                message_preview = message_preview[:50] + "..."
+            if len(message_preview) > NOTIFICATION_PREVIEW_LENGTH:
+                message_preview = message_preview[:NOTIFICATION_PREVIEW_LENGTH] + "..."
 
             sent_count = 0
             for member in room_members:
@@ -422,6 +426,10 @@ async def handle_chat_message(
         )
 
 
+# AI 使用額度的滑動視窗秒數（額度為 settings.BOT_RATE_LIMIT_PER_MINUTE）
+BOT_RATE_LIMIT_WINDOW_SECONDS = 60
+
+
 async def _check_bot_rate_limit(user_id: str) -> tuple[bool, int]:
     """每使用者每分鐘 AI 使用上限（@bot 與 /summary 共用額度，複用 Redis 滑動視窗）。
 
@@ -433,7 +441,7 @@ async def _check_bot_rate_limit(user_id: str) -> tuple[bool, int]:
         limiter = SlidingWindowRateLimiter(redis_client, settings)
         allowed, _, reset_time = await limiter.is_allowed(
             f"rate_limit:bot:{user_id}",
-            window_size=60,
+            window_size=BOT_RATE_LIMIT_WINDOW_SECONDS,
             max_requests=settings.BOT_RATE_LIMIT_PER_MINUTE,
         )
         return allowed, reset_time
@@ -879,7 +887,13 @@ async def send_gap_messages(user_id: str, room_id: str, last_seq: int):
         await send_recent_messages(user_id, room_id)
 
 
-async def send_recent_messages(user_id: str, room_id: str, limit: int = 50):
+# 連線時（或補發失敗退回時）送出的最近訊息數
+RECENT_MESSAGES_LIMIT = 50
+
+
+async def send_recent_messages(
+    user_id: str, room_id: str, limit: int = RECENT_MESSAGES_LIMIT
+):
     """
     發送最近的訊息記錄
 

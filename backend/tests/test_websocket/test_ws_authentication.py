@@ -16,7 +16,12 @@ from app.auth.jwt_handler import create_access_token, create_refresh_token
 from app.database.errors import NotConnectedError
 from app.database.redis_conn import get_redis
 from app.utils.user_cache import set_cached_user
-from app.utils.ws_ticket import WS_TICKET_PREFIX, create_ws_ticket, validate_ws_ticket
+from app.utils.ws_ticket import (
+    WS_TICKET_PREFIX,
+    WS_TICKET_TTL,
+    create_ws_ticket,
+    validate_ws_ticket,
+)
 from app.websocket.auth import (
     authenticate_websocket,
     authenticate_websocket_by_ticket,
@@ -83,7 +88,7 @@ class TestWsTicket:
         ticket = await create_ws_ticket(user_id, room_id)
 
         ttl = await (await get_redis()).ttl(f"{WS_TICKET_PREFIX}{ticket}")
-        assert 0 < ttl <= 30
+        assert 0 < ttl <= WS_TICKET_TTL
 
         assert await validate_ws_ticket(ticket, room_id) == user_id
         assert await validate_ws_ticket(ticket, room_id) is None
