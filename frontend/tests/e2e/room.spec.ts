@@ -68,6 +68,8 @@ async function delayRoomA(page: Page, kind: keyof typeof DELAYED_REQUESTS, roomA
   }
 }
 
+// 防護分在三層，缺一不可：只拿掉房間頁的檢查，仍會連到 A；只拿掉 message / room store
+// 的檢查，B 的訊息會被 A 蓋掉；只拿掉 WebSocket manager 的連線編號檢查，ticket 較晚回來時仍會連到 A
 for (const [kind, label] of Object.entries(DELAYED_REQUESTS) as Array<[keyof typeof DELAYED_REQUESTS, string]>) {
   test(`從 A 快速切到 B，A 的${label}較晚回來時，畫面、連線與送出的訊息都屬於 B`, async ({ page }) => {
     const { api, user, suffix, rooms } = await setupRooms(page);

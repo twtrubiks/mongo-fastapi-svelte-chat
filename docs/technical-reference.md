@@ -182,7 +182,9 @@ Repository 方法的回傳值語義：
 | 機制 | 處理對象 | 實現方式 | 回應格式 |
 |------|---------|---------|---------|
 | `app_error_handler` | `AppError` 子類別（業務異常） | FastAPI `@app.exception_handler(AppError)` | `{"detail": "..."}` + 對應 status code |
-| `GlobalErrorHandler` | 未預期的基礎設施異常 | ASGI Middleware | 統一 500 錯誤 |
+| `GlobalErrorHandler` | 未預期的基礎設施異常 | ASGI Middleware | `{"success": false, "error": {...}}`；`DuplicateKeyError` 409、Redis 連線失敗 503、其餘 500 |
+
+`SecurityHeadersMiddleware` 必須註冊在 `GlobalErrorHandler` 之後（最外層）：它自帶 catch-all，若放在內層會先把路由拋出的例外轉成一般 500，`GlobalErrorHandler` 就接不到。放在最外層時，錯誤回應同樣會帶上安全標頭。
 
 **AppError 異常層級**（`app/core/exceptions.py`）：
 
@@ -435,6 +437,45 @@ invite_code 僅在 `RoomResponse` 中回傳，且受角色限制：
 - **一般成員** → `null`
 - **非成員** → 不在 `RoomSummary` 中
 
+邀請碼外流時，房主以 `POST /rooms/{room_id}/invite-code` 重新產生，舊碼立即失效（驗證回 404；加入時私人房回 404、公開的邀請制房間回「邀請碼無效」），已加入的成員不受影響。只有房主可呼叫，且房間須有邀請碼或為邀請制。
+
+#### 私人房的加入
+
+私人房一律是邀請制（建立與更新時強制）。非成員加入私人房時，沒帶或帶錯邀請碼都與房間不存在一樣回 404（與 `GET /rooms/{room_id}` 一致）。這個檢查排在封鎖與滿員檢查之前：否則隨便填一個邀請碼，就能從「邀請碼無效」「房間已滿」或「被封鎖」分辨出私人房存在；被封鎖的人也不一定曾是成員（房主可以用名稱封鎖從未加入的人）。帶了正確邀請碼的人本來就知道房間存在，才回真正的原因（被封鎖 403、房間已滿 400）。公開房的存在不是秘密，公開的邀請制房間帶錯邀請碼照常回「邀請碼無效」。
+
+#### 密碼房的加入方式
+
+公開房設了密碼，建立（`create_room`）與更新（`update_room`）時若加入方式仍是 `direct`，會改成 `password`；否則 `join_room` 走直接加入分支，不檢查密碼。
+
+#### 封鎖名單
+
+房主移出成員時可一併封鎖（`DELETE /rooms/{room_id}/members/{user_id}?ban=true`），也可以用使用者名稱封鎖已離開或從未加入的人（`POST /rooms/{room_id}/bans`，body `{"username": ...}`，回傳被封鎖的使用者）。被封鎖的人知道密碼或邀請碼也不能再加入（`join_room` 回 403「你已被房主禁止加入此聊天室」；私人房要帶正確邀請碼才會看到這個原因，否則回 404，見「私人房的加入」）：
+
+- 名單存在房間的 `banned_users`，只有房主能以 `GET /rooms/{room_id}/bans` 查看、`DELETE /rooms/{room_id}/bans/{user_id}` 解除；`RoomResponse` / `RoomSummary` 不帶這個欄位
+- 封鎖不要求對方是成員（否則成員先離開就能躲過）。`ban_user` 以一次 `find_one_and_update` 完成 `$pull members`、`$unset member_roles.<id>`、`$addToSet banned_users`，依回傳的更新前狀態判斷：寫入當下是成員就廣播 `user_left(kicked=true, banned=true)` 並斷線，不是成員就只加入名單，已在名單中回 409
+- 不是成員時對方必須是存在的使用者：`user_id` 會成為 `member_roles` 的欄位路徑，不能是任意字串
+- 以名稱封鎖時先確認是房主才查使用者，非房主不能藉此探測名稱是否存在
+- 以名稱封鎖與封鎖名單只回 `UserPublic`（`id`、`username`、`avatar`）：任何人都能自己建房當房主，若回完整的 `UserResponse`，就能用名稱查到任何人的 email
+- `add_member` 的條件含 `banned_users: {$ne: user_id}`：`join_room` 檢查後才被封鎖的人，寫入時仍會被擋下；此時重讀房間，回報被封鎖而不是「房間已滿」
+- 探索、搜尋（`exclude_joined`）與房間列表不列出封鎖了自己的房間
+- 被封鎖的人收到 `banned=true` 的 `user_left`，導回儀表板時提示「你已被房主移出並封鎖，無法再加入此聊天室」
+- 封鎖功能之前建立的房間沒有這個欄位，`$ne` 條件照常成立，不需要遷移
+
+房主專用的操作（更新、刪除、重新產生邀請碼、移出成員、封鎖名單）共用 `_get_owned_room`：私人房的非成員與房間不存在一樣回 404，不透露私人房是否存在；成員才回 403。
+
+#### 個人資料與在線狀態
+
+其他使用者的 email 一律不經 WS 與房間 API 傳出：WS 的使用者資料（`user_joined`、`room_users`、`user_left`）不含 email；上線狀態 `user_status_changed` 只帶 `user_id` 與 `is_online`；成員列表（`GET /rooms/{room_id}/members`）回 `RoomMember`，同樣不含 email（公開房任何人都能加入，帶 email 等於公開）。
+
+誰在線也只告訴同房成員，否則任何人自己建房保持連線，就能記錄所有使用者的上下線時間：
+
+- `user_status_changed` 只送到該使用者是成員、且有人連線的房間（是成員但沒連在那個房間也算）
+- `room_users` 的 `global_online_user_ids`（沿用舊欄位名）只列本房成員中在線的人，連線時與 `get_users` 指令皆同
+- 成員資格由 `ConnectionManager` 透過注入的 `RoomMembership`（`RoomService` 實作）在鎖外查詢
+- 已在線的人只是換房間時不再廣播上線；查詢期間狀態又變了（例如離線途中重新連線）時，過時的狀態不送
+- 查不到成員資格時：上下線事件不送（不退回送給所有房間，也不中斷連線）；連線時的在線列表退回本房的連線者（都已通過成員驗證）。離線事件因此沒送出時，和該使用者連在同一房的人會收到 `user_left` 而熄燈，其他共同房間的成員則會一直看到該使用者在線，直到重新整理或重連
+- `lobby` 不是資料庫裡的房間、沒有成員，收不到任何人的上線狀態
+
 ---
 
 ## 認證 Token 生命週期
@@ -683,7 +724,7 @@ export function groupMessagesByDate<T extends { created_at: string }>(
 
 #### 1. 全域離線 Debounce（3 秒）
 
-使用者從**所有房間**斷開後，不會立即標記為離線。等待 3 秒（`_disconnect_debounce_seconds`），若期間重新連線則取消離線流程。超時後清除 `user_info`、`global_online_users`，對每個房間廣播 `user_left`，再廣播 `user_status_changed(is_online=False)`。
+使用者從**所有房間**斷開後，不會立即標記為離線。等待 3 秒（`_disconnect_debounce_seconds`），若期間重新連線則取消離線流程。超時後清除 `user_info`、`global_online_users`，對每個房間廣播 `user_left`，再對該使用者所屬的房間廣播 `user_status_changed(is_online=False)`。
 
 ```
 disconnect（最後一個房間） → 排程 _execute_offline（3s）
@@ -705,18 +746,27 @@ disconnect（房間 A） → 排程 _execute_room_leave（5s）
                         └─ 超時 → 從 room_users 移除（不廣播 user_left）
 ```
 
-> **在線狀態與成員離開的職責分離**: `_execute_room_leave` 僅處理切換房間的場景（使用者仍在線上），因此不廣播 `user_left`。真正離線由 `_execute_offline` 的 `user_status_changed(is_online=False)` 通知所有房間。成員主動離開房間（API 操作）則由 Service 層 `leave_room` 廣播 `user_left(removed=true)`，前端收到後將該使用者從成員陣列移除，避免後續 `user_status_changed` 誤將其設回在線。
+> **在線狀態與成員離開的職責分離**: `_execute_room_leave` 僅處理切換房間的場景（使用者仍在線上），因此不廣播 `user_left`。真正離線由 `_execute_offline` 的 `user_status_changed(is_online=False)` 通知該使用者所屬的房間。成員主動離開房間（API 操作）則由 Service 層 `leave_room` 廣播 `user_left(removed=true)`，前端收到後將該使用者從成員陣列移除，避免後續 `user_status_changed` 誤將其設回在線。
 
 > **注意**: 全域離線 debounce（3s）觸發時，會一併清理該使用者所有 pending room-leave tasks，避免殘留。
 
 #### 3. 成員資格撤銷（force_disconnect）
 
-成員資格只在 WS 連線建立當下驗證一次（`verify_room_membership`），之後不重驗。因此撤銷成員資格的業務操作必須主動斷開既有連線，否則離開者已開的分頁會繼續收到房間所有新訊息廣播（對私密房間是機密性缺口）：
+成員資格只在 WS 連線建立時驗證（`verify_room_membership`），之後不重驗。因此撤銷成員資格的業務操作必須主動斷開既有連線，否則離開者已開的分頁會繼續收到房間所有新訊息廣播（對私密房間是機密性缺口）：
 
-- **`leave_room`**（Service 層）：廣播 `user_left(removed=true)` 後呼叫 `force_disconnect(user_id, room_id)`，關閉離開者在該房的 WS 連線
-- **`delete_room`**（Service 層）：廣播 `room_deleted` 後呼叫 `force_disconnect_room(room_id)`，關閉該房所有連線
+- **`leave_room`**（Service 層）：呼叫 `force_disconnect(user_id, room_id, notice=user_left)` 關閉離開者在該房的 WS 連線，再廣播 `user_left(removed=true, kicked=false)` 給房間
+- **`remove_member`**（Service 層，`DELETE /rooms/{room_id}/members/{user_id}`，僅房主）：與 `leave_room` 共用 `_revoke_member_access`，斷開被移除者的連線後廣播 `user_left(removed=true, kicked=true)`
+- **`delete_room`**（Service 層）：廣播 `room_deleted` 後呼叫 `force_disconnect_room(room_id)`，關閉該房所有連線（含已登記、還在確認成員資格的連線）
 
-與 `disconnect()`（暫時斷線）的差異：`force_disconnect` **立即**從 `room_users` 移除（不走 rejoin debounce——撤銷是確定事件），並以 close code **4003** 主動關閉 socket。前端的 `noReconnectCodes` 已含 4003，收到後不會嘗試重連。
+驗證時資料庫或 Redis 故障（`PyMongoError` / `RedisError`，以及關機時連線已關閉的 `NotConnectedError`）不是認證失敗：認證中介層、成員資格查詢與再確認都讓這類錯誤往上拋，handler 以 4000 關閉；其他例外（例如格式錯誤的 token）才以 4001 拒絕。前端收到 4000（以及伺服器重啟的 1012、請稍後再試的 1013）時，即使伺服器完成了關閉握手也會重連（其他正常關閉不重連）。後端先接受連線才驗證，所以連上（`onopen`）不代表通過驗證：收到伺服器的第一則訊息才重設退避與次數，否則驗證時被 4000 關閉的連線會固定每秒重連、永不停止；連續達到上限時發出 `reconnect_failed`（伺服器關閉、ping 逾時、重連失敗三條路徑共用同一個判斷，只通知一次）。
+
+與 `disconnect()`（暫時斷線）的差異：`force_disconnect` **立即**從 `room_users` 移除（不走 rejoin debounce——撤銷是確定事件），並以 close code **4003** 主動關閉 socket。前端的 `noReconnectCodes` 已含 4003，收到後不會嘗試重連，房間頁也不顯示「重新連接」提示。
+
+`user_left` 的 `user` 取自 `connection_manager.user_info`；被移除者不在線時（被移出的多半是這種）改從資料庫補上名稱。`remove_member` 以「仍是成員」為原子條件更新，同時離開與被移出時只有一方成功、只廣播一次；不是成員的人呼叫離開回 404（與房間不存在相同，不透露私人房是否存在）。
+
+連線建立時驗證兩次：認證中介層先驗證一次，`connect` 登記連線後再以 `still_member` 確認一次，通過才加入房間名單、廣播 `user_joined`。兩次都只查成員資格（`RoomService.is_member`，以 `_id` 與 `members` 計數，不讀整份房間）。確認期間的連線已登記、但還不在房間名單，個人事件（`send_event`）優先送到已確認的連線，避免確認失敗時事件跟著被拒絕的連線消失。`force_disconnect` 只斷得到已登記的連線；若只在登記前驗證，撤銷剛好落在驗證與登記之間時斷不到這條連線，被移除者會持續收到廣播直到自己斷線。先登記再確認後，撤銷不是被再確認發現（撤回登記並以 4001 關閉，與移出後才連線相同），就是斷得到這條連線（4003）；確認期間被撤銷的連線不會再宣告加入。撤銷時先斷線、再廣播 `user_left`：反過來的話，再確認已通過、正在等鎖的連線會在廣播之後才宣告加入，房內在「被移出」之後又看到他「加入」，成員列表留著他。
+
+被移除者自己的分頁在連線關閉前會收到同一則 `user_left`（`force_disconnect` 的 `notice`）。前端看到 `removed` 且是自己時，從「我的房間」移除該房並導回儀表板（`kicked` 時提示「你已被房主移出聊天室」）；自己在本分頁按離開時由離開流程處理導向。只移出的人能否再加入取決於房間的加入方式（邀請碼或密碼仍有效時可以，公開直接加入的房間一定可以）；要阻止就選「移出並封鎖」（見「封鎖名單」）。
 
 ### 客戶端連線管理（一次性 Ticket 機制）
 

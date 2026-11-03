@@ -16,7 +16,18 @@ FastAPI 路由、Pydantic validator）、不變異 class 層級常數（Field �
     cd backend && python scripts/mutation_test.py all --workers 4
 
 可分步執行：gen → coverage → setup → baseline → plan → run → report。
-run 可中斷後續跑（以 claims 目錄記錄已領取的工作）。結果輸出於 .mutation/。
+run 可中斷後續跑（以 claims 目錄記錄已領取的工作）。結果輸出於 .mutation/，
+報告為 .mutation/report.md；gen 會清掉上一輪結果，要比較請先把目錄移走。
+worker i 使用 MongoDB 資料庫 test_chatroom_mut{i} 與 Redis DB 2 + i。
+
+判讀存活者時的已知情況：
+- 只跑執行過該行的測試，會低估只能從其他路徑偵測的變異。例如路由參數的
+  le=100 只有被 FastAPI 驗證擋下的請求（422）能偵測，而這種請求不執行路由本體
+- 含非 ASCII 的字串不變異，錯誤訊息文字不在統計內
+- 筆數、截斷長度、時間窗等調整用常數與非安全相關的 Settings 預設值，測試由常數
+  推出邊界、不寫死數值，只改數值的變異體存活屬預期；邊界邏輯（> 改 >=）仍應被殺死
+- 常見的等價變異：AppError.__init__ 不呼叫 super().__init__（BaseException.__new__
+  已把參數存進 args）、正式呼叫端一律明確傳入的參數預設值
 """
 
 from __future__ import annotations

@@ -34,6 +34,7 @@ export default defineConfig({
 				test: {
 					name: 'client',
 					include: ['src/**/*.svelte.test.ts'],
+					// jsdom 停在 29 版：30 版需要 Node 22.22.2 以上
 					environment: 'jsdom',
 					setupFiles: ['src/tests/setup-client.ts']
 				}

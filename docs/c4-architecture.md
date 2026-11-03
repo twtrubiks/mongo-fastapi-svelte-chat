@@ -131,7 +131,7 @@ graph TB
         AuthRouter[認證路由<br/>/api/auth<br/>POST /login, /register]
         RoomRouter[房間路由<br/>/api/rooms<br/>GET /rooms, POST /rooms]
         MessageRouter[訊息路由<br/>/api/messages<br/>GET /messages, POST /messages]
-        FileRouter["檔案路由<br/>/api/files<br/>POST /upload, GET /{file_type}/{filename}"]
+        FileRouter["檔案路由<br/>/api/files<br/>POST /upload, /upload/image<br/>GET /{file_type}/{filename}, /thumbnail/{filename}"]
         NotificationRouter[通知路由<br/>/api/notifications<br/>GET /notifications, DELETE /notifications]
         InvitationRouter["邀請碼驗證路由<br/>/api/invitations<br/>POST /validate"]
         WsTicketRouter[WS Ticket 路由<br/>/api/ws<br/>POST /ticket]
@@ -505,7 +505,8 @@ classDiagram
         +get_by_ids(user_ids) list~UserInDB~
         +get_by_username(username) UserInDB
         +get_by_email(email) UserInDB
-        +update(user_id, user_update, bump_token_version) UserInDB
+        +update(user_id, user_update) UserInDB
+        +update_password(user_id, hashed_password) bool
         +delete(user_id) bool
         +update_last_login(user_id) bool
     }
@@ -806,7 +807,6 @@ Phase 0+1 把 seq 建立起來後，Phase 2 用它取代兩個原本依賴 `skip
 - **游標分頁**：訊息列表查詢支援 `before_seq`，以 `seq < before_seq` 為游標取代 `skip/limit` 偏移。偏移分頁在訊息增刪後會錯位（同一筆被翻兩次或被跳過），游標分頁不受影響。舊資料無 seq 時 fallback 回 `skip`，向後相容。
 - **斷線 gap 精確補發**：WS 重連時客戶端帶上本地最大 `last_seq`（並驗證該 seq 屬於同一房間才帶），伺服器只補發 `seq > last_seq` 的訊息，透過 `message_sync` 事件送回——精確、不重不漏，取代原本「重連盲發最近 50 條」的會漏也會重行為。
 - **gap 上限保護**：`SYNC_MAX_GAP = 200`。gap 超過上限時改為 `full_reload`（回傳最新訊息並標記 `full_reload=true`），客戶端清空本地後以該批重載，避免一次推送過多訊息。gap 為 0 時不送任何訊息。
-- **一次性遷移腳本**：`scripts/backfill_message_seq.py` 為既有無 seq 的訊息補號並校正 `counters`（冪等，可重複執行）。
 
 ```
 重連 → 帶 last_seq=N

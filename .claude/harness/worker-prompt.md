@@ -307,7 +307,7 @@ cd backend && ruff check . && ruff format --check .
 # 後端測試
 cd backend && pytest tests/ -v --tb=short -x
 
-# 前端型別 + lint
+# 前端型別 + lint + 單元測試
 cd frontend && npm run check:all
 ```
 
