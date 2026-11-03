@@ -368,8 +368,9 @@ class TestJoinPolicies:
         assert invite_code
         assert updated.json()["room_type"] == "private"
         assert updated.json()["join_policy"] == "invite"
+        # 私人房對非成員視為不存在：沒帶邀請碼回 404，不透露需要邀請碼
         without_code = await _join(async_client, room["id"], users["member"])
-        assert without_code.status_code == 400
+        assert without_code.status_code == 404
         assert not await self._is_member(async_client, room["id"], users["member"])
 
         invited = await _join(
@@ -406,8 +407,9 @@ class TestJoinPolicies:
         assert updated.status_code == 200
         assert updated.json()["join_policy"] == "invite"
         assert updated.json()["invite_code"] == room["invite_code"]
+        # 私人房對非成員視為不存在：沒帶邀請碼回 404，不透露需要邀請碼
         without_code = await _join(async_client, room["id"], users["member"])
-        assert without_code.status_code == 400
+        assert without_code.status_code == 404
         assert not await self._is_member(async_client, room["id"], users["member"])
 
     async def test_password_policy_without_password_set(self, async_client, users):
@@ -439,9 +441,10 @@ class TestJoinPolicies:
     async def test_invite_join(self, async_client, users):
         room = await _create_room(async_client, users["owner"], room_type="private")
 
+        # 沒帶或帶錯邀請碼：私人房視為不存在（404）
         for body in (None, {}, {"invite_code": "wrong-code"}):
             response = await _join(async_client, room["id"], users["member"], body)
-            assert response.status_code == 400
+            assert response.status_code == 404
         assert not await self._is_member(async_client, room["id"], users["member"])
 
         ok = await _join(
@@ -451,6 +454,38 @@ class TestJoinPolicies:
             {"invite_code": room["invite_code"]},
         )
         assert ok.status_code == 200
+
+    async def test_private_room_join_indistinguishable_from_missing_room(
+        self, async_client, users
+    ):
+        """沒有正確邀請碼的人，加入私人房的回應與房間不存在完全相同（滿員又被封鎖也一樣）"""
+        room = await _create_room(
+            async_client, users["owner"], room_type="private", max_members=2
+        )
+        joined = await _join(
+            async_client,
+            room["id"],
+            users["member"],
+            {"invite_code": room["invite_code"]},
+        )
+        assert joined.status_code == 200  # 房主 + 成員，房間已滿
+        banned = await async_client.post(
+            f"/api/rooms/{room['id']}/bans",
+            json={"username": "outsider"},
+            headers=users["owner"]["headers"],
+        )
+        assert banned.status_code == 200  # 從未加入就被封鎖
+
+        missing = await _join(
+            async_client, str(ObjectId()), users["outsider"], {"invite_code": "guess"}
+        )
+        assert missing.status_code == 404
+        for body in (None, {"invite_code": "guess"}):
+            response = await _join(async_client, room["id"], users["outsider"], body)
+            assert (response.status_code, response.json()) == (
+                missing.status_code,
+                missing.json(),
+            )
 
     async def test_full_room_rejects_join(self, async_client, users):
         room = await _create_room(async_client, users["owner"], max_members=2)
@@ -713,7 +748,7 @@ class TestOwnerAccessRevocation:
         new_code = regenerated.json()["invite_code"]
         assert new_code and new_code != old_code
 
-        # 外流的舊邀請碼立即失效：驗證與加入都被拒
+        # 外流的舊邀請碼立即失效：驗證與加入都被拒（私人房帶錯碼與房間不存在相同）
         validate_old = await async_client.post(
             "/api/invitations/validate",
             json={"invite_code": old_code},
@@ -723,8 +758,8 @@ class TestOwnerAccessRevocation:
             async_client, room["id"], users["outsider"], {"invite_code": old_code}
         )
         assert validate_old.status_code == 404
-        assert join_old.status_code == 400
-        assert join_old.json()["detail"] == "邀請碼無效"
+        assert join_old.status_code == 404
+        assert join_old.json()["detail"] == "房間不存在"
 
         join_new = await _join(
             async_client, room["id"], users["outsider"], {"invite_code": new_code}

@@ -60,7 +60,8 @@ test('重新產生邀請碼後，舊的邀請碼無法再加入', async ({ page,
   await registerUser(outsider, 'outsider');
   const withOldCode = await outsider.post(`/api/rooms/${room.id}/join`, { data: { invite_code: room.invite_code } });
   const withNewCode = await outsider.post(`/api/rooms/${room.id}/join`, { data: { invite_code: newCode } });
-  expect(withOldCode.status()).toBe(400);
+  // 私人房帶錯（舊）邀請碼與房間不存在相同，不透露房間存在
+  expect(withOldCode.status()).toBe(404);
   expect(withNewCode.ok()).toBe(true);
   await outsiderContext.close();
 });

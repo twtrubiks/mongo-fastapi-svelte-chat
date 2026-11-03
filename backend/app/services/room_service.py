@@ -430,6 +430,18 @@ class RoomService:
         if user_id in room.members:
             return "您已經是該房間的成員"
 
+        # 私人房對非成員視為不存在（與 get_room_for_user 一致）：沒帶或帶錯邀請碼都與
+        # 房間不存在一樣回 404。要排在封鎖與滿員檢查之前：「被封鎖」「房間已滿」
+        # 「邀請碼無效」任何一個先回，沒有邀請碼的人隨便填個碼就能探測私人房是否存在
+        # （被封鎖的人不一定曾是成員：房主可以用名稱封鎖從未加入的人）
+        if room.room_type == RoomType.PRIVATE and not (
+            room.join_policy == JoinPolicy.INVITE
+            and join_request
+            and join_request.invite_code
+            and join_request.invite_code == room.invite_code
+        ):
+            raise NotFoundError("房間不存在")
+
         # 被封鎖的人知道密碼或邀請碼也不能加入
         if user_id in room.banned_users:
             raise ForbiddenError(BANNED_MESSAGE)
@@ -438,13 +450,8 @@ class RoomService:
         if len(room.members) >= room.max_members:
             raise AppError("房間已滿")
 
-        # 根據加入策略進行驗證
-        if room.join_policy == JoinPolicy.DIRECT:
-            # 直接加入（僅限公開房間）
-            if room.room_type != RoomType.PUBLIC:
-                raise ForbiddenError("該房間不允許直接加入")
-
-        elif room.join_policy == JoinPolicy.PASSWORD:
+        # 根據加入策略進行驗證（DIRECT 只剩公開房會走到這裡，無需再驗證）
+        if room.join_policy == JoinPolicy.PASSWORD:
             # 密碼驗證
             if not join_request or not join_request.password:
                 logger.info(
@@ -470,7 +477,7 @@ class RoomService:
                 raise AppError("密碼錯誤")
 
         elif room.join_policy == JoinPolicy.INVITE:
-            # 邀請碼驗證
+            # 邀請碼驗證（私人房已在上面驗過，走到這裡的錯誤只會是公開的邀請制房間）
             if not join_request or not join_request.invite_code:
                 raise AppError("需要提供邀請碼")
 

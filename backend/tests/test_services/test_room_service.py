@@ -615,6 +615,95 @@ class TestRoomService:
         assert "邀請碼無效" in str(exc_info.value)
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("join_policy", "join_request"),
+        [
+            (JoinPolicy.INVITE, None),
+            (JoinPolicy.INVITE, RoomJoinRequest(password="pw")),
+            (JoinPolicy.DIRECT, None),
+            (JoinPolicy.PASSWORD, RoomJoinRequest(password="pw")),
+        ],
+    )
+    async def test_join_private_room_without_invite_code_is_not_found(
+        self, room_service, mock_repositories, sample_room, join_policy, join_request
+    ):
+        """私人房對非成員視為不存在：沒帶邀請碼一律 404，不透露需要邀請碼"""
+        room_repo, user_repo, message_repo = mock_repositories
+
+        sample_room.room_type = RoomType.PRIVATE
+        sample_room.join_policy = join_policy
+        sample_room.invite_code = "test-invite-code"
+        sample_room.members = []
+        room_repo.get_by_id.return_value = sample_room
+
+        with pytest.raises(NotFoundError, match="房間不存在"):
+            await room_service.join_room(sample_room.id, str(ObjectId()), join_request)
+
+        room_repo.add_member.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("invite_code", "full", "banned"),
+        [
+            ("wrong", False, False),
+            ("wrong", True, False),
+            (None, False, True),
+            ("wrong", False, True),
+        ],
+        ids=["wrong-code", "full-room", "banned-without-code", "banned-wrong-code"],
+    )
+    async def test_join_private_room_without_valid_invite_code_is_not_found(
+        self, room_service, mock_repositories, sample_room, invite_code, full, banned
+    ):
+        """私人房沒有正確的邀請碼一律 404：錯的碼、滿員、被封鎖都不能透露房間存在"""
+        room_repo, user_repo, message_repo = mock_repositories
+        user_id = str(ObjectId())
+
+        sample_room.room_type = RoomType.PRIVATE
+        sample_room.join_policy = JoinPolicy.INVITE
+        sample_room.invite_code = "test-invite-code"
+        sample_room.members = []
+        if full:
+            sample_room.max_members = 1
+            sample_room.members = [str(ObjectId())]
+        if banned:
+            sample_room.banned_users = [user_id]
+        room_repo.get_by_id.return_value = sample_room
+
+        join_request = RoomJoinRequest(invite_code=invite_code) if invite_code else None
+        with pytest.raises(NotFoundError, match="房間不存在"):
+            await room_service.join_room(sample_room.id, user_id, join_request)
+
+        room_repo.add_member.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_join_private_room_with_valid_invite_code_reports_reason(
+        self, room_service, mock_repositories, sample_room
+    ):
+        """帶了正確的邀請碼（本來就知道房間存在）才回真正的原因：被封鎖、房間已滿"""
+        room_repo, user_repo, message_repo = mock_repositories
+        user_id = str(ObjectId())
+
+        sample_room.room_type = RoomType.PRIVATE
+        sample_room.join_policy = JoinPolicy.INVITE
+        sample_room.invite_code = "test-invite-code"
+        sample_room.members = []
+        room_repo.get_by_id.return_value = sample_room
+        join_request = RoomJoinRequest(invite_code="test-invite-code")
+
+        sample_room.banned_users = [user_id]
+        with pytest.raises(ForbiddenError, match="禁止加入"):
+            await room_service.join_room(sample_room.id, user_id, join_request)
+
+        sample_room.banned_users = []
+        sample_room.max_members = 1
+        sample_room.members = [str(ObjectId())]
+        with pytest.raises(AppError, match="房間已滿"):
+            await room_service.join_room(sample_room.id, user_id, join_request)
+
+        room_repo.add_member.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_validate_invite_code(
         self, room_service, mock_repositories, sample_room
     ):
