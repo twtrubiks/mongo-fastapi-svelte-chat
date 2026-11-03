@@ -39,11 +39,13 @@ async def get_thumbnail(
     file_service: FileService = FileServiceDep,
 ):
     """獲取縮圖"""
-    thumbnail_path, thumbnail_filename = file_service.resolve_thumbnail(filename, size)
+    thumbnail_path, thumbnail_filename, mime_type = file_service.resolve_thumbnail(
+        filename, size
+    )
     return FileResponse(
         path=str(thumbnail_path),
         filename=thumbnail_filename,
-        media_type="image/png",
+        media_type=mime_type,
     )
 
 

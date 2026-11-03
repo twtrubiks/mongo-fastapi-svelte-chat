@@ -2,6 +2,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import * as upload from './+server';
 import * as download from './[fileType]/[filename]/+server';
+import * as thumbnail from './thumbnail/[filename]/+server';
 import { backendError, FakeCookies, makeEvent, mockBackend, tokenExpiringIn } from '../../../tests/bff';
 
 const UPLOADED = { id: 'f1', filename: 'abc.png', url: '/api/files/image/abc.png' };
@@ -181,6 +182,54 @@ describe('GET /api/files/[fileType]/[filename]', () => {
     const fetchMock = stubBackend(new Response(''));
 
     expect((await get('image', 'a.png', new FakeCookies())).status).toBe(401);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+// 圖片上傳回應的 thumbnails 是 /api/files/thumbnail/{filename}?size=...，要能經 BFF 取得
+describe('GET /api/files/thumbnail/[filename]', () => {
+  function get(filename: string, query = '', cookies = new FakeCookies({ auth_token: tokenExpiringIn(3600) })) {
+    return thumbnail.GET(makeEvent({ cookies, url: `/api/files/thumbnail/${filename}${query}`, params: { filename } }));
+  }
+
+  function stubBackend(response: Response) {
+    const fetchMock = vi.fn(async () => response);
+    vi.stubGlobal('fetch', fetchMock);
+    return fetchMock;
+  }
+
+  it('以 token 向後端取縮圖並轉送 size', async () => {
+    const fetchMock = stubBackend(new Response('PNG', { headers: { 'Content-Type': 'image/png' } }));
+
+    const response = await get('a b.png', '?size=small');
+
+    expect(await response.text()).toBe('PNG');
+    expect(response.headers.get('cache-control')).toBe('private, max-age=86400');
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe('http://localhost:8000/api/files/thumbnail/a%20b.png?size=small');
+    expect((init.headers as Record<string, string>)['Authorization']).toMatch(/^Bearer /);
+  });
+
+  it('沒帶 size 時用後端預設的 medium', async () => {
+    const fetchMock = stubBackend(new Response('PNG'));
+
+    await get('a.png');
+
+    expect((fetchMock.mock.calls[0] as unknown as [string])[0]).toBe('http://localhost:8000/api/files/thumbnail/a.png?size=medium');
+  });
+
+  it('size 經過編碼，不能夾帶其他查詢參數', async () => {
+    const fetchMock = stubBackend(new Response('PNG'));
+
+    await get('a.png', '?size=small%26x%3D1');
+
+    expect((fetchMock.mock.calls[0] as unknown as [string])[0]).toBe('http://localhost:8000/api/files/thumbnail/a.png?size=small%26x%3D1');
+  });
+
+  it('未登入時回 401，不呼叫後端', async () => {
+    const fetchMock = stubBackend(new Response(''));
+
+    expect((await get('a.png', '', new FakeCookies())).status).toBe(401);
     expect(fetchMock).not.toHaveBeenCalled();
   });
 });

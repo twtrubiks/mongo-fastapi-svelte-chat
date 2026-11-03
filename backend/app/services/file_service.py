@@ -143,8 +143,11 @@ class FileService:
         self._attach_uploader(file_info, current_user)
         return {"message": "圖片上傳成功", "file": self._public_file_info(file_info)}
 
-    def resolve_thumbnail(self, filename: str, size: str) -> tuple[Path, str]:
-        """解析縮圖路徑，回傳 (絕對路徑, 檔案名稱)"""
+    def resolve_thumbnail(self, filename: str, size: str) -> tuple[Path, str, str]:
+        """解析縮圖路徑，回傳 (絕對路徑, 檔案名稱, MIME 類型)
+
+        縮圖沿用原圖的格式與副檔名，MIME 類型與下載相同依副檔名決定
+        """
         if size not in ALLOWED_THUMBNAIL_SIZES:
             raise AppError("無效的縮圖大小")
 
@@ -161,7 +164,8 @@ class FileService:
         if not thumbnail_path.exists():
             raise NotFoundError("縮圖不存在")
 
-        return thumbnail_path, thumbnail_filename
+        mime_type = get_mime_type(thumbnail_path.suffix.lower())
+        return thumbnail_path, thumbnail_filename, mime_type
 
     def resolve_download(
         self, file_type: str, filename: str

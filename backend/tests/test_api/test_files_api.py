@@ -167,6 +167,29 @@ class TestFilesApi:
         with Image.open(io.BytesIO(thumbnail.content)) as img:
             assert max(img.size) == 150
 
+    async def test_thumbnail_content_type_follows_image_format(
+        self, async_client, uploader, upload_dir, tmp_path, monkeypatch
+    ):
+        """縮圖沿用原圖的格式與副檔名，Content-Type 要跟著副檔名，不能一律標成 PNG"""
+        monkeypatch.chdir(tmp_path)  # 縮圖下載以工作目錄下的 processed/ 為根
+        image = io.BytesIO()
+        Image.new("RGB", (400, 300), "red").save(image, format="JPEG")
+
+        response = await async_client.post(
+            "/api/files/upload/image",
+            files={"file": ("photo.jpg", image.getvalue(), "image/jpeg")},
+            headers=uploader["headers"],
+        )
+
+        assert response.status_code == 201, response.text
+        thumbnail = await async_client.get(
+            response.json()["file"]["thumbnails"]["small"], headers=uploader["headers"]
+        )
+        assert thumbnail.status_code == 200
+        assert thumbnail.headers["content-type"] == "image/jpeg"
+        with Image.open(io.BytesIO(thumbnail.content)) as img:
+            assert img.format == "JPEG"
+
     async def test_download_content_type_per_extension(
         self, async_client, uploader, upload_dir
     ):
