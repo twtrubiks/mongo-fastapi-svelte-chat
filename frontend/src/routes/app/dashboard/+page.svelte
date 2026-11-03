@@ -188,7 +188,11 @@
             <div class="space-y-3">
               {#each dashboardData.rooms.slice(0, 5) as room, index (room.id)}
                 <div class="room-item" in:fly={{ x: -20, duration: 300, delay: 100 + index * 50 }}>
-                  <div class="flex items-center justify-between p-4 rounded-lg bg-base-200 hover:bg-base-300 transition-colors">
+                  <!-- 整列是連結：點任何位置進房間，也可中鍵 / Ctrl+點擊開新分頁 -->
+                  <a
+                    href="/app/room/{room.id}"
+                    class="flex items-center justify-between p-4 rounded-lg bg-base-200 hover:bg-base-300 transition-colors"
+                  >
                     <div class="flex-1">
                       <div class="font-semibold text-base-content">{room.name}</div>
                       <div class="text-sm text-base-content opacity-70 line-clamp-1">
@@ -197,13 +201,11 @@
                     </div>
                     <div class="flex items-center gap-2">
                       <div class="badge badge-primary badge-sm">{room.member_count} 成員</div>
-                      <button class="btn btn-ghost btn-xs" aria-label="前往聊天室">
-                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
-                        </svg>
-                      </button>
+                      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
+                      </svg>
                     </div>
-                  </div>
+                  </a>
                 </div>
               {/each}
             </div>
