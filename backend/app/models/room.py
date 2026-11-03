@@ -57,7 +57,6 @@ class RoomInDB(RoomBase):
     banned_users: list[str] = Field(default_factory=list)
     password_hash: str | None = None
     invite_code: str | None = None
-    invite_code_expires_at: datetime | None = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 

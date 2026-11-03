@@ -649,22 +649,6 @@ class TestRoomService:
         assert "邀請碼無效" in str(exc_info.value)
 
     @pytest.mark.asyncio
-    async def test_validate_invite_code_expired(
-        self, room_service, mock_repositories, sample_room
-    ):
-        """測試過期邀請碼拋出 AppError"""
-        room_repo, user_repo, message_repo = mock_repositories
-
-        sample_room.join_policy = JoinPolicy.INVITE
-        sample_room.invite_code = "test-invite-code"
-        sample_room.invite_code_expires_at = datetime.now(UTC) - timedelta(hours=1)
-        room_repo.get_by_invite_code.return_value = sample_room
-
-        with pytest.raises(AppError) as exc_info:
-            await room_service.validate_invite_code("test-invite-code")
-        assert "已過期" in str(exc_info.value)
-
-    @pytest.mark.asyncio
     async def test_delete_room_with_websocket_notification(
         self, room_service, mock_repositories, mock_connection_manager, sample_room
     ):

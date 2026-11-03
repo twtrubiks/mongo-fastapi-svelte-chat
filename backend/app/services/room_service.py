@@ -477,13 +477,6 @@ class RoomService:
             if join_request.invite_code != room.invite_code:
                 raise AppError("邀請碼無效")
 
-            # 檢查邀請碼是否過期
-            if (
-                room.invite_code_expires_at
-                and room.invite_code_expires_at < datetime.now(UTC)
-            ):
-                raise AppError("邀請碼已過期")
-
         # 原子加入房間（含 max_members 與封鎖條件檢查 + 角色設定）
         success = await self.room_repo.add_member(room_id, user_id, MemberRole.MEMBER)
         if not success:
@@ -545,17 +538,10 @@ class RoomService:
 
         Raises:
             NotFoundError: 邀請碼無效時
-            AppError: 邀請碼已過期時
         """
         room = await self.room_repo.get_by_invite_code(invite_code)
         if not room:
             raise NotFoundError("邀請碼無效或已過期")
-
-        # 過期檢查與 join_room 保持一致
-        if room.invite_code_expires_at and room.invite_code_expires_at < datetime.now(
-            UTC
-        ):
-            raise AppError("邀請碼已過期")
 
         owner = await self.user_repo.get_by_id(room.owner_id)
         if not owner:
